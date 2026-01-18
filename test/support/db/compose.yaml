@@ -1,0 +1,16 @@
+services:
+  db:
+    image: jumski/atlas-postgres-pgflow:17.6.1.054
+    ports:
+      - '54322:5432'
+    volumes:
+      - ./migrations/pgflow.sql:/docker-entrypoint-initdb.d/950_pgflow.sql
+    environment:
+      POSTGRES_DB: pgflow_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5

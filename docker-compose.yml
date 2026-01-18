@@ -1,0 +1,15 @@
+services:
+  db:
+    # Must match image in pkgs/core/atlas/atlas.hcl for baseline compatibility
+    image: jumski/atlas-postgres-pgflow:17.6.1.054
+    ports:
+      - '54322:5432'
+    volumes:
+      - ./test/support/db/pgflow.sql:/docker-entrypoint-initdb.d/950_pgflow.sql
+    environment:
+      POSTGRES_DB: pgflow_test
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST: /var/run/postgresql
+      POSTGRES_PORT: 5432
+    # Configure pg_cron to use pgflow_test database instead of default postgres
+    command: postgres -c cron.database_name=pgflow_test
