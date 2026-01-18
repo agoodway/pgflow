@@ -67,6 +67,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:output_loading, false)
       |> assign(:dsl_segments, FlowDSL.get_segments())
       |> assign(:show_migration, false)
+      |> assign(:migration_path, get_migration_path())
       |> assign(:migration_content, get_migration_content())
 
     {:ok, socket}
@@ -604,15 +605,32 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp edge_active?(edge, active_edges), do: MapSet.member?(active_edges, edge)
 
   # Migration content for display with syntax highlighting
-  @migration_path "priv/repo/migrations/20260118130454_compile_article_flow.exs"
+  # Use glob pattern to find migration file (timestamp varies)
+  defp find_migration_file do
+    Path.wildcard("priv/repo/migrations/*_compile_article_flow.exs")
+    |> List.first()
+  end
+
+  defp get_migration_path do
+    case find_migration_file() do
+      nil -> "priv/repo/migrations/*_compile_article_flow.exs"
+      path -> path
+    end
+  end
 
   defp get_migration_content do
-    case File.read(@migration_path) do
-      {:ok, content} ->
-        Makeup.highlight(content, lexer: Makeup.Lexers.ElixirLexer)
+    case find_migration_file() do
+      nil ->
+        "# Migration file not found\n# Run: mix pgflow.gen.flow PgflowDemo.Flows.ArticleFlow"
 
-      {:error, _} ->
-        "Migration file not found"
+      path ->
+        case File.read(path) do
+          {:ok, content} ->
+            Makeup.highlight(content, lexer: Makeup.Lexers.ElixirLexer)
+
+          {:error, _} ->
+            "Migration file not found"
+        end
     end
   end
 
@@ -650,7 +668,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             />
           </svg>
         </a>
-
+        
     <!-- Header -->
         <div class="text-center mb-8">
           <h1 class="text-4xl font-bold text-white mb-2">
@@ -693,7 +711,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </a>
           </p>
         </div>
-
+        
     <!-- Interactive tip -->
         <div class="mb-6 px-4 py-3 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center gap-3">
           <span class="text-purple-400 text-lg" title="Tip">ⓘ</span>
@@ -703,7 +721,9 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               Workflow Graph
             </a>
             nodes,
-            <a href="#flow-dsl" class="text-orange-400 hover:underline underline-offset-2">Flow DSL</a>
+            <a href="#flow-dsl" class="text-orange-400 hover:underline underline-offset-2">
+              Flow DSL
+            </a>
             steps, or
             <a href="#event-log" class="text-cyan-400 hover:underline underline-offset-2">
               Event Log
@@ -715,7 +735,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             >Step Output</a>.
           </p>
         </div>
-
+        
     <!-- Input -->
         <div class="backdrop-blur-xl bg-white/5 rounded-2xl p-6 mb-6 border border-white/10">
           <form phx-submit="start_flow" class="flex gap-4">
@@ -771,7 +791,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <p class="text-red-300 text-sm">{@error}</p>
           </div>
         </div>
-
+        
     <!-- Main Grid - Side by side on md+ screens, stacked on mobile -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <!-- DAG -->
@@ -809,7 +829,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                   <polygon points="0 0, 6 2, 0 4" fill="#10B981" />
                 </marker>
               </defs>
-
+              
     <!-- Edges -->
               <%= for {from, to} <- @edges do %>
                 <% {x1, y1} = get_step_coords(from) %>
@@ -841,7 +861,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                   }
                 />
               <% end %>
-
+              
     <!-- Nodes -->
               <%= for step <- @steps_config do %>
                 <% status = Map.get(@steps, step.slug, :pending) %>
@@ -938,7 +958,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               <% end %>
             </svg>
           </div>
-
+          
     <!-- Event Log -->
           <div
             id="event-log"
@@ -981,7 +1001,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </div>
           </div>
         </div>
-
+        
     <!-- Flow DSL -->
         <div
           id="flow-dsl"
@@ -1015,7 +1035,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <div class="mt-4 bg-slate-900/80 rounded-xl p-4 max-h-[24rem] overflow-y-auto terminal-scroll">
               <div class="flex items-center justify-between mb-2">
                 <span class="text-xs text-gray-400 font-mono">
-                  priv/repo/migrations/20260118130454_compile_article_flow.exs
+                  {@migration_path}
                 </span>
                 <button
                   phx-click="toggle_migration"
@@ -1030,7 +1050,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </div>
           <% end %>
         </div>
-
+        
     <!-- Output Panel -->
         <div
           id="step-output"
@@ -1066,7 +1086,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <% end %>
           </div>
         </div>
-
+        
     <!-- Footer -->
         <footer class="mt-8 text-center text-purple-300/40 text-xs">
           Powered by <a
