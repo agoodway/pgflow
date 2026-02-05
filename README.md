@@ -2,6 +2,8 @@
 
 A native Elixir implementation of [pgflow](https://pgflow.dev) — a PostgreSQL-based workflow engine built on [pgmq](https://github.com/pgmq/pgmq). PostgreSQL and pgmq do the heavy lifting - queuing, visibility timeouts, and delivery guarantees live in the database. Elixir workers are thin polling clients. This implementation attempts to be compatible with the existing TypeScript/Deno [pgflow](https://github.com/pgflow-dev/pgflow) project, sharing the same database schema and SQL functions.
 
+![pgflow](pgflow.png)
+
 ## Why PgFlow?
 
 - **No extra infrastructure** - Runs entirely in PostgreSQL using pgmq. No Redis, no external queue service, no Oban.
