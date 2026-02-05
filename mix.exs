@@ -44,6 +44,11 @@ defmodule PgFlow.MixProject do
       {:telemetry, "~> 1.2"},
       {:nimble_options, "~> 1.0"},
 
+      # Dashboard (optional)
+      {:phoenix_live_view, "~> 1.0", optional: true},
+      {:phoenix, "~> 1.7", optional: true},
+      {:pg_evolver, github: "agoodway/pg_evolver"},
+
       # Dev/Test
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

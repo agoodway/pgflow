@@ -1,6 +1,8 @@
 defmodule PgflowDemoWeb.Router do
   use PgflowDemoWeb, :router
 
+  import PgFlowDashboard.Router
+
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
@@ -12,6 +14,16 @@ defmodule PgflowDemoWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
+  end
+
+  # PgFlow Dashboard
+  scope "/" do
+    pipe_through :browser
+
+    pgflow_dashboard("/pgflow",
+      repo: PgflowDemo.Repo,
+      pubsub: PgflowDemo.PubSub
+    )
   end
 
   scope "/", PgflowDemoWeb do

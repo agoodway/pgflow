@@ -17,6 +17,8 @@ defmodule PgflowDemo.Application do
       {Phoenix.PubSub, name: PgflowDemo.PubSub},
       # PgFlow Supervisor - processes flows with our repo
       {PgFlow.Supervisor, repo: PgflowDemo.Repo, flows: [PgflowDemo.Flows.ArticleFlow]},
+      # PgFlowDashboard Supervisor - manages dashboard processes (MetricsCache)
+      PgFlowDashboard,
       # Start to serve requests, typically the last entry
       PgflowDemoWeb.Endpoint
     ]

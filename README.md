@@ -24,20 +24,20 @@ A native Elixir implementation of [pgflow](https://pgflow.dev) — a PostgreSQL-
 
 ### Elixir Workflow Engines
 
-| Aspect | [PgFlow](https://github.com/pgflow-dev/pgflow) | [Oban](https://github.com/oban-bg/oban) | [Oban Pro Workflow](https://hexdocs.pm/oban) | [Broadway](https://github.com/dashbitco/broadway) | [Gust](https://github.com/marciok/gust) | [Handoff](https://github.com/polvalente/handoff) | [Reactor](https://github.com/ash-project/reactor) | [FlowStone](https://github.com/nshkrdotcom/flowstone) | [Durable](https://github.com/wavezync/durable) |
-|---|---|---|---|---|---|---|---|---|---|
-| **License** | Open source | Open source | Paid | Open source | Open source | Open source | Open source | Open source | Open source |
-| **Focus** | Cross-language workflow DAGs | Background jobs with cron | DAG workflows for Oban users | Kafka/SQS data pipelines | Airflow-like DAGs with UI | Distributed cluster DAGs | Saga orchestration with rollback | Asset-first ETL pipelines | Temporal-style event workflows |
-| **Coordination** | Database (pgmq) | Database (Oban) | Database (Oban) | In-memory (GenStage) | Application (Elixir) | Erlang cluster | In-process | Database (Oban) | Database (PostgreSQL) |
-| **Dependencies** | First-class `depends_on` | Manual enqueue | First-class `deps` | Pipeline stages | `downstream` option | Explicit `args` refs | Spark DSL `argument` | First-class `depends_on` | Pipeline (sequential) |
-| **Fan-out/Fan-in** | Built-in map steps | Manual | Built-in patterns | Partitioned batches | Manual task chains | Manual DAG build | Manual composition | Partition-based | ForEach with concurrency |
-| **State Storage** | PostgreSQL (durable) | PostgreSQL (durable) | PostgreSQL (durable) | In-memory | PostgreSQL | In-memory | In-memory | PG/S3/Parquet | PostgreSQL (durable) |
-| **Cross-platform** | Yes (TS + Elixir) | Elixir only | Elixir only | Elixir only | Elixir only | Elixir only | Elixir only | Elixir only | Elixir only |
-| **Compensation** | Retry with backoff | Retry with backoff | Retry + dep options | N/A | Retry | Max retries | Full saga undo | Retry (via Oban) | Saga rollback + retry |
-| **Scheduling** | External (pg_cron) | Built-in Oban.Cron | Built-in Oban.Cron | N/A | Built-in cron | N/A | N/A | Via Oban | Built-in cron |
-| **Web UI** | Optional LiveView | Oban.Web (paid) | Oban.Web (paid) | N/A | Included | N/A | N/A | LiveView dashboard | N/A |
-| **Resource-aware** | No | No | No | Demand-based | No | Yes (cost maps) | No | No | No |
-| **Dynamic steps** | No | N/A | Yes (grafting) | N/A | No | No | Yes (runtime) | No | Yes (branching) |
+| Aspect | [PgFlow](https://github.com/pgflow-dev/pgflow) | [Oban](https://github.com/oban-bg/oban) | [Oban Pro Workflow](https://hexdocs.pm/oban) | [Broadway](https://github.com/dashbitco/broadway) | [Gust](https://github.com/marciok/gust) | [Handoff](https://github.com/polvalente/handoff) | [Reactor](https://github.com/ash-project/reactor) | [FlowStone](https://github.com/nshkrdotcom/flowstone) | [Durable](https://github.com/wavezync/durable) | [Journey](https://github.com/shipworthy/journey) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **License** | Open source | Open source | Paid | Open source | Open source | Open source | Open source | Open source | Open source | Open source |
+| **Focus** | Cross-language workflow DAGs | Background jobs with cron | DAG workflows for Oban users | Kafka/SQS data pipelines | Airflow-like DAGs with UI | Distributed cluster DAGs | Saga orchestration with rollback | Asset-first ETL pipelines | Temporal-style event workflows | Durable graph workflows with introspection |
+| **Coordination** | Database (pgmq) | Database (Oban) | Database (Oban) | In-memory (GenStage) | Application (Elixir) | Erlang cluster | In-process | Database (Oban) | Database (PostgreSQL) | Database (PostgreSQL) |
+| **Dependencies** | First-class `depends_on` | Manual enqueue | First-class `deps` | Pipeline stages | `downstream` option | Explicit `args` refs | Spark DSL `argument` | First-class `depends_on` | Pipeline (sequential) | Explicit list in `compute` |
+| **Fan-out/Fan-in** | Built-in map steps | Manual | Built-in patterns | Partitioned batches | Manual task chains | Manual DAG build | Manual composition | Partition-based | ForEach with concurrency | Manual composition |
+| **State Storage** | PostgreSQL (durable) | PostgreSQL (durable) | PostgreSQL (durable) | In-memory | PostgreSQL | In-memory | In-memory | PG/S3/Parquet | PostgreSQL (durable) | PostgreSQL (durable) |
+| **Cross-platform** | Yes (TS + Elixir) | Elixir only | Elixir only | Elixir only | Elixir only | Elixir only | Elixir only | Elixir only | Elixir only | Elixir only |
+| **Compensation** | Retry with backoff | Retry with backoff | Retry + dep options | N/A | Retry | Max retries | Full saga undo | Retry (via Oban) | Saga rollback + retry | Retry with recovery |
+| **Scheduling** | External (pg_cron) | Built-in Oban.Cron | Built-in Oban.Cron | N/A | Built-in cron | N/A | N/A | Via Oban | Built-in cron | Built-in tick nodes |
+| **Web UI** | Optional LiveView | Oban.Web (paid) | Oban.Web (paid) | N/A | Included | N/A | N/A | LiveView dashboard | N/A | CLI introspection + analytics |
+| **Resource-aware** | No | No | No | Demand-based | No | Yes (cost maps) | No | No | No | No |
+| **Dynamic steps** | No | N/A | Yes (grafting) | N/A | No | No | Yes (runtime) | No | Yes (branching) | Yes (conditional logic) |
 
 ### Other Workflow Engines
 
@@ -94,6 +94,22 @@ docker compose up -d
 ```
 
 This uses a Postgres 17 image (`jumski/atlas-postgres-pgflow`) with pgmq, pg_cron, and pgflow schema pre-loaded. Database available at `localhost:54322` (user: `postgres`, password: `postgres`, database: `pgflow_test`).
+
+**Resetting the database:** The pgflow schema is loaded by the Docker init script on first container creation only. If you drop the database (e.g. `mix ecto.reset`), you must re-apply it:
+
+```bash
+# Option 1: Re-apply the pgflow schema SQL, then migrate
+psql -h localhost -p 54322 -U postgres -d pgflow_test -f test/support/db/pgflow.sql
+mix ecto.migrate
+
+# Option 2: Destroy the Docker volume and start fresh
+docker compose down -v && docker compose up -d
+```
+
+> **Note:** `pg_cron` holds a persistent connection to the database, which blocks `DROP DATABASE`. Either terminate it first or use the Docker volume approach:
+> ```bash
+> psql -h localhost -p 54322 -U postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'pgflow_test' AND pid <> pg_backend_pid();"
+> ```
 
 **For production**, copy migrations to your project:
 
@@ -203,18 +219,31 @@ run.step_states  # [%{step_slug: "validate", status: :completed, output: %{...}}
 
 See [`demo/README.md`](demo/README.md) for a Phoenix LiveView application demonstrating PgFlow with real-time flow visualization.
 
+### Optional Dashboard
+
+PgFlow includes an optional Phoenix LiveView dashboard for monitoring workflow execution in real-time:
+
+- View all workflow runs with status, progress, and duration
+- Visualize step dependencies with interactive SVG graphs
+- Monitor worker health and task throughput
+- Track 24-hour flow statistics and success rates
+
+![PgFlow Dashboard](docs/images/dashboard-overview.png)
+
+See [`DASHBOARD.md`](DASHBOARD.md) for installation instructions.
+
 ## Flow DSL Reference
 
 ### Flow Options
 
 The `@flow` module attribute accepts:
 
-| Option         | Type    | Default  | Description                                   |
-|----------------|---------|----------|-----------------------------------------------|
-| `:slug`        | atom    | required | Unique identifier for the flow                |
-| `:max_attempts`| integer | 1        | Maximum retry attempts for failed steps       |
-| `:base_delay`  | integer | 1        | Base delay in seconds for exponential backoff |
-| `:timeout`     | integer | 30       | Step execution timeout in seconds             |
+| Option          | Type    | Default  | Description                                   |
+|-----------------|---------|----------|-----------------------------------------------|
+| `:slug`         | atom    | required | Unique identifier for the flow                |
+| `:max_attempts` | integer | 1        | Maximum retry attempts for failed steps       |
+| `:base_delay`   | integer | 1        | Base delay in seconds for exponential backoff |
+| `:timeout`      | integer | 30       | Step execution timeout in seconds             |
 
 ### Step Macro
 
@@ -229,13 +258,13 @@ end
 
 **Step Options:**
 
-| Option         | Type          | Description                              |
-|----------------|---------------|------------------------------------------|
-| `:depends_on`  | list of atoms | Steps this step depends on               |
-| `:max_attempts`| integer       | Override flow-level max_attempts         |
-| `:base_delay`  | integer       | Override flow-level base_delay           |
-| `:timeout`     | integer       | Override flow-level timeout              |
-| `:start_delay` | integer       | Seconds to delay before starting (def 0) |
+| Option          | Type          | Description                              |
+|-----------------|---------------|------------------------------------------|
+| `:depends_on`   | list of atoms | Steps this step depends on               |
+| `:max_attempts` | integer       | Override flow-level max_attempts         |
+| `:base_delay`   | integer       | Override flow-level base_delay           |
+| `:timeout`      | integer       | Override flow-level timeout              |
+| `:start_delay`  | integer       | Seconds to delay before starting (def 0) |
 
 **Handler Input:**
 
@@ -321,31 +350,31 @@ config :my_app, MyApp.PgFlow,
 
 ## Mix Tasks
 
-| Task | Description |
-|------|-------------|
+| Task                             | Description                                    |
+|----------------------------------|------------------------------------------------|
 | `mix pgflow.gen.flow MyApp.Flow` | Generate migration to compile flow to database |
-| `mix pgflow.copy_migrations` | Copy pgflow schema migrations to your project |
-| `mix pgflow.sync_test_sql` | Download latest pgflow SQL for testing |
-| `mix pgflow.test.setup` | Set up test database |
-| `mix pgflow.test.reset` | Reset test database (teardown + setup) |
-| `mix pgflow.test.teardown` | Tear down test database |
+| `mix pgflow.copy_migrations`     | Copy pgflow schema migrations to your project  |
+| `mix pgflow.sync_test_sql`       | Download latest pgflow SQL for testing         |
+| `mix pgflow.test.setup`          | Set up test database                           |
+| `mix pgflow.test.reset`          | Reset test database (teardown + setup)         |
+| `mix pgflow.test.teardown`       | Tear down test database                        |
 
 ## Telemetry Events
 
 PgFlow emits telemetry events for observability:
 
-| Event                            | Measurements | Metadata                                       |
-|----------------------------------|--------------|------------------------------------------------|
-| `[:pgflow, :worker, :start]`     | `system_time`| `worker_id`, `flow_slug`                       |
-| `[:pgflow, :worker, :stop]`      | `duration`   | `worker_id`, `flow_slug`                       |
-| `[:pgflow, :poll, :start]`       | `system_time`| `worker_id`, `flow_slug`                       |
-| `[:pgflow, :poll, :stop]`        | `duration`, `task_count` | `worker_id`, `flow_slug`           |
-| `[:pgflow, :task, :start]`       | `system_time`| `flow_slug`, `run_id`, `step_slug`, `task_index` |
-| `[:pgflow, :task, :stop]`        | `duration`   | `flow_slug`, `run_id`, `step_slug`, `task_index` |
-| `[:pgflow, :task, :exception]`   | `duration`   | `flow_slug`, `run_id`, `step_slug`, `task_index`, `error` |
-| `[:pgflow, :run, :started]`      | `system_time`| `flow_slug`, `run_id`                          |
-| `[:pgflow, :run, :completed]`    | `duration`   | `flow_slug`, `run_id`                          |
-| `[:pgflow, :run, :failed]`       | `duration`   | `flow_slug`, `run_id`, `error`                 |
+| Event                          | Measurements           | Metadata                                              |
+|--------------------------------|------------------------|-------------------------------------------------------|
+| `[:pgflow, :worker, :start]`   | `system_time`          | `worker_id`, `flow_slug`                              |
+| `[:pgflow, :worker, :stop]`    | `duration`             | `worker_id`, `flow_slug`                              |
+| `[:pgflow, :poll, :start]`     | `system_time`          | `worker_id`, `flow_slug`                              |
+| `[:pgflow, :poll, :stop]`      | `duration`, `task_count` | `worker_id`, `flow_slug`                            |
+| `[:pgflow, :task, :start]`     | `system_time`          | `flow_slug`, `run_id`, `step_slug`, `task_index`      |
+| `[:pgflow, :task, :stop]`      | `duration`             | `flow_slug`, `run_id`, `step_slug`, `task_index`      |
+| `[:pgflow, :task, :exception]` | `duration`             | `flow_slug`, `run_id`, `step_slug`, `task_index`, `error` |
+| `[:pgflow, :run, :started]`    | `system_time`          | `flow_slug`, `run_id`                                 |
+| `[:pgflow, :run, :completed]`  | `duration`             | `flow_slug`, `run_id`                                 |
+| `[:pgflow, :run, :failed]`     | `duration`             | `flow_slug`, `run_id`, `error`                        |
 
 ### Example Handler
 
