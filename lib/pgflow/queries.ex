@@ -491,4 +491,38 @@ defmodule PgFlow.Queries do
       {:error, error} -> {:error, error}
     end
   end
+
+  @doc """
+  Retrieves the output for a specific step in a flow run.
+
+  ## Parameters
+
+    * `repo` - The Ecto repository
+    * `run_id` - The flow run UUID (string)
+    * `step_slug` - The step identifier slug
+
+  ## Returns
+
+    * `{:ok, output}` - The step output as a decoded map/list
+    * `{:ok, nil}` - Step has no output yet
+    * `{:error, reason}` - Error details if the operation fails
+
+  ## Examples
+
+      iex> get_step_output(MyApp.Repo, "550e8400-...", "validate")
+      {:ok, %{"valid" => true}}
+  """
+  @spec get_step_output(Ecto.Repo.t(), String.t(), String.t()) ::
+          {:ok, map() | nil} | {:error, term()}
+  def get_step_output(repo, run_id, step_slug) do
+    sql = "SELECT output FROM pgflow.step_states WHERE run_id = $1 AND step_slug = $2"
+
+    {:ok, run_id_bin} = Ecto.UUID.dump(run_id)
+
+    case SQL.query(repo, sql, [run_id_bin, step_slug]) do
+      {:ok, %{rows: [[output]]}} -> {:ok, output}
+      {:ok, %{rows: []}} -> {:ok, nil}
+      {:error, error} -> {:error, error}
+    end
+  end
 end

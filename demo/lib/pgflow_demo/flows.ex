@@ -12,20 +12,9 @@ defmodule PgflowDemo.Flows do
   """
   @spec get_step_output(String.t(), String.t()) :: map() | nil
   def get_step_output(run_id, step_slug) do
-    case Ecto.UUID.dump(run_id) do
-      {:ok, run_id_bin} ->
-        sql = """
-        SELECT output FROM pgflow.step_states
-        WHERE run_id = $1 AND step_slug = $2
-        """
-
-        case Ecto.Adapters.SQL.query(Repo, sql, [run_id_bin, step_slug]) do
-          {:ok, %{rows: [[output]]}} when not is_nil(output) -> output
-          _ -> nil
-        end
-
-      :error ->
-        nil
+    case PgFlow.Queries.get_step_output(Repo, run_id, step_slug) do
+      {:ok, output} -> output
+      {:error, _} -> nil
     end
   end
 end

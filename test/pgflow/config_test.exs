@@ -123,6 +123,21 @@ defmodule PgFlow.ConfigTest do
       assert config[:poll_interval_ms] == 100
       assert config[:attach_default_logger] == false
     end
+
+    test "applies default 15_000 for :recovery_interval" do
+      config = Config.validate!(repo: ValidTestRepo)
+      assert config[:recovery_interval] == 15_000
+    end
+
+    test "applies default 60 for :stale_threshold" do
+      config = Config.validate!(repo: ValidTestRepo)
+      assert config[:stale_threshold] == 60
+    end
+
+    test "applies default nil for :worker_name" do
+      config = Config.validate!(repo: ValidTestRepo)
+      assert config[:worker_name] == nil
+    end
   end
 
   describe "validate!/1 raises on missing :repo" do
@@ -203,6 +218,30 @@ defmodule PgFlow.ConfigTest do
     test "raises when :visibility_timeout is not a positive integer" do
       assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
         Config.validate!(repo: ValidTestRepo, visibility_timeout: 0)
+      end
+    end
+
+    test "raises when :recovery_interval is 0" do
+      assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
+        Config.validate!(repo: ValidTestRepo, recovery_interval: 0)
+      end
+    end
+
+    test "raises when :recovery_interval is negative" do
+      assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
+        Config.validate!(repo: ValidTestRepo, recovery_interval: -1)
+      end
+    end
+
+    test "raises when :stale_threshold is 0" do
+      assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
+        Config.validate!(repo: ValidTestRepo, stale_threshold: 0)
+      end
+    end
+
+    test "raises when :stale_threshold is negative" do
+      assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
+        Config.validate!(repo: ValidTestRepo, stale_threshold: -1)
       end
     end
 
@@ -321,6 +360,29 @@ defmodule PgFlow.ConfigTest do
       # Default is false since PgFlow.Logger handles structured logging
       assert schema[:attach_default_logger][:default] == false
       assert schema[:attach_default_logger][:type] == :boolean
+    end
+
+    test "schema includes :recovery_interval option with default" do
+      schema = Config.schema()
+
+      assert Keyword.has_key?(schema, :recovery_interval)
+      assert schema[:recovery_interval][:default] == 15_000
+      assert schema[:recovery_interval][:type] == :pos_integer
+    end
+
+    test "schema includes :stale_threshold option with default" do
+      schema = Config.schema()
+
+      assert Keyword.has_key?(schema, :stale_threshold)
+      assert schema[:stale_threshold][:default] == 60
+      assert schema[:stale_threshold][:type] == :pos_integer
+    end
+
+    test "schema includes :worker_name option with default" do
+      schema = Config.schema()
+
+      assert Keyword.has_key?(schema, :worker_name)
+      assert schema[:worker_name][:default] == nil
     end
   end
 
