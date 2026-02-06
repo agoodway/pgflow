@@ -7,7 +7,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
 
   use Phoenix.LiveView
 
-  alias PgFlowDashboard.Components.{Layouts, ProgressBar, StatusBadge}
+  alias PgFlowDashboard.Components.{Layouts, ProgressBar, StatusBadge, TypeBadge}
   alias PgFlowDashboard.Live.LiveHelpers
   alias PgFlowDashboard.Queries
 
@@ -23,6 +23,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
       |> assign(:base_path, session["base_path"] || "/pgflow")
       |> assign(:flow_filter, nil)
       |> assign(:status_filter, nil)
+      |> assign(:type_filter, nil)
       |> assign(:time_range, :last_24h)
       |> assign(:cursor, nil)
       |> assign(:has_more, false)
@@ -30,7 +31,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
       |> assign(:runs_count, 0)
       |> stream_configure(:runs, dom_id: &"run-#{&1.run_id}")
       |> stream(:runs, [])
-      |> load_flows()
+      |> load_flows_and_jobs()
       |> load_runs()
       |> LiveHelpers.subscribe_to_updates()
       |> LiveHelpers.schedule_refresh()
@@ -44,6 +45,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
       socket
       |> assign(:flow_filter, params["flow"])
       |> assign(:status_filter, params["status"])
+      |> assign(:type_filter, params["type"])
       |> assign(:time_range, parse_time_range(params["time_range"]))
       |> assign(:cursor, nil)
       |> load_runs(reset: true)
@@ -54,12 +56,13 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
   @impl true
   def handle_event(
         "filter",
-        %{"flow" => flow, "status" => status, "time_range" => time_range},
+        %{"flow" => flow, "status" => status, "type" => type, "time_range" => time_range},
         socket
       ) do
     params = %{}
     params = if flow != "", do: Map.put(params, "flow", flow), else: params
     params = if status != "", do: Map.put(params, "status", status), else: params
+    params = if type != "", do: Map.put(params, "type", type), else: params
 
     params =
       if time_range != "last_24h", do: Map.put(params, "time_range", time_range), else: params
@@ -73,6 +76,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
       Queries.list_runs(socket.assigns.repo,
         flow_slug: socket.assigns.flow_filter,
         status: socket.assigns.status_filter,
+        flow_type: socket.assigns.type_filter,
         time_range: socket.assigns.time_range,
         cursor: socket.assigns.cursor,
         limit: @page_size + 1
@@ -113,9 +117,13 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
   def handle_info({:run_failed, _}, socket), do: {:noreply, refresh_runs(socket)}
   def handle_info(_, socket), do: {:noreply, socket}
 
-  defp load_flows(socket) do
+  defp load_flows_and_jobs(socket) do
     flows = Queries.list_flows(socket.assigns.repo)
-    assign(socket, :flows, flows)
+    jobs = Queries.list_jobs(socket.assigns.repo)
+
+    socket
+    |> assign(:flows, flows)
+    |> assign(:jobs, jobs)
   end
 
   defp load_runs(socket, opts \\ []) do
@@ -125,6 +133,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
       Queries.list_runs(socket.assigns.repo,
         flow_slug: socket.assigns.flow_filter,
         status: socket.assigns.status_filter,
+        flow_type: socket.assigns.type_filter,
         time_range: socket.assigns.time_range,
         limit: @page_size + 1
       )
@@ -142,6 +151,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
       Queries.count_runs(socket.assigns.repo,
         flow_slug: socket.assigns.flow_filter,
         status: socket.assigns.status_filter,
+        flow_type: socket.assigns.type_filter,
         time_range: socket.assigns.time_range
       )
 
@@ -160,6 +170,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
       Queries.list_runs(socket.assigns.repo,
         flow_slug: socket.assigns.flow_filter,
         status: socket.assigns.status_filter,
+        flow_type: socket.assigns.type_filter,
         time_range: socket.assigns.time_range,
         limit: current_count + 1
       )
@@ -195,22 +206,53 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
       <div class="mb-6 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
         <form phx-change="filter" class="flex flex-wrap gap-4">
           <div>
-            <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Flow</label>
+            <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
+              Type
+            </label>
+            <select
+              name="type"
+              class="block w-28 rounded-md border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
+            >
+              <option value="">All</option>
+              <option value="flow" selected={@type_filter == "flow"}>Flows</option>
+              <option value="job" selected={@type_filter == "job"}>Jobs</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
+              Flow / Job
+            </label>
             <select
               name="flow"
               class="block w-40 rounded-md border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
             >
-              <option value="">All flows</option>
-              <%= for flow <- @flows do %>
-                <option value={flow.flow_slug} selected={@flow_filter == flow.flow_slug}>
-                  {flow.flow_slug}
-                </option>
+              <option value="">All</option>
+              <%= if @flows != [] do %>
+                <optgroup label="Flows">
+                  <%= for flow <- @flows do %>
+                    <option value={flow.flow_slug} selected={@flow_filter == flow.flow_slug}>
+                      {flow.flow_slug}
+                    </option>
+                  <% end %>
+                </optgroup>
+              <% end %>
+              <%= if @jobs != [] do %>
+                <optgroup label="Jobs">
+                  <%= for job <- @jobs do %>
+                    <option value={job.flow_slug} selected={@flow_filter == job.flow_slug}>
+                      {job.flow_slug}
+                    </option>
+                  <% end %>
+                </optgroup>
               <% end %>
             </select>
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Status</label>
+            <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
+              Status
+            </label>
             <select
               name="status"
               class="block w-32 rounded-md border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
@@ -223,7 +265,9 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
           </div>
 
           <div>
-            <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Time Range</label>
+            <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
+              Time Range
+            </label>
             <select
               name="time_range"
               class="block w-32 rounded-md border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
@@ -248,7 +292,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
           <thead class="bg-slate-50 dark:bg-slate-800/50">
             <tr>
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Run ID</th>
-              <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Flow</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Flow / Job</th>
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Status</th>
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Progress</th>
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Duration</th>
@@ -261,7 +305,11 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
                 No runs found
               </td>
             </tr>
-            <tr :for={{dom_id, run} <- @streams.runs} id={dom_id} class="hover:bg-slate-50 dark:hover:bg-slate-700/50">
+            <tr
+              :for={{dom_id, run} <- @streams.runs}
+              id={dom_id}
+              class="hover:bg-slate-50 dark:hover:bg-slate-700/50"
+            >
               <td class="px-4 py-3">
                 <.link
                   navigate={"#{@base_path}/runs/#{run.run_id}"}
@@ -270,18 +318,31 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
                   {LiveHelpers.short_id(run.run_id)}
                 </.link>
               </td>
-              <td class="px-4 py-3 text-sm text-slate-700 dark:text-slate-300">{run.flow_slug}</td>
               <td class="px-4 py-3">
-                <StatusBadge.status_badge status={run.status} size={:sm} pulse={run.status == "started"} />
+                <div class="flex items-center gap-2">
+                  <span class="text-sm text-slate-700 dark:text-slate-300">{run.flow_slug}</span>
+                  <TypeBadge.type_badge type={Map.get(run, :flow_type, "flow")} />
+                </div>
+              </td>
+              <td class="px-4 py-3">
+                <StatusBadge.status_badge
+                  status={run.status}
+                  size={:sm}
+                  pulse={run.status == "started"}
+                />
               </td>
               <td class="px-4 py-3 w-32">
-                <ProgressBar.progress_bar
-                  progress={run.progress_percent}
-                  completed={run.completed_steps}
-                  total={run.total_steps}
-                  failed={run.failed_steps}
-                  size={:sm}
-                />
+                <%= if Map.get(run, :flow_type) == "job" do %>
+                  <span class="text-sm text-slate-400 dark:text-slate-500">—</span>
+                <% else %>
+                  <ProgressBar.progress_bar
+                    progress={run.progress_percent}
+                    completed={run.completed_steps}
+                    total={run.total_steps}
+                    failed={run.failed_steps}
+                    size={:sm}
+                  />
+                <% end %>
               </td>
               <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
                 {LiveHelpers.format_duration(run.duration_ms)}

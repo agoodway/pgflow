@@ -40,10 +40,12 @@ LEFT JOIN LATERAL (
 
 -- View: workers_with_load
 -- Shows workers with health status and load metrics
+-- Includes flow_type to distinguish between flow workers and job workers
 CREATE OR REPLACE VIEW $SCHEMA$.workers_with_load AS
 SELECT
   w.worker_id,
   w.queue_name AS flow_slug,
+  COALESCE(f.flow_type, 'flow') AS flow_type,
   w.last_heartbeat_at,
   CASE
     WHEN w.last_heartbeat_at > NOW() - INTERVAL '30 seconds' THEN 'healthy'
@@ -53,6 +55,7 @@ SELECT
   COALESCE(tasks.active_count, 0) AS active_tasks,
   COALESCE(tasks.completed_count, 0) AS completed_tasks_24h
 FROM pgflow.workers w
+LEFT JOIN pgflow.flows f ON f.flow_slug = w.queue_name
 LEFT JOIN LATERAL (
   SELECT
     COUNT(*) FILTER (WHERE st.status = 'started') AS active_count,
@@ -70,9 +73,11 @@ LEFT JOIN LATERAL (
 
 -- View: flow_stats
 -- Shows flow-level statistics for the last 24 hours
+-- Includes flow_type to distinguish between DAG workflows ('flow') and background jobs ('job')
 CREATE OR REPLACE VIEW $SCHEMA$.flow_stats AS
 SELECT
   f.flow_slug AS flow_slug,
+  COALESCE(f.flow_type, 'flow') AS flow_type,
   f.opt_max_attempts,
   f.opt_base_delay,
   f.opt_timeout,
@@ -198,11 +203,13 @@ CREATE OR REPLACE FUNCTION $SCHEMA$.list_runs(
   p_flow_slug text DEFAULT NULL,
   p_status text DEFAULT NULL,
   p_limit integer DEFAULT 50,
-  p_cursor_run_id uuid DEFAULT NULL
+  p_cursor_run_id uuid DEFAULT NULL,
+  p_flow_type text DEFAULT NULL
 )
 RETURNS TABLE (
   run_id uuid,
   flow_slug text,
+  flow_type text,
   status text,
   input jsonb,
   output jsonb,
@@ -218,13 +225,15 @@ LANGUAGE sql
 STABLE
 AS $$
   SELECT
-    r.run_id, r.flow_slug, r.status, r.input, r.output,
+    r.run_id, r.flow_slug, COALESCE(f.flow_type, 'flow') AS flow_type, r.status, r.input, r.output,
     r.started_at, r.completed_at, r.duration_ms,
     r.total_steps, r.completed_steps, r.failed_steps, r.progress_percent
   FROM $SCHEMA$.runs_with_progress r
+  JOIN pgflow.flows f ON r.flow_slug = f.flow_slug
   WHERE r.started_at > p_time_range_start
     AND (p_flow_slug IS NULL OR r.flow_slug = p_flow_slug)
     AND (p_status IS NULL OR r.status = p_status)
+    AND (p_flow_type IS NULL OR COALESCE(f.flow_type, 'flow') = p_flow_type)
     AND (p_cursor_run_id IS NULL OR (r.started_at, r.run_id) < (
       SELECT sub.started_at, sub.run_id FROM pgflow.runs sub WHERE sub.run_id = p_cursor_run_id
     ))
@@ -239,7 +248,8 @@ $$;
 CREATE OR REPLACE FUNCTION $SCHEMA$.count_runs(
   p_time_range_start timestamptz DEFAULT (NOW() - INTERVAL '24 hours'),
   p_flow_slug text DEFAULT NULL,
-  p_status text DEFAULT NULL
+  p_status text DEFAULT NULL,
+  p_flow_type text DEFAULT NULL
 )
 RETURNS bigint
 LANGUAGE sql
@@ -247,9 +257,11 @@ STABLE
 AS $$
   SELECT COUNT(*)
   FROM $SCHEMA$.runs_with_progress r
+  JOIN pgflow.flows f ON r.flow_slug = f.flow_slug
   WHERE r.started_at > p_time_range_start
     AND (p_flow_slug IS NULL OR r.flow_slug = p_flow_slug)
     AND (p_status IS NULL OR r.status = p_status)
+    AND (p_flow_type IS NULL OR COALESCE(f.flow_type, 'flow') = p_flow_type)
 $$;
 
 --SPLIT--
@@ -260,6 +272,7 @@ CREATE OR REPLACE FUNCTION $SCHEMA$.get_run(p_run_id uuid)
 RETURNS TABLE (
   run_id uuid,
   flow_slug text,
+  flow_type text,
   status text,
   input jsonb,
   output jsonb,
@@ -275,10 +288,11 @@ LANGUAGE sql
 STABLE
 AS $$
   SELECT
-    r.run_id, r.flow_slug, r.status, r.input, r.output,
+    r.run_id, r.flow_slug, COALESCE(f.flow_type, 'flow') AS flow_type, r.status, r.input, r.output,
     r.started_at, r.completed_at, r.duration_ms,
     r.total_steps, r.completed_steps, r.failed_steps, r.progress_percent
   FROM $SCHEMA$.runs_with_progress r
+  JOIN pgflow.flows f ON r.flow_slug = f.flow_slug
   WHERE r.run_id = p_run_id
 $$;
 
@@ -420,6 +434,7 @@ CREATE OR REPLACE FUNCTION $SCHEMA$.list_workers(
 RETURNS TABLE (
   worker_id uuid,
   flow_slug text,
+  flow_type text,
   last_heartbeat_at timestamptz,
   health_status text,
   active_tasks bigint,
@@ -429,7 +444,7 @@ LANGUAGE sql
 STABLE
 AS $$
   SELECT
-    w.worker_id, w.flow_slug, w.last_heartbeat_at,
+    w.worker_id, w.flow_slug, w.flow_type, w.last_heartbeat_at,
     w.health_status, w.active_tasks, w.completed_tasks_24h
   FROM $SCHEMA$.workers_with_load w
   WHERE (p_flow_slug IS NULL OR w.flow_slug = p_flow_slug)
@@ -450,6 +465,7 @@ CREATE OR REPLACE FUNCTION $SCHEMA$.get_worker(p_worker_id uuid)
 RETURNS TABLE (
   worker_id uuid,
   flow_slug text,
+  flow_type text,
   last_heartbeat_at timestamptz,
   health_status text,
   active_tasks bigint,
@@ -459,7 +475,7 @@ LANGUAGE sql
 STABLE
 AS $$
   SELECT
-    w.worker_id, w.flow_slug, w.last_heartbeat_at,
+    w.worker_id, w.flow_slug, w.flow_type, w.last_heartbeat_at,
     w.health_status, w.active_tasks, w.completed_tasks_24h
   FROM $SCHEMA$.workers_with_load w
   WHERE w.worker_id = p_worker_id
@@ -540,7 +556,7 @@ $$;
 --SPLIT--
 
 -- Function: list_flows()
--- Lists all flows with statistics
+-- Lists all flows with statistics (excludes jobs)
 CREATE OR REPLACE FUNCTION $SCHEMA$.list_flows()
 RETURNS TABLE (
   flow_slug text,
@@ -563,6 +579,36 @@ AS $$
     f.total_runs_24h, f.completed_runs_24h, f.failed_runs_24h,
     f.success_rate_24h, f.avg_duration_ms, f.p95_duration_ms, f.step_count
   FROM $SCHEMA$.flow_stats f
+  WHERE f.flow_type = 'flow'
+  ORDER BY f.flow_slug
+$$;
+
+--SPLIT--
+
+-- Function: list_jobs()
+-- Lists all jobs with statistics
+CREATE OR REPLACE FUNCTION $SCHEMA$.list_jobs()
+RETURNS TABLE (
+  flow_slug text,
+  opt_max_attempts integer,
+  opt_base_delay integer,
+  opt_timeout integer,
+  total_runs_24h bigint,
+  completed_runs_24h bigint,
+  failed_runs_24h bigint,
+  success_rate_24h numeric,
+  avg_duration_ms numeric,
+  p95_duration_ms numeric
+)
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT
+    f.flow_slug, f.opt_max_attempts, f.opt_base_delay, f.opt_timeout,
+    f.total_runs_24h, f.completed_runs_24h, f.failed_runs_24h,
+    f.success_rate_24h, f.avg_duration_ms, f.p95_duration_ms
+  FROM $SCHEMA$.flow_stats f
+  WHERE f.flow_type = 'job'
   ORDER BY f.flow_slug
 $$;
 
@@ -593,6 +639,36 @@ AS $$
     f.success_rate_24h, f.avg_duration_ms, f.p95_duration_ms, f.step_count
   FROM $SCHEMA$.flow_stats f
   WHERE f.flow_slug = p_flow_slug
+    AND f.flow_type = 'flow'
+$$;
+
+--SPLIT--
+
+-- Function: get_job()
+-- Gets a single job's statistics
+CREATE OR REPLACE FUNCTION $SCHEMA$.get_job(p_flow_slug text)
+RETURNS TABLE (
+  flow_slug text,
+  opt_max_attempts integer,
+  opt_base_delay integer,
+  opt_timeout integer,
+  total_runs_24h bigint,
+  completed_runs_24h bigint,
+  failed_runs_24h bigint,
+  success_rate_24h numeric,
+  avg_duration_ms numeric,
+  p95_duration_ms numeric
+)
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT
+    f.flow_slug, f.opt_max_attempts, f.opt_base_delay, f.opt_timeout,
+    f.total_runs_24h, f.completed_runs_24h, f.failed_runs_24h,
+    f.success_rate_24h, f.avg_duration_ms, f.p95_duration_ms
+  FROM $SCHEMA$.flow_stats f
+  WHERE f.flow_slug = p_flow_slug
+    AND f.flow_type = 'job'
 $$;
 
 --SPLIT--

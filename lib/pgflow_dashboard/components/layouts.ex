@@ -60,6 +60,12 @@ defmodule PgFlowDashboard.Components.Layouts do
                 Flows
               </.nav_link>
               <.nav_link
+                navigate={"#{@base_path}/jobs"}
+                current={@current_page == :jobs}
+              >
+                Jobs
+              </.nav_link>
+              <.nav_link
                 navigate={"#{@base_path}/runs"}
                 current={@current_page == :runs}
               >
@@ -148,6 +154,7 @@ defmodule PgFlowDashboard.Components.Layouts do
                     <.shortcut_row key="g o" description="Go to Overview" />
                     <.shortcut_row key="g w" description="Go to Workers" />
                     <.shortcut_row key="g f" description="Go to Flows" />
+                    <.shortcut_row key="g j" description="Go to Jobs" />
                     <.shortcut_row key="g r" description="Go to Runs" />
                   </div>
                 </div>

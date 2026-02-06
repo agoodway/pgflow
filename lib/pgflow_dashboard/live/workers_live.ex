@@ -7,7 +7,7 @@ defmodule PgFlowDashboard.Live.WorkersLive do
 
   use Phoenix.LiveView
 
-  alias PgFlowDashboard.Components.{HealthBadge, Layouts}
+  alias PgFlowDashboard.Components.{HealthBadge, Layouts, TypeBadge}
   alias PgFlowDashboard.Live.LiveHelpers
   alias PgFlowDashboard.Queries
 
@@ -222,7 +222,7 @@ defmodule PgFlowDashboard.Live.WorkersLive do
           <thead class="bg-slate-50 dark:bg-slate-800/50">
             <tr>
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Worker ID</th>
-              <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Flow</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Flow / Job</th>
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Status</th>
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Active Tasks</th>
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Completed (24h)</th>
@@ -244,7 +244,12 @@ defmodule PgFlowDashboard.Live.WorkersLive do
                   {LiveHelpers.short_id(worker.worker_id)}
                 </.link>
               </td>
-              <td class="px-4 py-3 text-sm text-slate-700 dark:text-slate-300">{worker.flow_slug}</td>
+              <td class="px-4 py-3">
+                <div class="flex items-center gap-2">
+                  <span class="text-sm text-slate-700 dark:text-slate-300">{worker.flow_slug}</span>
+                  <TypeBadge.type_badge type={Map.get(worker, :flow_type, "flow")} />
+                </div>
+              </td>
               <td class="px-4 py-3">
                 <HealthBadge.health_badge status={worker.health_status} size={:sm} />
               </td>

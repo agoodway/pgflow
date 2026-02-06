@@ -15,6 +15,7 @@ defmodule PgFlowDashboard.Queries.Runs do
     * `:time_range` - Filter by time range (:last_hour, :last_24h, :last_7d, :last_30d)
     * `:limit` - Maximum number of runs to return (default: 50)
     * `:cursor` - Cursor for pagination (run_id to start after)
+    * `:flow_type` - Filter by type ("flow" or "job")
 
   """
   @spec list_runs(module(), keyword()) :: list(map())
@@ -24,7 +25,8 @@ defmodule PgFlowDashboard.Queries.Runs do
       Keyword.get(opts, :flow_slug),
       status_to_string(Keyword.get(opts, :status)),
       Keyword.get(opts, :limit, 50),
-      parse_uuid(Keyword.get(opts, :cursor))
+      parse_uuid(Keyword.get(opts, :cursor)),
+      Keyword.get(opts, :flow_type)
     ]
 
     execute_rpc(repo, "list_runs", params, schema: "pgflow_dashboard", mode: :list)
@@ -38,6 +40,7 @@ defmodule PgFlowDashboard.Queries.Runs do
     * `:flow_slug` - Filter by flow slug
     * `:status` - Filter by status (started, completed, failed)
     * `:time_range` - Filter by time range (:last_hour, :last_24h, :last_7d, :last_30d)
+    * `:flow_type` - Filter by type ("flow" or "job")
 
   """
   @spec count_runs(module(), keyword()) :: integer()
@@ -45,7 +48,8 @@ defmodule PgFlowDashboard.Queries.Runs do
     params = [
       time_range_start(Keyword.get(opts, :time_range, :last_24h)),
       Keyword.get(opts, :flow_slug),
-      status_to_string(Keyword.get(opts, :status))
+      status_to_string(Keyword.get(opts, :status)),
+      Keyword.get(opts, :flow_type)
     ]
 
     execute_rpc(repo, "count_runs", params, schema: "pgflow_dashboard", mode: :count)

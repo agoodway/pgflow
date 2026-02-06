@@ -35,32 +35,11 @@ defmodule PgFlowDashboard.Queries.Flows do
   @spec get_run_history_grid(module(), String.t(), keyword()) :: map()
   def get_run_history_grid(repo, flow_slug, opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
-    query = "SELECT * FROM pgflow_dashboard.get_run_history_grid($1, $2)"
 
-    case repo.query(query, [flow_slug, limit]) do
-      {:ok, %{rows: rows}} ->
-        rows
-        |> Enum.group_by(&grid_row_step_slug/1)
-        |> Map.new(&grid_step_to_cells/1)
-
-      {:error, _} ->
-        %{}
-    end
-  end
-
-  defp grid_row_step_slug([_run_id, _started_at, step_slug, _status, _duration]), do: step_slug
-
-  defp grid_step_to_cells({step_slug, step_rows}) do
-    cells = Enum.map(step_rows, &grid_row_to_cell/1)
-    {step_slug, cells}
-  end
-
-  defp grid_row_to_cell([run_id, started_at, _step, status, duration_ms]) do
-    %{
-      run_id: format_uuid(run_id),
-      started_at: started_at,
-      status: status,
-      duration_ms: duration_ms
-    }
+    execute_rpc(repo, "get_run_history_grid", [flow_slug, limit],
+      schema: "pgflow_dashboard",
+      mode: :list
+    )
+    |> Enum.group_by(& &1.step_slug)
   end
 end

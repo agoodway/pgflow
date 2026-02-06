@@ -10,6 +10,14 @@ DROP FUNCTION IF EXISTS $SCHEMA$.list_flow_steps(text);
 
 --SPLIT--
 
+DROP FUNCTION IF EXISTS $SCHEMA$.get_job(text);
+
+--SPLIT--
+
+DROP FUNCTION IF EXISTS $SCHEMA$.list_jobs();
+
+--SPLIT--
+
 DROP FUNCTION IF EXISTS $SCHEMA$.get_flow(text);
 
 --SPLIT--
@@ -54,11 +62,13 @@ DROP FUNCTION IF EXISTS $SCHEMA$.get_run(uuid);
 
 --SPLIT--
 
-DROP FUNCTION IF EXISTS $SCHEMA$.count_runs(timestamptz, text, text);
+-- count_runs now has p_flow_type parameter
+DROP FUNCTION IF EXISTS $SCHEMA$.count_runs(timestamptz, text, text, text);
 
 --SPLIT--
 
-DROP FUNCTION IF EXISTS $SCHEMA$.list_runs(timestamptz, text, text, integer, uuid);
+-- list_runs now has p_flow_type parameter
+DROP FUNCTION IF EXISTS $SCHEMA$.list_runs(timestamptz, text, text, integer, uuid, text);
 
 --SPLIT--
 

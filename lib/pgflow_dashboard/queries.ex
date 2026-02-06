@@ -48,4 +48,15 @@ defmodule PgFlowDashboard.Queries do
   defdelegate list_flows(repo), to: PgFlowDashboard.Queries.Flows
   defdelegate get_flow_with_graph(repo, flow_slug), to: PgFlowDashboard.Queries.Flows
   defdelegate get_run_history_grid(repo, flow_slug, opts \\ []), to: PgFlowDashboard.Queries.Flows
+
+  # ===================
+  # Jobs
+  # ===================
+
+  defdelegate list_jobs(repo), to: PgFlowDashboard.Queries.Jobs
+  defdelegate get_job(repo, flow_slug), to: PgFlowDashboard.Queries.Jobs
+
+  defdelegate get_job_run_history_grid(repo, flow_slug, opts \\ []),
+    to: PgFlowDashboard.Queries.Jobs,
+    as: :get_run_history_grid
 end

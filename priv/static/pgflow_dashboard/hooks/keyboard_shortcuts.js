@@ -13,6 +13,7 @@
  *   - g o: Go to Overview
  *   - g w: Go to Workers
  *   - g f: Go to Flows
+ *   - g j: Go to Jobs
  *   - g r: Go to Runs
  *   - d: Toggle dark mode
  *   - ? or K: Open shortcuts modal
@@ -79,6 +80,7 @@ export const KeyboardShortcuts = {
       "go": "",
       "gw": "/workers",
       "gf": "/flows",
+      "gj": "/jobs",
       "gr": "/runs"
     };
 

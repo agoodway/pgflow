@@ -5,7 +5,7 @@ defmodule PgFlowDashboard.Live.OverviewLive do
 
   use Phoenix.LiveView
 
-  alias PgFlowDashboard.Components.{Layouts, MetricCard, StatusBadge}
+  alias PgFlowDashboard.Components.{Layouts, MetricCard, StatusBadge, TypeBadge}
   alias PgFlowDashboard.Live.LiveHelpers
   alias PgFlowDashboard.Queries
 
@@ -96,9 +96,9 @@ defmodule PgFlowDashboard.Live.OverviewLive do
           href={"#{@base_path}/workers?health=healthy"}
         />
         <MetricCard.metric_card
-          title="Running Flows"
+          title="Running"
           value={@metrics.running_runs}
-          subtitle="currently executing"
+          subtitle="flows & jobs"
           href={"#{@base_path}/runs?status=started"}
         />
         <MetricCard.metric_card
@@ -134,7 +134,10 @@ defmodule PgFlowDashboard.Live.OverviewLive do
                     <div class="flex items-center gap-3">
                       <.health_indicator status={worker.health_status} />
                       <div>
-                        <p class="text-sm font-medium text-slate-900 dark:text-white">{worker.flow_slug}</p>
+                        <div class="flex items-center gap-2">
+                          <p class="text-sm font-medium text-slate-900 dark:text-white">{worker.flow_slug}</p>
+                          <TypeBadge.type_badge type={Map.get(worker, :flow_type, "flow")} />
+                        </div>
                         <p class="text-xs text-slate-500 dark:text-slate-400">{LiveHelpers.short_id(worker.worker_id)}</p>
                       </div>
                     </div>
@@ -171,7 +174,10 @@ defmodule PgFlowDashboard.Live.OverviewLive do
                     <div class="flex items-center gap-3">
                       <StatusBadge.status_badge status={run.status} size={:sm} pulse={run.status == "started"} />
                       <div>
-                        <p class="text-sm font-medium text-slate-900 dark:text-white">{run.flow_slug}</p>
+                        <div class="flex items-center gap-2">
+                          <p class="text-sm font-medium text-slate-900 dark:text-white">{run.flow_slug}</p>
+                          <TypeBadge.type_badge type={Map.get(run, :flow_type, "flow")} />
+                        </div>
                         <p class="text-xs text-slate-500 dark:text-slate-400">{LiveHelpers.short_id(run.run_id)}</p>
                       </div>
                     </div>
