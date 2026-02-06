@@ -11,16 +11,13 @@ defmodule PgFlow.Worker.Lifecycle do
     * `:created` - Worker has been created but not yet started
     * `:starting` - Worker is starting but not yet processing messages
     * `:running` - Worker is actively processing messages
-    * `:deprecated` - Worker marked for deprecation, will stop polling for new work
     * `:stopping` - Worker stopped processing, releasing resources
     * `:stopped` - Worker has stopped and released resources (terminal state)
 
   ## State Transitions
 
   ```
-  created -> starting -> running -> deprecated -> stopping -> stopped
-                            |                        ^
-                            +------------------------+
+  created -> starting -> running -> stopping -> stopped
   ```
 
   ## Usage
@@ -34,7 +31,7 @@ defmodule PgFlow.Worker.Lifecycle do
 
   """
 
-  @type state :: :created | :starting | :running | :deprecated | :stopping | :stopped
+  @type state :: :created | :starting | :running | :stopping | :stopped
 
   @type t :: %__MODULE__{
           state: state()
@@ -43,12 +40,11 @@ defmodule PgFlow.Worker.Lifecycle do
   @enforce_keys [:state]
   defstruct [:state]
 
-  # Valid state transitions - matches TypeScript Transitions map
+  # Valid state transitions
   @transitions %{
     created: [:starting],
     starting: [:running],
-    running: [:deprecated, :stopping],
-    deprecated: [:stopping],
+    running: [:stopping],
     stopping: [:stopped],
     stopped: []
   }
@@ -141,11 +137,6 @@ defmodule PgFlow.Worker.Lifecycle do
   @spec running?(t()) :: boolean()
   def running?(%__MODULE__{state: :running}), do: true
   def running?(_), do: false
-
-  @doc "Returns true if in `:deprecated` state."
-  @spec deprecated?(t()) :: boolean()
-  def deprecated?(%__MODULE__{state: :deprecated}), do: true
-  def deprecated?(_), do: false
 
   @doc "Returns true if in `:stopping` state."
   @spec stopping?(t()) :: boolean()

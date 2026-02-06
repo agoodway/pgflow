@@ -5,7 +5,14 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
 
   use Phoenix.LiveView
 
-  alias PgFlowDashboard.Components.{DependencyGraph, GanttTimeline, Layouts, ProgressBar, StatusBadge}
+  alias PgFlowDashboard.Components.{
+    DependencyGraph,
+    GanttTimeline,
+    Layouts,
+    ProgressBar,
+    StatusBadge
+  }
+
   alias PgFlowDashboard.Live.LiveHelpers
   alias PgFlowDashboard.Queries
 

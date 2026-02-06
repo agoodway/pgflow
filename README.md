@@ -346,8 +346,8 @@ config :my_app, MyApp.PgFlow,
   flows: [MyFlow],                     # Required: List of flow modules
   max_concurrency: 10,                 # Max parallel tasks per worker
   batch_size: 10,                      # Messages per poll
-  poll_interval: 100,                  # Milliseconds between polls
-  visibility_timeout: 2                # Seconds for message invisibility
+  poll_interval: 0,                    # Milliseconds between polls (0 = immediate re-poll)
+  visibility_timeout: 5                # Seconds for message invisibility
 ```
 
 ## Mix Tasks
@@ -450,10 +450,11 @@ mix pgflow.test.teardown  # Tear down database
 Workers follow this lifecycle:
 
 1. **Start** - Register in database, begin polling
-2. **Running** - Poll for tasks, execute handlers, send heartbeats
-3. **Deprecated** - Marked for shutdown, stop accepting new tasks
-4. **Stopping** - Wait for active tasks to complete
-5. **Stopped** - Cleanup complete
+2. **Running** - Poll for tasks, execute handlers concurrently
+3. **Stopping** - Wait for active tasks to complete
+4. **Stopped** - Cleanup complete
+
+Crashed workers are automatically restarted by OTP (`restart: :permanent`). Orphaned tasks (stuck in `started` status) are recovered by the `StalledTaskRecovery` GenServer.
 
 ### Graceful Shutdown
 
@@ -466,18 +467,6 @@ The worker will:
 1. Stop polling for new tasks
 2. Wait for in-flight tasks to complete (30s timeout)
 3. Mark itself as stopped in the database
-
-### Worker Deprecation
-
-Workers can be deprecated via the database to trigger graceful shutdown:
-
-```sql
-UPDATE pgflow.workers
-SET deprecated_at = NOW()
-WHERE queue_name = 'my_flow';
-```
-
-Workers check for deprecation during each heartbeat and initiate shutdown if deprecated.
 
 ## Compatibility with PgFlow TypeScript/Deno
 

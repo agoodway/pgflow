@@ -14,8 +14,8 @@ defmodule PgFlowDashboard.Components.HealthBadge do
     * `:size` - Badge size (:sm, :md). Default: :md
 
   """
-  attr :status, :string, required: true
-  attr :size, :atom, default: :md, values: [:sm, :md]
+  attr(:status, :string, required: true)
+  attr(:size, :atom, default: :md, values: [:sm, :md])
 
   def health_badge(assigns) do
     {color, text} =

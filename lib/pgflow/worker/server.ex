@@ -19,9 +19,10 @@ defmodule PgFlow.Worker.Server do
         worker_id: "550e8400-e29b-41d4-a716-446655440000",
         max_concurrency: 10,
         batch_size: 10,
-        poll_interval: 100,
-        visibility_timeout: 30,
-        heartbeat_interval: 10_000
+        poll_interval: 0,
+        visibility_timeout: 5,
+        max_poll_seconds: 2,
+        poll_interval_ms: 100
       }
 
   ## State Structure
@@ -36,9 +37,10 @@ defmodule PgFlow.Worker.Server do
     * `active_tasks` - Map of task_ref => task_metadata
     * `max_concurrency` - Max parallel tasks (default: 10)
     * `batch_size` - Messages per poll (default: 10)
-    * `poll_interval` - Milliseconds between polls (default: 100)
-    * `visibility_timeout` - Seconds for message visibility (default: 30)
-    * `heartbeat_interval` - Milliseconds between heartbeats (default: 10_000)
+    * `poll_interval` - Milliseconds between polls (default: 0)
+    * `visibility_timeout` - Seconds for message visibility (default: 5)
+    * `max_poll_seconds` - Seconds for pgmq to block waiting (default: 2)
+    * `poll_interval_ms` - Milliseconds between pgmq poll attempts (default: 100)
     * `lifecycle` - Worker lifecycle state machine (see `PgFlow.Worker.Lifecycle`)
 
   ## Lifecycle
@@ -87,10 +89,10 @@ defmodule PgFlow.Worker.Server do
           active_tasks: %{reference() => task_metadata()},
           max_concurrency: pos_integer(),
           batch_size: pos_integer(),
-          poll_interval: pos_integer(),
+          poll_interval: non_neg_integer(),
           visibility_timeout: pos_integer(),
-          heartbeat_interval: pos_integer(),
-          heartbeat_timer: reference() | nil,
+          max_poll_seconds: pos_integer(),
+          poll_interval_ms: non_neg_integer(),
           lifecycle: Lifecycle.t()
         }
 
@@ -107,9 +109,10 @@ defmodule PgFlow.Worker.Server do
     * `:task_supervisor` - (optional) PID of Task.Supervisor (uses PgFlow.TaskSupervisor if not provided)
     * `:max_concurrency` - (optional) Maximum concurrent tasks (default: 10)
     * `:batch_size` - (optional) Messages to fetch per poll (default: 10)
-    * `:poll_interval` - (optional) Milliseconds between polls (default: 100)
-    * `:visibility_timeout` - (optional) Seconds for message visibility (default: 30)
-    * `:heartbeat_interval` - (optional) Milliseconds between heartbeats (default: 10_000)
+    * `:poll_interval` - (optional) Milliseconds between polls (default: 0)
+    * `:visibility_timeout` - (optional) Seconds for message visibility (default: 5)
+    * `:max_poll_seconds` - (optional) Seconds for pgmq to block waiting (default: 2)
+    * `:poll_interval_ms` - (optional) Milliseconds between pgmq poll attempts (default: 100)
 
   """
   @spec start_link(map()) :: GenServer.on_start()
@@ -191,12 +194,12 @@ defmodule PgFlow.Worker.Server do
       repo: repo,
       task_supervisor: task_supervisor,
       active_tasks: %{},
-      max_concurrency: Map.get(config, :max_concurrency, 10),
-      batch_size: Map.get(config, :batch_size, 10),
-      poll_interval: Map.get(config, :poll_interval, 100),
-      visibility_timeout: Map.get(config, :visibility_timeout, 30),
-      heartbeat_interval: Map.get(config, :heartbeat_interval, 10_000),
-      heartbeat_timer: nil,
+      max_concurrency: Map.fetch!(config, :max_concurrency),
+      batch_size: Map.fetch!(config, :batch_size),
+      poll_interval: Map.fetch!(config, :poll_interval),
+      visibility_timeout: Map.fetch!(config, :visibility_timeout),
+      max_poll_seconds: Map.fetch!(config, :max_poll_seconds),
+      poll_interval_ms: Map.fetch!(config, :poll_interval_ms),
       lifecycle:
         Lifecycle.new() |> Lifecycle.transition!(:starting) |> Lifecycle.transition!(:running)
     }
@@ -222,10 +225,7 @@ defmodule PgFlow.Worker.Server do
         # Start polling loop
         schedule_poll(state)
 
-        # Start heartbeat timer
-        heartbeat_timer = schedule_heartbeat(state)
-
-        {:ok, %{state | heartbeat_timer: heartbeat_timer}}
+        {:ok, state}
 
       {:error, reason} ->
         Logger.error("Failed to register worker #{worker_id}: #{inspect(reason)}")
@@ -259,41 +259,9 @@ defmodule PgFlow.Worker.Server do
 
       {:noreply, state}
     else
-      # Don't poll if not running (deprecated, stopping, or stopped)
+      # Don't poll if not running (stopping or stopped)
       {:noreply, state}
     end
-  end
-
-  @impl true
-  def handle_info(:heartbeat, state) do
-    # Send heartbeat and check deprecation status in one query
-    case Queries.send_heartbeat(state.repo, state.worker_id) do
-      {:ok, %{is_deprecated: true}} ->
-        send(self(), :deprecated)
-
-      {:ok, %{is_deprecated: false}} ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning(
-          "Failed to send heartbeat for worker #{state.worker_id}: #{inspect(reason)}"
-        )
-    end
-
-    # Schedule next heartbeat
-    heartbeat_timer = schedule_heartbeat(state)
-
-    {:noreply, %{state | heartbeat_timer: heartbeat_timer}}
-  end
-
-  @impl true
-  def handle_info(:deprecated, state) do
-    PgLogger.shutdown(state.worker_name, :deprecating)
-    # Transition to deprecated state
-    lifecycle = Lifecycle.transition!(state.lifecycle, :deprecated)
-    state = %{state | lifecycle: lifecycle}
-    # Initiate graceful stop
-    {:stop, :normal, do_stop(state)}
   end
 
   @impl true
@@ -340,11 +308,6 @@ defmodule PgFlow.Worker.Server do
     lifecycle = Lifecycle.transition!(state.lifecycle, :stopping)
     state = %{state | lifecycle: lifecycle}
 
-    # Cancel heartbeat timer
-    if state.heartbeat_timer do
-      Process.cancel_timer(state.heartbeat_timer)
-    end
-
     # Log waiting phase if there are active tasks
     if map_size(state.active_tasks) > 0 do
       PgLogger.shutdown(state.worker_name, :waiting)
@@ -377,13 +340,10 @@ defmodule PgFlow.Worker.Server do
   def terminate(reason, state) do
     Logger.debug("Worker #{state.worker_id} terminating: #{inspect(reason)}")
 
-    # Cancel heartbeat timer if still running
-    if state.heartbeat_timer do
-      Process.cancel_timer(state.heartbeat_timer)
+    # Only mark stopped if do_stop hasn't already done it
+    unless Lifecycle.stopped?(state.lifecycle) do
+      mark_worker_stopped(state)
     end
-
-    # Ensure worker is marked as stopped
-    mark_worker_stopped(state)
 
     :ok
   end
@@ -413,11 +373,6 @@ defmodule PgFlow.Worker.Server do
     Process.send_after(self(), :poll, state.poll_interval)
   end
 
-  @spec schedule_heartbeat(state()) :: reference()
-  defp schedule_heartbeat(state) do
-    Process.send_after(self(), :heartbeat, state.heartbeat_interval)
-  end
-
   @spec poll_and_dispatch(state()) :: state()
   defp poll_and_dispatch(state) do
     # Calculate how many tasks we can accept
@@ -437,7 +392,9 @@ defmodule PgFlow.Worker.Server do
              state.repo,
              state.flow_slug,
              state.visibility_timeout,
-             batch_size
+             batch_size,
+             max_poll_seconds: state.max_poll_seconds,
+             poll_interval_ms: state.poll_interval_ms
            ) do
         {:ok, []} ->
           # Log no tasks found

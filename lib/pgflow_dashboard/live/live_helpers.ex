@@ -112,11 +112,17 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
   Formats a duration in milliseconds for display.
   """
   def format_duration(nil), do: "-"
-  def format_duration(ms) when is_struct(ms, Decimal), do: ms |> Decimal.to_float() |> format_duration()
+
+  def format_duration(ms) when is_struct(ms, Decimal),
+    do: ms |> Decimal.to_float() |> format_duration()
+
   def format_duration(ms) when is_float(ms), do: format_duration(round(ms))
   def format_duration(ms) when is_integer(ms) and ms < 1000, do: "#{ms}ms"
   def format_duration(ms) when is_integer(ms) and ms < 60_000, do: "#{Float.round(ms / 1000, 1)}s"
-  def format_duration(ms) when is_integer(ms) and ms < 3_600_000, do: "#{Float.round(ms / 60_000, 1)}m"
+
+  def format_duration(ms) when is_integer(ms) and ms < 3_600_000,
+    do: "#{Float.round(ms / 60_000, 1)}m"
+
   def format_duration(ms) when is_integer(ms), do: "#{Float.round(ms / 3_600_000, 1)}h"
 
   @doc """

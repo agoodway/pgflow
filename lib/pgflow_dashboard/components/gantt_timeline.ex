@@ -13,8 +13,8 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
     * `:run` - The run map with started_at, completed_at, status
     * `:step_states` - List of step state maps with step_slug, started_at, completed_at, status
   """
-  attr :run, :map, required: true
-  attr :step_states, :list, required: true
+  attr(:run, :map, required: true)
+  attr(:step_states, :list, required: true)
 
   def gantt_timeline(assigns) do
     # Calculate timeline bounds
@@ -26,12 +26,13 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
     total_duration_ms = max(total_duration_ms, 1000)
 
     # Sort steps by start time (nil starts go last)
-    sorted_steps = Enum.sort_by(assigns.step_states, fn step ->
-      case step.started_at do
-        nil -> {1, step.step_slug}
-        dt -> {0, DateTime.to_unix(dt)}
-      end
-    end)
+    sorted_steps =
+      Enum.sort_by(assigns.step_states, fn step ->
+        case step.started_at do
+          nil -> {1, step.step_slug}
+          dt -> {0, DateTime.to_unix(dt)}
+        end
+      end)
 
     # Dimensions
     row_height = 32

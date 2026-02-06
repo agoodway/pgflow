@@ -434,7 +434,8 @@ defmodule PgFlow.Worker.ServerTest do
           batch_size: Keyword.get(opts, :batch_size, 10),
           poll_interval: Keyword.get(opts, :poll_interval, 50),
           visibility_timeout: Keyword.get(opts, :visibility_timeout, 30),
-          heartbeat_interval: Keyword.get(opts, :heartbeat_interval, 60_000)
+          max_poll_seconds: Keyword.get(opts, :max_poll_seconds, 2),
+          poll_interval_ms: Keyword.get(opts, :poll_interval_ms, 100)
         },
         Map.new(opts)
       )
@@ -1184,26 +1185,61 @@ defmodule PgFlow.Worker.ServerTest do
       end
     end
 
-    @tag :pending
-    @tag :skip
-    test "visibility timeout allows retry of abandoned tasks", %{
-      task_supervisor: _task_supervisor
+    test "stalled task recovery enables retry of abandoned tasks", %{
+      task_supervisor: task_supervisor
     } do
-      # NOTE: This test is pending because PGMQ visibility timeout only applies to
-      # messages that haven't been processed yet. Once start_tasks is called, the
-      # task transitions to "started" state in step_tasks table and is no longer
-      # subject to PGMQ visibility timeout. Retrying abandoned "started" tasks
-      # would require a heartbeat/task-level timeout mechanism that is not yet implemented.
-      #
-      # Test plan for when this is implemented:
-      # - Start worker with short visibility_timeout (2s)
-      # - Start a flow with a slow task (3s)
-      # - Stop worker mid-task (simulating crash)
-      # - Start new worker
-      # - Verify: Task becomes visible again and completes
-      flunk(
-        "Pending: Requires task-level timeout/heartbeat mechanism for abandoned in-progress tasks"
+      # Start a flow, have a worker pick up the task, kill the worker mid-task,
+      # run stalled task recovery, start a new worker, and verify completion.
+      flow_slug = compile_flow(SlowWorkerFlow)
+
+      worker_pid =
+        start_worker(SlowWorkerFlow, task_supervisor,
+          max_concurrency: 1,
+          poll_interval: 50,
+          visibility_timeout: 30
+        )
+
+      Process.sleep(100)
+
+      # Start a slow task (5s — long enough to kill mid-flight)
+      run_id = start_flow_run(flow_slug, %{"sleep_ms" => 5000})
+
+      # Give worker time to pick up the task
+      Process.sleep(500)
+
+      # Unlink before killing so the test process doesn't crash
+      Process.unlink(worker_pid)
+      Process.exit(worker_pid, :kill)
+      Process.sleep(100)
+
+      # The task is now stuck in 'started' status.
+      # Backdate both queued_at and started_at so recovery will find it.
+      # Must backdate queued_at too because of started_at_is_after_queued_at constraint.
+      {:ok, run_id_bin} = Ecto.UUID.dump(run_id)
+
+      TestRepo.query!(
+        "UPDATE pgflow.step_tasks SET queued_at = NOW() - interval '3 minutes', started_at = NOW() - interval '2 minutes' WHERE run_id = $1",
+        [run_id_bin]
       )
+
+      # Run stalled task recovery
+      {:ok, count} = PgFlow.Queries.recover_stalled_tasks(TestRepo, 60)
+      assert count >= 1
+
+      # Start a new worker to pick up the recovered task
+      worker_pid2 =
+        start_worker(SlowWorkerFlow, task_supervisor,
+          max_concurrency: 1,
+          poll_interval: 50,
+          visibility_timeout: 30
+        )
+
+      # Wait for the recovered task to complete (with shorter sleep this time)
+      # The pgmq message will become visible again and the new worker picks it up
+      {:ok, status} = wait_for_run_completion(run_id, 15_000)
+      assert status == "completed"
+
+      Server.stop(worker_pid2)
     end
   end
 end

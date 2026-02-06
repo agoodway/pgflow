@@ -11,9 +11,11 @@ defmodule PgFlow.Config do
     * `:worker_name` (optional) - Human-readable name for workers in logs. Default: auto-generated from flow slug.
     * `:max_concurrency` (optional) - Maximum number of parallel tasks per worker. Default: `10`.
     * `:batch_size` (optional) - Number of messages to fetch per poll cycle. Default: `10`.
-    * `:poll_interval` (optional) - Interval between polls in milliseconds. Default: `100`.
-    * `:visibility_timeout` (optional) - Message reservation timeout in seconds. Default: `2`.
-    * `:attach_default_logger` (optional) - Whether to attach the default telemetry logger. Default: `true`.
+    * `:poll_interval` (optional) - Interval between polls in milliseconds. Default: `0`.
+    * `:visibility_timeout` (optional) - Message reservation timeout in seconds. Default: `5`.
+    * `:max_poll_seconds` (optional) - Maximum seconds for pgmq to block waiting for messages. Default: `2`.
+    * `:poll_interval_ms` (optional) - Milliseconds between poll attempts within pgmq. Default: `100`.
+    * `:attach_default_logger` (optional) - Whether to attach the default telemetry logger. Default: `false`.
 
   ## Examples
 
@@ -53,14 +55,34 @@ defmodule PgFlow.Config do
       doc: "Number of messages to fetch per poll cycle"
     ],
     poll_interval: [
-      type: :pos_integer,
-      default: 100,
-      doc: "Interval between polls in milliseconds"
+      type: :non_neg_integer,
+      default: 0,
+      doc: "Interval between polls in milliseconds (0 means poll immediately after each cycle)"
     ],
     visibility_timeout: [
       type: :pos_integer,
-      default: 2,
+      default: 5,
       doc: "Message reservation timeout in seconds"
+    ],
+    max_poll_seconds: [
+      type: :pos_integer,
+      default: 2,
+      doc: "Maximum seconds for pgmq read_with_poll to block waiting for messages"
+    ],
+    poll_interval_ms: [
+      type: :non_neg_integer,
+      default: 100,
+      doc: "Milliseconds between poll attempts within pgmq read_with_poll"
+    ],
+    recovery_interval: [
+      type: :pos_integer,
+      default: 15_000,
+      doc: "Milliseconds between stalled task recovery sweeps"
+    ],
+    stale_threshold: [
+      type: :pos_integer,
+      default: 60,
+      doc: "Seconds after which a started task is considered stalled"
     ],
     attach_default_logger: [
       type: :boolean,

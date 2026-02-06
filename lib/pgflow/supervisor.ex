@@ -5,18 +5,16 @@ defmodule PgFlow.Supervisor do
   This supervisor is started by `PgFlow.start_link/1` and manages the core
   PgFlow processes including:
 
-  - WorkerSupervisor - Supervises flow workers
   - TaskSupervisor - Supervises async task execution
-
-  The supervisor optionally starts the configured Ecto repository if provided
-  and registers flows specified in the configuration.
+  - WorkerSupervisor - Supervises flow workers
+  - StalledTaskRecovery - Recovers orphaned tasks
 
   ## Supervision Tree
 
       PgFlow.Supervisor
-      ├── Repo (if configured with :start_repo option)
+      ├── Task.Supervisor (PgFlow.TaskSupervisor)
       ├── PgFlow.WorkerSupervisor
-      └── Task.Supervisor (PgFlow.TaskSupervisor)
+      └── PgFlow.Worker.StalledTaskRecovery
 
   """
 
@@ -24,6 +22,7 @@ defmodule PgFlow.Supervisor do
   require Logger
 
   alias PgFlow.{FlowRegistry, WorkerSupervisor}
+  alias PgFlow.Worker.StalledTaskRecovery
 
   @doc """
   Starts the PgFlow supervisor with the given configuration.
@@ -43,9 +42,13 @@ defmodule PgFlow.Supervisor do
 
   @impl true
   def init(config) do
+    # Ensure config has all defaults applied, even if started directly
+    # (e.g. {PgFlow.Supervisor, repo: MyRepo} without going through PgFlow.start_link)
+    config = PgFlow.Config.validate!(config)
+
     repo = Keyword.fetch!(config, :repo)
     flows = Keyword.get(config, :flows, [])
-    attach_logger = Keyword.get(config, :attach_default_logger, true)
+    attach_logger = Keyword.get(config, :attach_default_logger, false)
 
     # Attach telemetry logger if configured
     if attach_logger do
@@ -53,21 +56,27 @@ defmodule PgFlow.Supervisor do
     end
 
     children = [
+      # Start TaskSupervisor first — workers depend on it for async task execution
+      {Task.Supervisor, name: PgFlow.TaskSupervisor},
+
       # Start the WorkerSupervisor to manage flow workers
       {WorkerSupervisor, config},
 
-      # Start TaskSupervisor for async task execution
-      {Task.Supervisor, name: PgFlow.TaskSupervisor}
+      # Start stalled task recovery to reclaim orphaned tasks
+      {StalledTaskRecovery, config},
+
+      # Register flows and start workers — runs after WorkerSupervisor is alive
+      # Uses :temporary restart since it's a one-shot initialization task
+      %{
+        id: :flow_starter,
+        start: {Task, :start_link, [fn -> register_flows(flows, repo) end]},
+        restart: :temporary
+      }
     ]
 
-    # Start the supervisor
-    result = Supervisor.init(children, strategy: :one_for_one)
-
-    # Register flows after supervisor starts
-    # We do this in a task to avoid blocking the supervisor init
-    Task.start(fn ->
-      register_flows(flows, repo)
-    end)
+    # Use :rest_for_one so if TaskSupervisor crashes, WorkerSupervisor
+    # and StalledTaskRecovery (which depend on it) also restart
+    result = Supervisor.init(children, strategy: :rest_for_one)
 
     Logger.info("PgFlow.Supervisor started with repo: #{inspect(repo)}")
 

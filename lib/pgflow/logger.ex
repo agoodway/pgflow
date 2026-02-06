@@ -29,7 +29,7 @@ defmodule PgFlow.Logger do
       PgLogger.startup_banner(startup_ctx)
       PgLogger.polling(worker_name)
       PgLogger.task_count(worker_name, count)
-      PgLogger.shutdown(worker_name, :deprecating | :waiting | :stopped)
+      PgLogger.shutdown(worker_name, :waiting | :stopped)
 
   ## Metadata
 
@@ -64,7 +64,7 @@ defmodule PgFlow.Logger do
           required(:flows) => [%{flow_slug: String.t() | atom(), status: atom()}]
         }
 
-  @type shutdown_phase :: :deprecating | :waiting | :stopped
+  @type shutdown_phase :: :waiting | :stopped
 
   # ============================================================================
   # Task Lifecycle Logging
@@ -279,7 +279,6 @@ defmodule PgFlow.Logger do
   Logs worker shutdown phases.
 
   Phases:
-  - `:deprecating` - Worker marked for deprecation, stopped accepting tasks
   - `:waiting` - Waiting for in-flight tasks to complete
   - `:stopped` - Worker has stopped gracefully
   """
@@ -436,13 +435,6 @@ defmodule PgFlow.Logger do
        Queue: #{ctx.queue_name}
        Flows:
     #{flows_lines}\
-    """
-  end
-
-  defp fancy_shutdown(worker_name, :deprecating) do
-    """
-    #{worker_name}: ℹ Marked for deprecation
-    #{worker_name}:   → Stopped accepting new tasks\
     """
   end
 

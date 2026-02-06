@@ -9,7 +9,7 @@ defmodule PgFlow.WorkerSupervisor do
   - Poll pgmq for pending messages
   - Execute step handlers concurrently via Task.Supervisor
   - Report task completion/failure back to pgflow
-  - Send heartbeats and handle graceful shutdown
+  - Handle graceful shutdown
   """
 
   use DynamicSupervisor
@@ -34,7 +34,7 @@ defmodule PgFlow.WorkerSupervisor do
 
     Logger.debug("WorkerSupervisor initialized")
 
-    DynamicSupervisor.init(strategy: :one_for_one)
+    DynamicSupervisor.init(strategy: :one_for_one, max_restarts: 10, max_seconds: 60)
   end
 
   @doc """
@@ -53,7 +53,7 @@ defmodule PgFlow.WorkerSupervisor do
     spec = %{
       id: flow_module,
       start: {__MODULE__, :start_worker_process, [flow_module, repo]},
-      restart: :transient
+      restart: :permanent
     }
 
     case DynamicSupervisor.start_child(__MODULE__, spec) do
@@ -77,15 +77,17 @@ defmodule PgFlow.WorkerSupervisor do
   @doc false
   def start_worker_process(flow_module, repo) do
     # Get global config for default values
-    config = :persistent_term.get({PgFlow, :config}, [])
+    config = :persistent_term.get({PgFlow, :config})
 
     worker_config = %{
       flow_module: flow_module,
       repo: repo,
-      max_concurrency: Keyword.get(config, :max_concurrency, 10),
-      batch_size: Keyword.get(config, :batch_size, 10),
-      poll_interval: Keyword.get(config, :poll_interval, 100),
-      visibility_timeout: Keyword.get(config, :visibility_timeout, 2)
+      max_concurrency: Keyword.fetch!(config, :max_concurrency),
+      batch_size: Keyword.fetch!(config, :batch_size),
+      poll_interval: Keyword.fetch!(config, :poll_interval),
+      visibility_timeout: Keyword.fetch!(config, :visibility_timeout),
+      max_poll_seconds: Keyword.fetch!(config, :max_poll_seconds),
+      poll_interval_ms: Keyword.fetch!(config, :poll_interval_ms)
     }
 
     WorkerServer.start_link(worker_config)

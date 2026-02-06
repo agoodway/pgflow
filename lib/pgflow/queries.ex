@@ -138,10 +138,10 @@ defmodule PgFlow.Queries do
     * `batch_size` - Maximum number of messages to retrieve
     * `opts` - Optional keyword list
 
-  ## Options
+  ## Options (required)
 
-    * `:max_poll_seconds` - Maximum seconds to poll (default: 1)
-    * `:poll_interval_ms` - Milliseconds between poll attempts (default: 50)
+    * `:max_poll_seconds` - Maximum seconds to poll
+    * `:poll_interval_ms` - Milliseconds between poll attempts
 
   ## Returns
 
@@ -159,8 +159,8 @@ defmodule PgFlow.Queries do
   @spec read_with_poll(Ecto.Repo.t(), String.t(), pos_integer(), pos_integer(), keyword()) ::
           {:ok, list(list())} | {:error, term()}
   def read_with_poll(repo, queue_name, visibility_timeout, batch_size, opts \\ []) do
-    max_poll_seconds = Keyword.get(opts, :max_poll_seconds, 1)
-    poll_interval_ms = Keyword.get(opts, :poll_interval_ms, 50)
+    max_poll_seconds = Keyword.fetch!(opts, :max_poll_seconds)
+    poll_interval_ms = Keyword.fetch!(opts, :poll_interval_ms)
 
     sql = """
     SELECT msg_id, read_ct, enqueued_at, vt, message
@@ -293,46 +293,6 @@ defmodule PgFlow.Queries do
 
       {:error, error} ->
         {:error, error}
-    end
-  end
-
-  @doc """
-  Sends a heartbeat for a worker and checks deprecation status.
-
-  Updates the `last_heartbeat_at` timestamp and returns whether the worker
-  has been marked for deprecation (deprecated_at IS NOT NULL).
-
-  ## Parameters
-
-    * `repo` - The Ecto repository
-    * `worker_id` - The worker identifier (UUID string)
-
-  ## Returns
-
-    * `{:ok, %{is_deprecated: boolean}}` - Success with deprecation status
-    * `{:error, reason}` - Error details if the operation fails
-
-  ## Examples
-
-      iex> send_heartbeat(MyApp.Repo, "550e8400-e29b-41d4-a716-446655440000")
-      {:ok, %{is_deprecated: false}}
-  """
-  @spec send_heartbeat(Ecto.Repo.t(), String.t()) ::
-          {:ok, %{is_deprecated: boolean()}} | {:error, term()}
-  def send_heartbeat(repo, worker_id) do
-    sql = """
-    UPDATE pgflow.workers AS w
-    SET last_heartbeat_at = clock_timestamp()
-    WHERE w.worker_id = $1
-    RETURNING (w.deprecated_at IS NOT NULL) AS is_deprecated
-    """
-
-    {:ok, worker_id_bin} = Ecto.UUID.dump(worker_id)
-
-    case SQL.query(repo, sql, [worker_id_bin]) do
-      {:ok, %{rows: [[is_deprecated]]}} -> {:ok, %{is_deprecated: is_deprecated}}
-      {:ok, %{rows: []}} -> {:ok, %{is_deprecated: false}}
-      {:error, error} -> {:error, error}
     end
   end
 
@@ -474,6 +434,60 @@ defmodule PgFlow.Queries do
 
     case SQL.query(repo, sql, [worker_id_bin]) do
       {:ok, _} -> {:ok, nil}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  @doc """
+  Recovers stalled tasks by resetting step_tasks stuck in 'started' status.
+
+  Tasks that have been in 'started' status longer than the stale threshold
+  are reset to 'queued' so they can be re-processed by workers.
+
+  ## Parameters
+
+    * `repo` - The Ecto repository
+    * `stale_threshold` - Seconds after which a started task is considered stalled
+
+  ## Returns
+
+    * `{:ok, count}` - Number of tasks recovered
+    * `{:error, reason}` - Error details if the operation fails
+
+  ## Examples
+
+      iex> recover_stalled_tasks(MyApp.Repo, 60)
+      {:ok, 3}
+  """
+  @spec recover_stalled_tasks(Ecto.Repo.t(), pos_integer()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def recover_stalled_tasks(repo, stale_threshold) do
+    sql = """
+    WITH stalled AS (
+      UPDATE pgflow.step_tasks
+      SET status = 'queued', started_at = NULL, last_worker_id = NULL
+      WHERE status = 'started'
+        AND started_at < NOW() - make_interval(secs => $1::double precision)
+      RETURNING flow_slug, message_id
+    ),
+    vt_reset AS (
+      SELECT pgflow.set_vt_batch(
+        s.flow_slug,
+        array_agg(s.message_id),
+        array_agg(0::integer)
+      )
+      FROM stalled s
+      WHERE s.message_id IS NOT NULL
+      GROUP BY s.flow_slug
+    )
+    SELECT
+      (SELECT count(*) FROM stalled) AS recovered_count,
+      (SELECT count(*) FROM vt_reset) AS vt_batches
+    """
+
+    case SQL.query(repo, sql, [stale_threshold]) do
+      {:ok, %{rows: [[count, _vt_batches]]}} -> {:ok, count}
+      {:ok, %{rows: []}} -> {:ok, 0}
       {:error, error} -> {:error, error}
     end
   end

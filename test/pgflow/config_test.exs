@@ -44,6 +44,8 @@ defmodule PgFlow.ConfigTest do
           batch_size: 15,
           poll_interval: 200,
           visibility_timeout: 5,
+          max_poll_seconds: 3,
+          poll_interval_ms: 50,
           attach_default_logger: false
         )
 
@@ -53,6 +55,8 @@ defmodule PgFlow.ConfigTest do
       assert config[:batch_size] == 15
       assert config[:poll_interval] == 200
       assert config[:visibility_timeout] == 5
+      assert config[:max_poll_seconds] == 3
+      assert config[:poll_interval_ms] == 50
       assert config[:attach_default_logger] == false
     end
   end
@@ -79,13 +83,25 @@ defmodule PgFlow.ConfigTest do
     test "applies default for :poll_interval" do
       config = Config.validate!(repo: ValidTestRepo)
 
-      assert config[:poll_interval] == 100
+      assert config[:poll_interval] == 0
     end
 
     test "applies default for :visibility_timeout" do
       config = Config.validate!(repo: ValidTestRepo)
 
-      assert config[:visibility_timeout] == 2
+      assert config[:visibility_timeout] == 5
+    end
+
+    test "applies default for :max_poll_seconds" do
+      config = Config.validate!(repo: ValidTestRepo)
+
+      assert config[:max_poll_seconds] == 2
+    end
+
+    test "applies default for :poll_interval_ms" do
+      config = Config.validate!(repo: ValidTestRepo)
+
+      assert config[:poll_interval_ms] == 100
     end
 
     test "applies default for :attach_default_logger" do
@@ -101,8 +117,10 @@ defmodule PgFlow.ConfigTest do
       assert config[:flows] == []
       assert config[:max_concurrency] == 10
       assert config[:batch_size] == 10
-      assert config[:poll_interval] == 100
-      assert config[:visibility_timeout] == 2
+      assert config[:poll_interval] == 0
+      assert config[:visibility_timeout] == 5
+      assert config[:max_poll_seconds] == 2
+      assert config[:poll_interval_ms] == 100
       assert config[:attach_default_logger] == false
     end
   end
@@ -164,9 +182,21 @@ defmodule PgFlow.ConfigTest do
       end
     end
 
-    test "raises when :poll_interval is not a positive integer" do
+    test "raises when :poll_interval is negative" do
       assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
-        Config.validate!(repo: ValidTestRepo, poll_interval: 0)
+        Config.validate!(repo: ValidTestRepo, poll_interval: -1)
+      end
+    end
+
+    test "raises when :max_poll_seconds is not a positive integer" do
+      assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
+        Config.validate!(repo: ValidTestRepo, max_poll_seconds: 0)
+      end
+    end
+
+    test "raises when :poll_interval_ms is negative" do
+      assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
+        Config.validate!(repo: ValidTestRepo, poll_interval_ms: -1)
       end
     end
 
@@ -256,16 +286,32 @@ defmodule PgFlow.ConfigTest do
       schema = Config.schema()
 
       assert Keyword.has_key?(schema, :poll_interval)
-      assert schema[:poll_interval][:default] == 100
-      assert schema[:poll_interval][:type] == :pos_integer
+      assert schema[:poll_interval][:default] == 0
+      assert schema[:poll_interval][:type] == :non_neg_integer
     end
 
     test "schema includes :visibility_timeout option with default" do
       schema = Config.schema()
 
       assert Keyword.has_key?(schema, :visibility_timeout)
-      assert schema[:visibility_timeout][:default] == 2
+      assert schema[:visibility_timeout][:default] == 5
       assert schema[:visibility_timeout][:type] == :pos_integer
+    end
+
+    test "schema includes :max_poll_seconds option with default" do
+      schema = Config.schema()
+
+      assert Keyword.has_key?(schema, :max_poll_seconds)
+      assert schema[:max_poll_seconds][:default] == 2
+      assert schema[:max_poll_seconds][:type] == :pos_integer
+    end
+
+    test "schema includes :poll_interval_ms option with default" do
+      schema = Config.schema()
+
+      assert Keyword.has_key?(schema, :poll_interval_ms)
+      assert schema[:poll_interval_ms][:default] == 100
+      assert schema[:poll_interval_ms][:type] == :non_neg_integer
     end
 
     test "schema includes :attach_default_logger option with default" do
@@ -297,20 +343,24 @@ defmodule PgFlow.ConfigTest do
       assert config[:flows] == [Flow1, Flow2, Flow3]
     end
 
-    test "accepts minimum positive integer values" do
+    test "accepts minimum valid values including zero for non_neg_integer fields" do
       config =
         Config.validate!(
           repo: ValidTestRepo,
           max_concurrency: 1,
           batch_size: 1,
-          poll_interval: 1,
-          visibility_timeout: 1
+          poll_interval: 0,
+          visibility_timeout: 1,
+          max_poll_seconds: 1,
+          poll_interval_ms: 0
         )
 
       assert config[:max_concurrency] == 1
       assert config[:batch_size] == 1
-      assert config[:poll_interval] == 1
+      assert config[:poll_interval] == 0
       assert config[:visibility_timeout] == 1
+      assert config[:max_poll_seconds] == 1
+      assert config[:poll_interval_ms] == 0
     end
 
     test "accepts large positive integer values" do
@@ -320,13 +370,17 @@ defmodule PgFlow.ConfigTest do
           max_concurrency: 1000,
           batch_size: 1000,
           poll_interval: 10_000,
-          visibility_timeout: 3600
+          visibility_timeout: 3600,
+          max_poll_seconds: 30,
+          poll_interval_ms: 5000
         )
 
       assert config[:max_concurrency] == 1000
       assert config[:batch_size] == 1000
       assert config[:poll_interval] == 10_000
       assert config[:visibility_timeout] == 3600
+      assert config[:max_poll_seconds] == 30
+      assert config[:poll_interval_ms] == 5000
     end
 
     test "accepts attach_default_logger as false" do
