@@ -84,6 +84,23 @@ defmodule PgFlow.JobTest do
     end
   end
 
+  describe "multiple @job attributes" do
+    test "raises CompileError" do
+      assert_raise CompileError, ~r/Multiple @job attributes defined/, fn ->
+        defmodule DuplicateJob do
+          use PgFlow.Job
+
+          @job queue: :first
+          @job queue: :second
+
+          perform do
+            fn _input, _ctx -> :ok end
+          end
+        end
+      end
+    end
+  end
+
   describe "@job option validation" do
     test "rejects non-atom :queue" do
       assert_raise CompileError, ~r/:queue must be an atom/, fn ->

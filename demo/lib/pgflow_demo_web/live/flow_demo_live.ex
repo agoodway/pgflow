@@ -6,7 +6,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   use PgflowDemoWeb, :live_view
 
   alias PgFlow.Client
-  alias PgflowDemoWeb.Components.FlowDSL
+  alias PgflowDemoWeb.Components.{FlowDSL, CronDSL, PoweredBy}
   alias PgflowDemoWeb.TelemetryBroadcaster
 
   # UI Constants
@@ -69,6 +69,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:show_migration, false)
       |> assign(:migration_path, get_migration_path())
       |> assign(:migration_content, get_migration_content())
+      |> assign(:cron_highlighted_source, CronDSL.get_highlighted_source())
+      |> assign(:cron_next_run_info, CronDSL.get_next_run_info())
 
     {:ok, socket}
   end
@@ -646,6 +648,24 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         @keyframes dash-flow {
           to { stroke-dashoffset: -20; }
         }
+        @keyframes border-spin {
+          from { --angle: 0deg; }
+          to { --angle: 360deg; }
+        }
+        @property --angle {
+          syntax: '<angle>';
+          initial-value: 0deg;
+          inherits: false;
+        }
+        .border-traveling {
+          animation: border-spin 3s linear infinite;
+          background: conic-gradient(from var(--angle), transparent 80%, rgba(168, 85, 247, 0.8) 90%, rgba(192, 132, 252, 1) 95%, rgba(168, 85, 247, 0.8) 100%);
+          -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+          mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+          -webkit-mask-composite: xor;
+          mask-composite: exclude;
+          padding: 2px;
+        }
         .node-active { animation: pulse-glow 1s ease-in-out infinite; }
         .edge-active { animation: dash-flow 0.5s linear infinite; }
         .terminal-scroll::-webkit-scrollbar { width: 4px; }
@@ -653,7 +673,23 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       </style>
 
       <div class="container mx-auto px-4 py-8 max-w-6xl relative">
-        <!-- GitHub link -->
+        <!-- Dashboard link (top left) -->
+        <div class="absolute top-8 left-4 z-10">
+          <div class="relative">
+            <div class="absolute -inset-[2px] rounded-lg border-traveling"></div>
+            <a
+              href="/pgflow"
+              class="relative inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 text-white text-sm font-medium rounded-lg shadow-lg shadow-purple-500/20 transition-all duration-200 hover:shadow-purple-500/30"
+            >
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+              </svg>
+              Open Dashboard
+            </a>
+          </div>
+        </div>
+
+        <!-- GitHub link (top right) -->
         <a
           href="https://github.com/agoodway/pgflow"
           target="_blank"
@@ -668,7 +704,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             />
           </svg>
         </a>
-        
+
     <!-- Header -->
         <div class="text-center mb-8">
           <h1 class="text-4xl font-bold text-white mb-2">
@@ -680,51 +716,24 @@ defmodule PgflowDemoWeb.FlowDemoLive do
           <p class="text-purple-300/70">
             Visualize PgFlow workflow execution in real-time.
           </p>
-          <p class="text-purple-300/50 text-sm mt-1">
-            Powered by <a
-              href="https://www.postgresql.org"
-              target="_blank"
-              class="text-purple-300 hover:text-purple-200 underline underline-offset-2"
-            >PostgreSQL</a>, <a
-              href="https://github.com/pgmq/pgmq"
-              target="_blank"
-              class="text-purple-300 hover:text-purple-200 underline underline-offset-2"
-            >PGMQ</a>, <a
-              href="https://pgflow.dev"
-              target="_blank"
-              class="text-purple-300 hover:text-purple-200 underline underline-offset-2"
-            >PgFlow</a>,
-            <a
-              href="https://elixir-lang.org"
-              target="_blank"
-              class="text-purple-300 hover:text-purple-200 underline underline-offset-2"
-            >
-              Elixir
-            </a>
-            and
-            <a
-              href="https://phoenixframework.org"
-              target="_blank"
-              class="text-purple-300 hover:text-purple-200 underline underline-offset-2"
-            >
-              Phoenix LiveView
-            </a>
-          </p>
+          <PoweredBy.powered_by size={:md} class="mt-1" />
         </div>
-        
+
     <!-- Interactive tip -->
         <div class="mb-6 px-4 py-3 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center gap-3">
           <span class="text-purple-400 text-lg" title="Tip">ⓘ</span>
           <p class="text-purple-300/80 text-sm">
             Click on
-            <a href="#workflow-graph" class="text-emerald-400 hover:underline underline-offset-2">
-              Workflow Graph
+            <a href="#workflow" class="text-emerald-400 hover:underline underline-offset-2">
+              Workflow
             </a>
             nodes,
             <a href="#flow-dsl" class="text-orange-400 hover:underline underline-offset-2">
               Flow DSL
             </a>
-            steps, or
+            steps, <a href="#cron-dsl" class="text-amber-400 hover:underline underline-offset-2">
+              Cron DSL
+            </a>, or
             <a href="#event-log" class="text-cyan-400 hover:underline underline-offset-2">
               Event Log
             </a>
@@ -735,7 +744,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             >Step Output</a>.
           </p>
         </div>
-        
+
     <!-- Input -->
         <div class="backdrop-blur-xl bg-white/5 rounded-2xl p-6 mb-6 border border-white/10">
           <form phx-submit="start_flow" class="flex gap-4">
@@ -791,17 +800,17 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <p class="text-red-300 text-sm">{@error}</p>
           </div>
         </div>
-        
+
     <!-- Main Grid - Side by side on md+ screens, stacked on mobile -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <!-- DAG -->
+          <!-- Workflow -->
           <div
-            id="workflow-graph"
+            id="workflow"
             class="backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
           >
             <h2 class="text-lg font-semibold text-white mb-4 flex items-center gap-2">
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-              <span class="text-emerald-400">Workflow Graph</span>
+              <span class="text-emerald-400">Workflow</span>
             </h2>
             <svg viewBox="0 0 200 200" class="w-full h-auto max-w-md mx-auto">
               <defs>
@@ -829,7 +838,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                   <polygon points="0 0, 6 2, 0 4" fill="#10B981" />
                 </marker>
               </defs>
-              
+
     <!-- Edges -->
               <%= for {from, to} <- @edges do %>
                 <% {x1, y1} = get_step_coords(from) %>
@@ -861,7 +870,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                   }
                 />
               <% end %>
-              
+
     <!-- Nodes -->
               <%= for step <- @steps_config do %>
                 <% status = Map.get(@steps, step.slug, :pending) %>
@@ -958,7 +967,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               <% end %>
             </svg>
           </div>
-          
+
     <!-- Event Log -->
           <div
             id="event-log"
@@ -1001,7 +1010,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </div>
           </div>
         </div>
-        
+
     <!-- Flow DSL -->
         <div
           id="flow-dsl"
@@ -1050,8 +1059,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </div>
           <% end %>
         </div>
-        
-    <!-- Output Panel -->
+
+    <!-- Step Output -->
         <div
           id="step-output"
           class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
@@ -1086,45 +1095,48 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <% end %>
           </div>
         </div>
-        
+
+    <!-- Cron DSL -->
+        <div
+          id="cron-dsl"
+          class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
+        >
+          <h2 class="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+            <span class="text-amber-400">Cron DSL</span>
+            <span class="text-sm font-normal text-gray-400 ml-2">— Scheduled cleanup job</span>
+          </h2>
+          <div class="bg-slate-900/80 rounded-xl p-4 max-h-[32rem] overflow-y-auto terminal-scroll">
+            <CronDSL.cron_dsl
+              highlighted_source={@cron_highlighted_source}
+              next_run_info={@cron_next_run_info}
+            />
+          </div>
+          <p class="mt-3 text-sm text-gray-400">
+            This cron runs hourly to prune article_flow runs older than 24 hours.
+            Like flows, crons are compiled to an Ecto migration that sets up pg_cron scheduling.
+            View in <a
+              href="/pgflow/crons/article_flow_cleanup"
+              class="text-amber-400 hover:text-amber-300 underline underline-offset-2"
+            >
+              PgFlow Dashboard
+            </a>.
+          </p>
+        </div>
+
     <!-- Footer -->
-        <footer class="mt-8 text-center text-purple-300/40 text-xs">
-          Powered by <a
-            href="https://www.postgresql.org"
-            target="_blank"
-            class="text-purple-300/60 hover:text-purple-200 underline underline-offset-2"
-          >PostgreSQL</a>, <a
-            href="https://github.com/pgmq/pgmq"
-            target="_blank"
-            class="text-purple-300/60 hover:text-purple-200 underline underline-offset-2"
-          >PGMQ</a>, <a
-            href="https://pgflow.dev"
-            target="_blank"
-            class="text-purple-300/60 hover:text-purple-200 underline underline-offset-2"
-          >PgFlow</a>,
-          <a
-            href="https://elixir-lang.org"
-            target="_blank"
-            class="text-purple-300/60 hover:text-purple-200 underline underline-offset-2"
-          >
-            Elixir
-          </a>
-          and
-          <a
-            href="https://phoenixframework.org"
-            target="_blank"
-            class="text-purple-300/60 hover:text-purple-200 underline underline-offset-2"
-          >
-            Phoenix LiveView
-          </a>
-          <span class="mx-3">·</span>
-          <a
-            href="https://github.com/agoodway/pgflow"
-            target="_blank"
-            class="text-purple-300/60 hover:text-purple-200 underline underline-offset-2"
-          >
-            GitHub
-          </a>
+        <footer class="mt-8 text-center max-w-2xl mx-auto">
+          <div class="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
+            <PoweredBy.powered_by size={:sm} />
+            <span class="text-xs text-purple-300/40 hidden sm:inline">·</span>
+            <a
+              href="https://github.com/agoodway/pgflow"
+              target="_blank"
+              class="text-xs text-purple-300/60 hover:text-purple-200 underline underline-offset-2 whitespace-nowrap"
+            >
+              GitHub
+            </a>
+          </div>
         </footer>
       </div>
     </div>

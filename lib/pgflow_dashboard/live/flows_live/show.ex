@@ -117,9 +117,9 @@ defmodule PgFlowDashboard.Live.FlowsLive.Show do
           </div>
         </div>
 
-        <!-- Dependency Graph -->
+        <!-- Workflow -->
         <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4 mb-6">
-          <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Dependency Graph</h2>
+          <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Workflow</h2>
           <DependencyGraph.dependency_graph steps={@flow.steps} />
         </div>
 

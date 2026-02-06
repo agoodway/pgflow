@@ -75,6 +75,8 @@ defmodule PgFlowDashboard.Router do
           live("/flows/:slug", PgFlowDashboard.Live.FlowsLive.Show, :show)
           live("/jobs", PgFlowDashboard.Live.JobsLive.Index, :index)
           live("/jobs/:id", PgFlowDashboard.Live.JobsLive.Show, :show)
+          live("/crons", PgFlowDashboard.Live.CronsLive.Index, :index)
+          live("/crons/:id", PgFlowDashboard.Live.CronsLive.Show, :show)
           live("/workers", PgFlowDashboard.Live.WorkersLive, :index)
           live("/workers/:id", PgFlowDashboard.Live.WorkersLive.Show, :show)
         end

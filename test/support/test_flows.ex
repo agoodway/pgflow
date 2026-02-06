@@ -258,3 +258,44 @@ defmodule PgFlow.TestJobs do
     end
   end
 end
+
+defmodule PgFlow.TestCrons do
+  @moduledoc """
+  Example cron modules for testing the PgFlow Cron framework.
+  """
+
+  defmodule SimpleCron do
+    @moduledoc """
+    A minimal cron job for testing.
+    """
+    use PgFlow.Cron
+
+    @cron queue: :simple_cron, expression: "0 9 * * *"
+
+    schedule do
+      fn _input, _ctx ->
+        %{ran: true}
+      end
+    end
+  end
+
+  defmodule DailyReportCron do
+    @moduledoc """
+    A cron job with all options and static input.
+    """
+    use PgFlow.Cron
+
+    @cron queue: :daily_report,
+          expression: "0 9 * * 1-5",
+          max_attempts: 3,
+          base_delay: 10,
+          timeout: 120,
+          input: %{"report_type" => "daily", "format" => "pdf"}
+
+    schedule do
+      fn input, _ctx ->
+        %{generated: true, type: input["report_type"]}
+      end
+    end
+  end
+end

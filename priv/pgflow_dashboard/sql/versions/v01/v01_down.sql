@@ -18,6 +18,14 @@ DROP FUNCTION IF EXISTS $SCHEMA$.list_jobs();
 
 --SPLIT--
 
+DROP FUNCTION IF EXISTS $SCHEMA$.list_crons();
+
+--SPLIT--
+
+DROP FUNCTION IF EXISTS $SCHEMA$.get_cron(text);
+
+--SPLIT--
+
 DROP FUNCTION IF EXISTS $SCHEMA$.get_flow(text);
 
 --SPLIT--

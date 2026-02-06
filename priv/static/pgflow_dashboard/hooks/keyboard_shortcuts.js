@@ -14,6 +14,7 @@
  *   - g w: Go to Workers
  *   - g f: Go to Flows
  *   - g j: Go to Jobs
+ *   - g c: Go to Crons
  *   - g r: Go to Runs
  *   - d: Toggle dark mode
  *   - ? or K: Open shortcuts modal
@@ -81,6 +82,7 @@ export const KeyboardShortcuts = {
       "gw": "/workers",
       "gf": "/flows",
       "gj": "/jobs",
+      "gc": "/crons",
       "gr": "/runs"
     };
 

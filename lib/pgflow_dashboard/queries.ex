@@ -59,4 +59,15 @@ defmodule PgFlowDashboard.Queries do
   defdelegate get_job_run_history_grid(repo, flow_slug, opts \\ []),
     to: PgFlowDashboard.Queries.Jobs,
     as: :get_run_history_grid
+
+  # ===================
+  # Crons
+  # ===================
+
+  defdelegate list_crons(repo), to: PgFlowDashboard.Queries.Crons
+  defdelegate get_cron(repo, flow_slug), to: PgFlowDashboard.Queries.Crons
+
+  defdelegate get_cron_run_history_grid(repo, flow_slug, opts \\ []),
+    to: PgFlowDashboard.Queries.Crons,
+    as: :get_run_history_grid
 end

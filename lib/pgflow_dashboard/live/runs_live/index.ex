@@ -120,10 +120,12 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
   defp load_flows_and_jobs(socket) do
     flows = Queries.list_flows(socket.assigns.repo)
     jobs = Queries.list_jobs(socket.assigns.repo)
+    crons = Queries.list_crons(socket.assigns.repo)
 
     socket
     |> assign(:flows, flows)
     |> assign(:jobs, jobs)
+    |> assign(:crons, crons)
   end
 
   defp load_runs(socket, opts \\ []) do
@@ -216,12 +218,13 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
               <option value="">All</option>
               <option value="flow" selected={@type_filter == "flow"}>Flows</option>
               <option value="job" selected={@type_filter == "job"}>Jobs</option>
+              <option value="cron" selected={@type_filter == "cron"}>Crons</option>
             </select>
           </div>
 
           <div>
             <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
-              Flow / Job
+              Queue
             </label>
             <select
               name="flow"
@@ -242,6 +245,15 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
                   <%= for job <- @jobs do %>
                     <option value={job.flow_slug} selected={@flow_filter == job.flow_slug}>
                       {job.flow_slug}
+                    </option>
+                  <% end %>
+                </optgroup>
+              <% end %>
+              <%= if @crons != [] do %>
+                <optgroup label="Crons">
+                  <%= for cron <- @crons do %>
+                    <option value={cron.flow_slug} selected={@flow_filter == cron.flow_slug}>
+                      {cron.flow_slug}
                     </option>
                   <% end %>
                 </optgroup>
@@ -292,7 +304,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
           <thead class="bg-slate-50 dark:bg-slate-800/50">
             <tr>
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Run ID</th>
-              <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Flow / Job</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Queue</th>
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Status</th>
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Progress</th>
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Duration</th>
@@ -332,7 +344,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
                 />
               </td>
               <td class="px-4 py-3 w-32">
-                <%= if Map.get(run, :flow_type) == "job" do %>
+                <%= if Map.get(run, :flow_type) in ["job", "cron"] do %>
                   <span class="text-sm text-slate-400 dark:text-slate-500">—</span>
                 <% else %>
                   <ProgressBar.progress_bar

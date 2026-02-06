@@ -26,7 +26,7 @@ import { hooks as colocatedHooks } from "phoenix-colocated/pgflow_demo"
 import topbar from "../vendor/topbar"
 
 // PgFlow Dashboard hooks
-import { DarkMode, KeyboardShortcuts, ShortcutsModal } from "../../../priv/static/pgflow_dashboard/hooks/index.js"
+import { DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu } from "../../../priv/static/pgflow_dashboard/hooks/index.js"
 
 // Type declarations for Phoenix LiveView events
 interface PhxScrollEvent extends CustomEvent {
@@ -59,7 +59,7 @@ const csrfToken = document
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: { _csrf_token: csrfToken },
-  hooks: { ...colocatedHooks, DarkMode, KeyboardShortcuts, ShortcutsModal },
+  hooks: { ...colocatedHooks, DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu },
 })
 
 // Show progress bar on live navigation and form submits

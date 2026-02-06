@@ -70,18 +70,18 @@ defmodule PgFlowDashboard.Components.ProgressBar do
 
   defp success_width(completed, failed, total) when total > 0 do
     ((completed - failed) / total * 100)
-    |> max(0)
+    |> max(0.0)
     |> Float.round(1)
   end
 
-  defp success_width(_, _, _), do: 0
+  defp success_width(_, _, _), do: 0.0
 
   defp failed_width(failed, total) when total > 0 do
     (failed / total * 100)
     |> Float.round(1)
   end
 
-  defp failed_width(_, _), do: 0
+  defp failed_width(_, _), do: 0.0
 
   defp height_class(:sm), do: "h-1"
   defp height_class(:md), do: "h-2"

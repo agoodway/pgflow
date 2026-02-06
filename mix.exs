@@ -43,10 +43,12 @@ defmodule PgFlow.MixProject do
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.2"},
       {:nimble_options, "~> 1.0"},
+      {:crontab, "~> 1.1"},
 
       # Dashboard (optional)
       {:phoenix_live_view, "~> 1.0", optional: true},
       {:phoenix, "~> 1.7", optional: true},
+      {:timex, "~> 3.7"},
       {:pg_evolver, github: "agoodway/pg_evolver"},
 
       # Dev/Test

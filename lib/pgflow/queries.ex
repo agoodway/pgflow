@@ -481,4 +481,79 @@ defmodule PgFlow.Queries do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  @typedoc """
+  Result of pruning old run data.
+
+  Contains counts of deleted records from each table.
+  """
+  @type prune_result :: %{
+          deleted_runs: non_neg_integer(),
+          deleted_step_states: non_neg_integer(),
+          deleted_step_tasks: non_neg_integer(),
+          deleted_workers: non_neg_integer()
+        }
+
+  @doc """
+  Prunes old flow run data older than the specified retention period.
+
+  Deletes completed/failed runs and all associated data (step_states, step_tasks)
+  older than the retention interval. Also cleans up stale worker records and
+  archived PGMQ messages.
+
+  ## Parameters
+
+    * `repo` - The Ecto repository
+    * `retention_hours` - Number of hours to retain data (e.g., 24)
+    * `opts` - Optional keyword list
+
+  ## Options
+
+    * `:flow_slugs` - List of flow slugs to prune (default: all flows)
+
+  ## Returns
+
+    * `{:ok, result}` - Map with counts of deleted records
+    * `{:error, reason}` - Error details if the operation fails
+
+  ## Examples
+
+      # Prune all flows older than 24 hours
+      iex> prune_data(MyApp.Repo, 24)
+      {:ok, %{deleted_runs: 10, deleted_step_states: 50, deleted_step_tasks: 50, deleted_workers: 2}}
+
+      # Prune only specific flows
+      iex> prune_data(MyApp.Repo, 24, flow_slugs: ["article_flow"])
+      {:ok, %{deleted_runs: 5, deleted_step_states: 25, deleted_step_tasks: 25, deleted_workers: 0}}
+  """
+  @spec prune_data(Ecto.Repo.t(), pos_integer(), keyword()) ::
+          {:ok, prune_result()} | {:error, term()}
+  def prune_data(repo, retention_hours, opts \\ []) do
+    flow_slugs = Keyword.get(opts, :flow_slugs)
+
+    sql = "SELECT * FROM pgflow.prune_data_older_than(make_interval(hours => $1), $2)"
+
+    case SQL.query(repo, sql, [retention_hours, flow_slugs]) do
+      {:ok, %{rows: [[deleted_runs, deleted_states, deleted_tasks, deleted_workers]]}} ->
+        {:ok,
+         %{
+           deleted_runs: deleted_runs,
+           deleted_step_states: deleted_states,
+           deleted_step_tasks: deleted_tasks,
+           deleted_workers: deleted_workers
+         }}
+
+      {:ok, %{rows: []}} ->
+        {:ok,
+         %{
+           deleted_runs: 0,
+           deleted_step_states: 0,
+           deleted_step_tasks: 0,
+           deleted_workers: 0
+         }}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
 end

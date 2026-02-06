@@ -84,22 +84,21 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
 
   @doc """
   Formats a timestamp for display in the configured time zone.
+
+  Uses Timex for timezone conversion and formatting.
   """
   def format_timestamp(nil, _time_zone), do: "-"
 
-  def format_timestamp(%DateTime{} = dt, "UTC") do
-    Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S")
-  end
-
-  def format_timestamp(%DateTime{} = dt, "Etc/UTC") do
-    Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S")
+  def format_timestamp(%DateTime{} = dt, time_zone) when time_zone in ["UTC", "Etc/UTC"] do
+    Timex.format!(dt, "%Y-%m-%d %H:%M:%S", :strftime)
   end
 
   def format_timestamp(%DateTime{} = dt, time_zone) do
-    case DateTime.shift_zone(dt, time_zone) do
-      {:ok, shifted} -> Calendar.strftime(shifted, "%Y-%m-%d %H:%M:%S")
-      {:error, _} -> Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S")
-    end
+    dt
+    |> Timex.Timezone.convert(time_zone)
+    |> Timex.format!("%Y-%m-%d %H:%M:%S", :strftime)
+  rescue
+    _ -> Timex.format!(dt, "%Y-%m-%d %H:%M:%S", :strftime)
   end
 
   def format_timestamp(%NaiveDateTime{} = ndt, time_zone) do
@@ -109,7 +108,27 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
   end
 
   @doc """
-  Formats a duration in milliseconds for display.
+  Formats a datetime relative to now using Timex.
+
+  Returns strings like "in 5 minutes", "in 2 hours", "3 minutes ago".
+  """
+  def format_relative_time(nil), do: "—"
+
+  def format_relative_time(%DateTime{} = dt) do
+    Timex.from_now(dt)
+  end
+
+  def format_relative_time(%NaiveDateTime{} = ndt) do
+    ndt
+    |> DateTime.from_naive!("Etc/UTC")
+    |> Timex.from_now()
+  end
+
+  @doc """
+  Formats a duration in milliseconds for display using Timex.Duration.
+
+  Uses Timex to convert milliseconds and formats in a compact style suitable
+  for dashboards: "50ms", "1.5s", "2.3m", "1.2h".
   """
   def format_duration(nil), do: "-"
 
@@ -117,13 +136,18 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
     do: ms |> Decimal.to_float() |> format_duration()
 
   def format_duration(ms) when is_float(ms), do: format_duration(round(ms))
-  def format_duration(ms) when is_integer(ms) and ms < 1000, do: "#{ms}ms"
-  def format_duration(ms) when is_integer(ms) and ms < 60_000, do: "#{Float.round(ms / 1000, 1)}s"
 
-  def format_duration(ms) when is_integer(ms) and ms < 3_600_000,
-    do: "#{Float.round(ms / 60_000, 1)}m"
+  def format_duration(ms) when is_integer(ms) do
+    duration = Timex.Duration.from_milliseconds(ms)
+    total_seconds = Timex.Duration.to_seconds(duration)
 
-  def format_duration(ms) when is_integer(ms), do: "#{Float.round(ms / 3_600_000, 1)}h"
+    cond do
+      total_seconds < 1 -> "#{ms}ms"
+      total_seconds < 60 -> "#{Float.round(total_seconds, 1)}s"
+      total_seconds < 3600 -> "#{Float.round(total_seconds / 60, 1)}m"
+      true -> "#{Float.round(total_seconds / 3600, 1)}h"
+    end
+  end
 
   @doc """
   Returns a short form of a UUID for display.

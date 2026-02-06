@@ -16,7 +16,9 @@ defmodule PgflowDemo.Application do
       {DNSCluster, query: Application.get_env(:pgflow_demo, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: PgflowDemo.PubSub},
       # PgFlow Supervisor - processes flows with our repo
-      {PgFlow.Supervisor, repo: PgflowDemo.Repo, flows: [PgflowDemo.Flows.ArticleFlow]},
+      {PgFlow.Supervisor,
+       repo: PgflowDemo.Repo,
+       flows: [PgflowDemo.Flows.ArticleFlow, PgflowDemo.Crons.ArticleFlowCleanup]},
       # PgFlowDashboard Supervisor - manages dashboard processes (MetricsCache)
       PgFlowDashboard,
       # Start to serve requests, typically the last entry

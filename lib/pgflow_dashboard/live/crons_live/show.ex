@@ -1,6 +1,6 @@
-defmodule PgFlowDashboard.Live.JobsLive.Show do
+defmodule PgFlowDashboard.Live.CronsLive.Show do
   @moduledoc """
-  Job detail page with run history grid and recent runs table.
+  Cron detail page with schedule info, run history grid, and recent runs table.
   """
 
   use Phoenix.LiveView
@@ -12,17 +12,17 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
   @page_size 20
 
   @impl true
-  def mount(%{"id" => job_slug}, session, socket) do
+  def mount(%{"id" => cron_slug}, session, socket) do
     {:cont, socket} = LiveHelpers.on_mount(session, socket)
 
     socket =
       socket
-      |> assign(:page_title, job_slug)
+      |> assign(:page_title, cron_slug)
       |> assign(:base_path, session["base_path"] || "/pgflow")
-      |> assign(:job_slug, job_slug)
-      |> load_job()
+      |> assign(:cron_slug, cron_slug)
+      |> load_cron()
 
-    if socket.assigns.job do
+    if socket.assigns.cron do
       socket =
         socket
         |> load_run_history()
@@ -32,7 +32,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
 
       {:ok, socket}
     else
-      {:ok, push_navigate(socket, to: "#{socket.assigns.base_path}/jobs")}
+      {:ok, push_navigate(socket, to: "#{socket.assigns.base_path}/crons")}
     end
   end
 
@@ -40,7 +40,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
   def handle_info(:refresh, socket) do
     socket =
       socket
-      |> load_job()
+      |> load_cron()
       |> load_run_history()
       |> load_recent_runs()
       |> LiveHelpers.schedule_refresh()
@@ -48,28 +48,31 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
     {:noreply, socket}
   end
 
+  @impl true
   def handle_info({:run_completed, _}, socket) do
     {:noreply, socket |> load_run_history() |> load_recent_runs()}
   end
 
+  @impl true
   def handle_info({:run_failed, _}, socket) do
     {:noreply, socket |> load_run_history() |> load_recent_runs()}
   end
 
+  @impl true
   def handle_info(_, socket), do: {:noreply, socket}
 
-  defp load_job(socket) do
-    case Queries.get_job(socket.assigns.repo, socket.assigns.job_slug) do
-      {:ok, job} -> assign(socket, :job, job)
-      {:error, _} -> assign(socket, :job, nil)
+  defp load_cron(socket) do
+    case Queries.get_cron(socket.assigns.repo, socket.assigns.cron_slug) do
+      {:ok, cron} -> assign(socket, :cron, cron)
+      {:error, _} -> assign(socket, :cron, nil)
     end
   end
 
   defp load_run_history(socket) do
     grid_cells =
-      Queries.get_job_run_history_grid(
+      Queries.get_cron_run_history_grid(
         socket.assigns.repo,
-        socket.assigns.job_slug,
+        socket.assigns.cron_slug,
         limit: socket.assigns.config[:max_grid_runs] || 50
       )
 
@@ -79,7 +82,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
   defp load_recent_runs(socket) do
     runs =
       Queries.list_runs(socket.assigns.repo,
-        flow_slug: socket.assigns.job_slug,
+        flow_slug: socket.assigns.cron_slug,
         limit: @page_size + 1
       )
 
@@ -98,49 +101,75 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.dashboard_layout current_page={:jobs} base_path={@base_path}>
-      <div :if={@job}>
+    <Layouts.dashboard_layout current_page={:crons} base_path={@base_path}>
+      <div :if={@cron}>
         <!-- Header -->
         <div class="mb-6">
           <.link
-            navigate={"#{@base_path}/jobs"}
+            navigate={"#{@base_path}/crons"}
             class="text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 mb-2 inline-block"
           >
-            ← Back to jobs
+            ← Back to crons
           </.link>
           <div class="flex items-center gap-3">
-            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">{@job.flow_slug}</h1>
-            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">
-              job
+            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">{@cron.flow_slug}</h1>
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
+              cron
+            </span>
+            <span
+              :if={@cron.is_active}
+              class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400"
+            >
+              Active
+            </span>
+            <span
+              :if={!@cron.is_active}
+              class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400"
+            >
+              Inactive
             </span>
           </div>
+          <div class="mt-2">
+            <p class="text-sm text-slate-700 dark:text-slate-300">
+              {@cron.human_schedule || "Custom schedule"}
+              <span class="text-slate-400 dark:text-slate-500 font-mono text-xs ml-2">
+                ({@cron.cron_expression || "—"})
+              </span>
+            </p>
+          </div>
           <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Max {@job.opt_max_attempts} attempts · {@job.opt_timeout}s timeout
+            Max {@cron.opt_max_attempts} attempts · {@cron.opt_timeout}s timeout
           </p>
         </div>
 
         <!-- Stats -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-            <p class="text-sm text-slate-500 dark:text-slate-400">Total Runs (24h)</p>
-            <p class="text-2xl font-semibold text-slate-900 dark:text-white">{@job.total_runs_24h}</p>
+            <p class="text-sm text-slate-500 dark:text-slate-400">Next Run</p>
+            <p class="text-lg font-semibold text-amber-600 dark:text-amber-400">
+              {LiveHelpers.format_relative_time(@cron.next_run_at)}
+            </p>
+          </div>
+          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+            <p class="text-sm text-slate-500 dark:text-slate-400">Runs (24h)</p>
+            <p class="text-2xl font-semibold text-slate-900 dark:text-white">{@cron.total_runs_24h}</p>
           </div>
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
             <p class="text-sm text-slate-500 dark:text-slate-400">Success Rate</p>
             <p class="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">
-              {@job.success_rate_24h}%
+              {@cron.success_rate_24h}%
             </p>
           </div>
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
             <p class="text-sm text-slate-500 dark:text-slate-400">Avg Duration</p>
             <p class="text-2xl font-semibold text-slate-900 dark:text-white">
-              {LiveHelpers.format_duration(@job.avg_duration_ms)}
+              {LiveHelpers.format_duration(@cron.avg_duration_ms)}
             </p>
           </div>
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
             <p class="text-sm text-slate-500 dark:text-slate-400">P95 Duration</p>
             <p class="text-2xl font-semibold text-slate-900 dark:text-white">
-              {LiveHelpers.format_duration(@job.p95_duration_ms)}
+              {LiveHelpers.format_duration(@cron.p95_duration_ms)}
             </p>
           </div>
         </div>
@@ -149,9 +178,9 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
         <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4 mb-6">
           <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Run History</h2>
           <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">
-            Recent job executions (oldest → newest)
+            Recent cron executions (oldest → newest)
           </p>
-          <.job_history_grid cells={@grid_cells} base_path={@base_path} />
+          <.cron_history_grid cells={@grid_cells} base_path={@base_path} />
         </div>
 
         <!-- Recent Runs Table -->
@@ -218,7 +247,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
             class="px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50"
           >
             <.link
-              navigate={"#{@base_path}/runs?flow=#{@job_slug}"}
+              navigate={"#{@base_path}/runs?flow=#{@cron_slug}"}
               class="text-sm text-purple-600 hover:text-purple-700 dark:text-purple-400"
             >
               View all runs →
@@ -233,7 +262,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
   attr(:cells, :list, required: true)
   attr(:base_path, :string, required: true)
 
-  defp job_history_grid(assigns) do
+  defp cron_history_grid(assigns) do
     cells = Enum.reverse(assigns.cells)
     assigns = assign(assigns, :cells, cells)
 

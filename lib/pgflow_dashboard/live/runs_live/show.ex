@@ -289,65 +289,63 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
           </div>
         </div>
 
+        <!-- Workflow (full width) -->
+        <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4 mb-6">
+          <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Workflow</h2>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Click a node to view its output</p>
+          <DependencyGraph.dependency_graph
+            steps={@flow_steps}
+            step_states={@step_state_map}
+            highlighted_step={@selected_step}
+            on_click="select_step"
+          />
+        </div>
+
+        <!-- Step States + Gantt Timeline (side by side) -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <!-- Dependency Graph -->
-          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-            <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Dependency Graph</h2>
-            <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Click a node to view its output</p>
-            <DependencyGraph.dependency_graph
-              steps={@flow_steps}
-              step_states={@step_state_map}
-              highlighted_step={@selected_step}
-              on_click="select_step"
-            />
-          </div>
-
-          <!-- Right column: Step States + Gantt Timeline -->
-          <div class="flex flex-col gap-6">
-            <!-- Step States -->
-            <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
-              <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
-                <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Step States</h2>
-                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Click a step to view its output</p>
-              </div>
-              <div class="divide-y divide-slate-200 dark:divide-slate-700 max-h-64 overflow-y-auto">
-                <%= if @step_states == [] do %>
-                  <div class="px-4 py-8 text-center text-slate-500 dark:text-slate-400 text-sm">
-                    No step states yet
-                  </div>
-                <% else %>
-                  <%= for state <- @step_states do %>
-                    <div
-                      phx-click="select_step"
-                      phx-value-step={state.step_slug}
-                      class={[
-                        "px-4 py-3 cursor-pointer transition-colors",
-                        @selected_step == state.step_slug && "bg-purple-50 dark:bg-purple-900/20 border-l-2 border-l-purple-500 !border-b-transparent",
-                        @selected_step != state.step_slug && "hover:bg-slate-50 dark:hover:bg-slate-700/50"
-                      ]}
-                    >
-                      <div class="flex items-center justify-between">
-                        <div class="flex items-center gap-3">
-                          <StatusBadge.status_badge status={state.status} size={:sm} pulse={state.status == "started"} />
-                          <span class="text-sm font-medium text-slate-900 dark:text-white">{state.step_slug}</span>
-                        </div>
-                        <span class="text-xs text-slate-500 dark:text-slate-400">
-                          {LiveHelpers.format_duration(state.duration_ms)}
-                        </span>
-                      </div>
-                      <div :if={state.total_tasks > 0} class="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                        Tasks: {state.completed_tasks}/{state.total_tasks}
-                        <span :if={state.failed_tasks > 0} class="text-rose-500">({state.failed_tasks} failed)</span>
-                      </div>
-                    </div>
-                  <% end %>
-                <% end %>
-              </div>
+          <!-- Step States -->
+          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+            <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+              <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Step States</h2>
+              <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Click a step to view its output</p>
             </div>
-
-            <!-- Gantt Timeline -->
-            <GanttTimeline.gantt_timeline run={@run} step_states={@step_states} />
+            <div class="divide-y divide-slate-200 dark:divide-slate-700 max-h-64 overflow-y-auto">
+              <%= if @step_states == [] do %>
+                <div class="px-4 py-8 text-center text-slate-500 dark:text-slate-400 text-sm">
+                  No step states yet
+                </div>
+              <% else %>
+                <%= for state <- @step_states do %>
+                  <div
+                    phx-click="select_step"
+                    phx-value-step={state.step_slug}
+                    class={[
+                      "px-4 py-3 cursor-pointer transition-colors",
+                      @selected_step == state.step_slug && "bg-purple-50 dark:bg-purple-900/20 border-l-2 border-l-purple-500 !border-b-transparent",
+                      @selected_step != state.step_slug && "hover:bg-slate-50 dark:hover:bg-slate-700/50"
+                    ]}
+                  >
+                    <div class="flex items-center justify-between">
+                      <div class="flex items-center gap-3">
+                        <StatusBadge.status_badge status={state.status} size={:sm} pulse={state.status == "started"} />
+                        <span class="text-sm font-medium text-slate-900 dark:text-white">{state.step_slug}</span>
+                      </div>
+                      <span class="text-xs text-slate-500 dark:text-slate-400">
+                        {LiveHelpers.format_duration(state.duration_ms)}
+                      </span>
+                    </div>
+                    <div :if={state.total_tasks > 0} class="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                      Tasks: {state.completed_tasks}/{state.total_tasks}
+                      <span :if={state.failed_tasks > 0} class="text-rose-500">({state.failed_tasks} failed)</span>
+                    </div>
+                  </div>
+                <% end %>
+              <% end %>
+            </div>
           </div>
+
+          <!-- Gantt Timeline -->
+          <GanttTimeline.gantt_timeline run={@run} step_states={@step_states} />
         </div>
 
         <!-- Input/Output -->

@@ -79,9 +79,15 @@ defmodule PgFlowDashboard.Queries.Runs do
 
     case execute_rpc(repo, "get_adjacent_run", params, schema: "pgflow_dashboard", mode: :single) do
       {:ok, %{run_id: adjacent_id}} when not is_nil(adjacent_id) ->
-        {:ok, adjacent_id}
+        {:ok, format_uuid(adjacent_id)}
+
+      {:ok, %{get_adjacent_run: adjacent_id}} when not is_nil(adjacent_id) ->
+        {:ok, format_uuid(adjacent_id)}
 
       {:ok, %{run_id: nil}} ->
+        {:error, :not_found}
+
+      {:ok, %{get_adjacent_run: nil}} ->
         {:error, :not_found}
 
       {:error, :not_found} ->

@@ -67,7 +67,7 @@ defmodule PgFlow.Job do
     quote do
       import PgFlow.Job, only: [perform: 1]
 
-      Module.register_attribute(__MODULE__, :job, persist: false)
+      Module.register_attribute(__MODULE__, :job, accumulate: true, persist: false)
       Module.register_attribute(__MODULE__, :pgflow_steps, accumulate: true, persist: false)
 
       @before_compile PgFlow.Job
@@ -77,9 +77,10 @@ defmodule PgFlow.Job do
   @valid_keys [:queue, :max_attempts, :base_delay, :timeout]
 
   defmacro __before_compile__(env) do
-    job_attrs = Module.get_attribute(env.module, :job)
+    job_attrs_list = Module.get_attribute(env.module, :job)
     steps = Module.get_attribute(env.module, :pgflow_steps) |> Enum.reverse()
 
+    job_attrs = validate_job_attr_count!(job_attrs_list, env)
     validate_job_attrs!(job_attrs, env)
     validate_steps!(steps, env)
 
@@ -162,74 +163,40 @@ defmodule PgFlow.Job do
 
   # --- Validation helpers ---
 
+  alias PgFlow.DSL.Validation
+
+  defp validate_job_attr_count!([], _env), do: nil
+  defp validate_job_attr_count!([single], _env), do: single
+
+  defp validate_job_attr_count!(_multiple, env),
+    do:
+      Validation.compile_error!(
+        env,
+        "Multiple @job attributes defined. Only one @job attribute is allowed per module."
+      )
+
   defp validate_job_attrs!(nil, env),
     do:
-      compile_error!(
+      Validation.compile_error!(
         env,
         "Missing @job attribute. You must define @job with at least a :queue option."
       )
 
   defp validate_job_attrs!(attrs, env) do
-    validate_required_queue!(attrs, env)
-    validate_unknown_keys!(attrs, env)
+    Validation.validate_required_keys!(attrs, [:queue], :job, env)
+    Validation.validate_unknown_keys!(attrs, @valid_keys, :job, env)
     validate_option_values!(attrs, env)
   end
 
-  defp validate_steps!([_single], _env), do: :ok
-
-  defp validate_steps!(_steps, env),
-    do: compile_error!(env, "Jobs must have exactly one `perform` block.")
-
-  defp validate_required_queue!(attrs, env) do
-    unless Keyword.has_key?(attrs, :queue),
-      do:
-        compile_error!(
-          env,
-          "Missing :queue in @job attribute. You must define @job with a :queue option."
-        )
-  end
-
-  defp validate_unknown_keys!(attrs, env) do
-    case Keyword.keys(attrs) -- @valid_keys do
-      [] ->
-        :ok
-
-      unknown ->
-        compile_error!(
-          env,
-          "Unknown @job option(s): #{inspect(unknown)}. Valid options are: #{inspect(@valid_keys)}"
-        )
-    end
-  end
+  defp validate_steps!(steps, env),
+    do:
+      Validation.validate_single_step!(steps, "Jobs must have exactly one `perform` block.", env)
 
   defp validate_option_values!(attrs, env) do
-    validate_option!(:queue, Keyword.fetch!(attrs, :queue), env)
+    Validation.validate_option!(:queue, Keyword.fetch!(attrs, :queue), env)
 
     [:max_attempts, :base_delay, :timeout]
     |> Enum.filter(&Keyword.has_key?(attrs, &1))
-    |> Enum.each(&validate_option!(&1, Keyword.fetch!(attrs, &1), env))
+    |> Enum.each(&Validation.validate_option!(&1, Keyword.fetch!(attrs, &1), env))
   end
-
-  defp validate_option!(:queue, val, _env) when is_atom(val), do: :ok
-
-  defp validate_option!(:queue, val, env),
-    do: compile_error!(env, ":queue must be an atom, got: #{inspect(val)}")
-
-  defp validate_option!(:max_attempts, val, _env) when is_integer(val) and val > 0, do: :ok
-
-  defp validate_option!(:max_attempts, val, env),
-    do: compile_error!(env, ":max_attempts must be a positive integer, got: #{inspect(val)}")
-
-  defp validate_option!(:base_delay, val, _env) when is_integer(val) and val >= 0, do: :ok
-
-  defp validate_option!(:base_delay, val, env),
-    do: compile_error!(env, ":base_delay must be a non-negative integer, got: #{inspect(val)}")
-
-  defp validate_option!(:timeout, val, _env) when is_integer(val) and val > 0, do: :ok
-
-  defp validate_option!(:timeout, val, env),
-    do: compile_error!(env, ":timeout must be a positive integer, got: #{inspect(val)}")
-
-  defp compile_error!(env, description),
-    do: raise(CompileError, file: env.file, line: env.line, description: description)
 end

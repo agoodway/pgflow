@@ -369,6 +369,116 @@ defmodule PgFlow.QueriesTest do
     end
   end
 
+  # ── prune_data ─────────────────────────────────────────────────────
+
+  describe "prune_data/3" do
+    test "returns {:ok, result} with zero counts when no old data exists" do
+      _flow_slug = compile_flow(SimpleFlow)
+
+      assert {:ok, result} = Queries.prune_data(TestRepo, 24)
+
+      assert result == %{
+               deleted_runs: 0,
+               deleted_step_states: 0,
+               deleted_step_tasks: 0,
+               deleted_workers: 0
+             }
+    end
+
+    test "prunes completed runs older than retention period" do
+      flow_slug = compile_flow(SimpleFlow)
+      run_id = start_flow_run(flow_slug, %{"value" => 42})
+
+      worker_id = register_worker(flow_slug)
+      {_messages, _task_details} = read_and_start_tasks(flow_slug, worker_id)
+
+      # Complete the task to mark run as completed
+      output = %{"result" => 42}
+      {:ok, _} = Queries.complete_task(TestRepo, run_id, "process", 0, output)
+
+      # Backdate the run to make it appear older than retention
+      # Must also backdate started_at due to completed_at_is_after_started_at constraint
+      TestRepo.query!(
+        """
+        UPDATE pgflow.runs
+        SET started_at = NOW() - INTERVAL '49 hours',
+            completed_at = NOW() - INTERVAL '48 hours'
+        WHERE run_id = $1
+        """,
+        [Ecto.UUID.dump!(run_id)]
+      )
+
+      # Prune with 24 hour retention - should delete the 48-hour-old run
+      assert {:ok, result} = Queries.prune_data(TestRepo, 24)
+      assert result.deleted_runs == 1
+      assert result.deleted_step_states >= 1
+      assert result.deleted_step_tasks >= 1
+    end
+
+    test "respects flow_slugs filter option" do
+      # Create two different flows
+      flow_slug1 = compile_flow(SimpleFlow)
+      flow_slug2 = compile_flow(TwoStepFlow)
+
+      # Start runs in both flows
+      run_id1 = start_flow_run(flow_slug1, %{"value" => 1})
+      run_id2 = start_flow_run(flow_slug2, %{"value" => 2})
+
+      # Complete both flows
+      worker_id1 = register_worker(flow_slug1)
+      {_m1, _t1} = read_and_start_tasks(flow_slug1, worker_id1)
+      {:ok, _} = Queries.complete_task(TestRepo, run_id1, "process", 0, %{"result" => 1})
+
+      worker_id2 = register_worker(flow_slug2)
+      {_m2, _t2} = read_and_start_tasks(flow_slug2, worker_id2)
+      {:ok, _} = Queries.complete_task(TestRepo, run_id2, "first", 0, %{"first_result" => 2})
+      # Read and start the second step
+      {_m3, _t3} = read_and_start_tasks(flow_slug2, worker_id2)
+      {:ok, _} = Queries.complete_task(TestRepo, run_id2, "second", 0, %{"second_result" => 4})
+
+      # Backdate both runs
+      # Must also backdate started_at due to completed_at_is_after_started_at constraint
+      TestRepo.query!(
+        """
+        UPDATE pgflow.runs
+        SET started_at = NOW() - INTERVAL '49 hours',
+            completed_at = NOW() - INTERVAL '48 hours'
+        WHERE run_id = ANY($1)
+        """,
+        [[Ecto.UUID.dump!(run_id1), Ecto.UUID.dump!(run_id2)]]
+      )
+
+      # Prune only the first flow
+      assert {:ok, result} = Queries.prune_data(TestRepo, 24, flow_slugs: [flow_slug1])
+      assert result.deleted_runs == 1
+
+      # Verify the second flow's run still exists
+      %{rows: rows} =
+        TestRepo.query!(
+          "SELECT run_id FROM pgflow.runs WHERE run_id = $1",
+          [Ecto.UUID.dump!(run_id2)]
+        )
+
+      assert length(rows) == 1
+    end
+
+    test "does not prune runs within retention period" do
+      flow_slug = compile_flow(SimpleFlow)
+      run_id = start_flow_run(flow_slug, %{"value" => 42})
+
+      worker_id = register_worker(flow_slug)
+      {_messages, _task_details} = read_and_start_tasks(flow_slug, worker_id)
+
+      # Complete the task
+      {:ok, _} = Queries.complete_task(TestRepo, run_id, "process", 0, %{"result" => 42})
+
+      # Don't backdate - run is fresh
+      # Prune with 24 hour retention - should NOT delete fresh run
+      assert {:ok, result} = Queries.prune_data(TestRepo, 24)
+      assert result.deleted_runs == 0
+    end
+  end
+
   # ── recover_stalled_tasks ──────────────────────────────────────────
 
   describe "recover_stalled_tasks/2" do

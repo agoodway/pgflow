@@ -673,6 +673,110 @@ $$;
 
 --SPLIT--
 
+-- Function: list_crons()
+-- Lists all crons with statistics and schedule info from pg_cron
+CREATE OR REPLACE FUNCTION $SCHEMA$.list_crons()
+RETURNS TABLE (
+  flow_slug text,
+  cron_expression text,
+  is_active boolean,
+  opt_max_attempts integer,
+  opt_base_delay integer,
+  opt_timeout integer,
+  total_runs_24h bigint,
+  completed_runs_24h bigint,
+  failed_runs_24h bigint,
+  success_rate_24h numeric,
+  avg_duration_ms numeric,
+  p95_duration_ms numeric,
+  last_run_at timestamptz,
+  last_run_status text
+)
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT
+    f.flow_slug,
+    cj.schedule AS cron_expression,
+    COALESCE(cj.active, true) AS is_active,
+    f.opt_max_attempts,
+    f.opt_base_delay,
+    f.opt_timeout,
+    f.total_runs_24h,
+    f.completed_runs_24h,
+    f.failed_runs_24h,
+    f.success_rate_24h,
+    f.avg_duration_ms,
+    f.p95_duration_ms,
+    lr.last_run_at,
+    lr.last_run_status
+  FROM $SCHEMA$.flow_stats f
+  LEFT JOIN cron.job cj ON cj.jobname = 'pgflow:' || f.flow_slug
+  LEFT JOIN LATERAL (
+    SELECT r.completed_at AS last_run_at, r.status AS last_run_status
+    FROM pgflow.runs r
+    WHERE r.flow_slug = f.flow_slug
+    ORDER BY r.started_at DESC
+    LIMIT 1
+  ) lr ON true
+  WHERE f.flow_type = 'cron'
+  ORDER BY f.flow_slug
+$$;
+
+--SPLIT--
+
+-- Function: get_cron()
+-- Gets a single cron's statistics and schedule info
+CREATE OR REPLACE FUNCTION $SCHEMA$.get_cron(p_flow_slug text)
+RETURNS TABLE (
+  flow_slug text,
+  cron_expression text,
+  is_active boolean,
+  opt_max_attempts integer,
+  opt_base_delay integer,
+  opt_timeout integer,
+  total_runs_24h bigint,
+  completed_runs_24h bigint,
+  failed_runs_24h bigint,
+  success_rate_24h numeric,
+  avg_duration_ms numeric,
+  p95_duration_ms numeric,
+  last_run_at timestamptz,
+  last_run_status text
+)
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT
+    f.flow_slug,
+    cj.schedule AS cron_expression,
+    COALESCE(cj.active, true) AS is_active,
+    f.opt_max_attempts,
+    f.opt_base_delay,
+    f.opt_timeout,
+    f.total_runs_24h,
+    f.completed_runs_24h,
+    f.failed_runs_24h,
+    f.success_rate_24h,
+    f.avg_duration_ms,
+    f.p95_duration_ms,
+    lr.last_run_at,
+    lr.last_run_status
+  FROM $SCHEMA$.flow_stats f
+  LEFT JOIN cron.job cj ON cj.jobname = 'pgflow:' || f.flow_slug
+  LEFT JOIN LATERAL (
+    SELECT r.completed_at AS last_run_at, r.status AS last_run_status
+    FROM pgflow.runs r
+    WHERE r.flow_slug = f.flow_slug
+    ORDER BY r.started_at DESC
+    LIMIT 1
+  ) lr ON true
+  WHERE f.flow_slug = p_flow_slug
+    AND f.flow_type = 'cron'
+$$;
+
+--SPLIT--
+
 -- Function: list_flow_steps()
 -- Lists flow steps with dependencies (for dependency graph)
 CREATE OR REPLACE FUNCTION $SCHEMA$.list_flow_steps(p_flow_slug text)
