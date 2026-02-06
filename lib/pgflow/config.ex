@@ -8,6 +8,7 @@ defmodule PgFlow.Config do
 
     * `:repo` (required) - The Ecto repository module to use for database operations.
     * `:flows` (optional) - List of flow modules to automatically register on startup. Default: `[]`.
+    * `:jobs` (optional) - List of job modules to automatically register on startup. Default: `[]`.
     * `:worker_name` (optional) - Human-readable name for workers in logs. Default: auto-generated from flow slug.
     * `:max_concurrency` (optional) - Maximum number of parallel tasks per worker. Default: `10`.
     * `:batch_size` (optional) - Number of messages to fetch per poll cycle. Default: `10`.
@@ -38,6 +39,11 @@ defmodule PgFlow.Config do
       type: {:list, :atom},
       default: [],
       doc: "List of flow modules to automatically register on startup"
+    ],
+    jobs: [
+      type: {:list, :atom},
+      default: [],
+      doc: "List of job modules to automatically register on startup"
     ],
     worker_name: [
       type: {:or, [:string, nil]},

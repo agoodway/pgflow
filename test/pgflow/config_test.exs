@@ -40,6 +40,7 @@ defmodule PgFlow.ConfigTest do
         Config.validate!(
           repo: ValidTestRepo,
           flows: [SomeFlow, AnotherFlow],
+          jobs: [SomeJob],
           max_concurrency: 20,
           batch_size: 15,
           poll_interval: 200,
@@ -51,6 +52,7 @@ defmodule PgFlow.ConfigTest do
 
       assert config[:repo] == ValidTestRepo
       assert config[:flows] == [SomeFlow, AnotherFlow]
+      assert config[:jobs] == [SomeJob]
       assert config[:max_concurrency] == 20
       assert config[:batch_size] == 15
       assert config[:poll_interval] == 200
@@ -111,10 +113,17 @@ defmodule PgFlow.ConfigTest do
       assert config[:attach_default_logger] == false
     end
 
+    test "applies default for :jobs" do
+      config = Config.validate!(repo: ValidTestRepo)
+
+      assert config[:jobs] == []
+    end
+
     test "applies all defaults when only repo is provided" do
       config = Config.validate!(repo: ValidTestRepo)
 
       assert config[:flows] == []
+      assert config[:jobs] == []
       assert config[:max_concurrency] == 10
       assert config[:batch_size] == 10
       assert config[:poll_interval] == 0
@@ -303,6 +312,14 @@ defmodule PgFlow.ConfigTest do
       assert Keyword.has_key?(schema, :flows)
       assert schema[:flows][:default] == []
       assert schema[:flows][:type] == {:list, :atom}
+    end
+
+    test "schema includes :jobs option with default" do
+      schema = Config.schema()
+
+      assert Keyword.has_key?(schema, :jobs)
+      assert schema[:jobs][:default] == []
+      assert schema[:jobs][:type] == {:list, :atom}
     end
 
     test "schema includes :max_concurrency option with default" do

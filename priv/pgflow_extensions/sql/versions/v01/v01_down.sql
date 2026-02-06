@@ -1,3 +1,5 @@
+ALTER TABLE pgflow.flows DROP COLUMN IF EXISTS flow_type;
+--SPLIT--
 DROP FUNCTION IF EXISTS $SCHEMA$.recover_stalled_tasks(double precision);
 --SPLIT--
 DROP FUNCTION IF EXISTS $SCHEMA$.mark_worker_stopped(uuid);

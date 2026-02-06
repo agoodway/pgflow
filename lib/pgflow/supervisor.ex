@@ -48,6 +48,7 @@ defmodule PgFlow.Supervisor do
 
     repo = Keyword.fetch!(config, :repo)
     flows = Keyword.get(config, :flows, [])
+    jobs = Keyword.get(config, :jobs, [])
     attach_logger = Keyword.get(config, :attach_default_logger, false)
 
     # Attach telemetry logger if configured
@@ -65,11 +66,18 @@ defmodule PgFlow.Supervisor do
       # Start stalled task recovery to reclaim orphaned tasks
       {StalledTaskRecovery, config},
 
-      # Register flows and start workers — runs after WorkerSupervisor is alive
+      # Register flows/jobs and start workers — runs after WorkerSupervisor is alive
       # Uses :temporary restart since it's a one-shot initialization task
       %{
         id: :flow_starter,
-        start: {Task, :start_link, [fn -> register_flows(flows, repo) end]},
+        start:
+          {Task, :start_link,
+           [
+             fn ->
+               register_modules(flows, "flow", repo)
+               register_modules(jobs, "job", repo)
+             end
+           ]},
         restart: :temporary
       }
     ]
@@ -85,27 +93,25 @@ defmodule PgFlow.Supervisor do
 
   # Private Functions
 
-  defp register_flows(flows, repo) do
-    Enum.each(flows, fn flow_module ->
+  defp register_modules(modules, module_type, repo) do
+    Enum.each(modules, fn module ->
       try do
-        FlowRegistry.register(flow_module)
-        Logger.info("Registered flow: #{inspect(flow_module)}")
+        FlowRegistry.register(module)
+        Logger.info("Registered #{module_type}: #{inspect(module)}")
 
-        # Optionally start a worker for each flow
-        # This can be controlled by configuration in the future
-        case WorkerSupervisor.start_worker(flow_module, repo: repo) do
+        case WorkerSupervisor.start_worker(module, repo: repo) do
           {:ok, _pid} ->
-            Logger.info("Started worker for flow: #{inspect(flow_module)}")
+            Logger.info("Started worker for #{module_type}: #{inspect(module)}")
 
           {:error, reason} ->
             Logger.error(
-              "Failed to start worker for flow #{inspect(flow_module)}: #{inspect(reason)}"
+              "Failed to start worker for #{module_type} #{inspect(module)}: #{inspect(reason)}"
             )
         end
       rescue
         error ->
           Logger.error(
-            "Failed to register flow #{inspect(flow_module)}: #{Exception.message(error)}"
+            "Failed to register #{module_type} #{inspect(module)}: #{Exception.message(error)}"
           )
       end
     end)

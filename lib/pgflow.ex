@@ -155,6 +155,37 @@ defmodule PgFlow do
   defdelegate get_run_with_states(run_id), to: Client
 
   @doc """
+  Enqueues a background job with the given input.
+
+  This is the primary API for dispatching jobs. Under the hood, jobs are
+  single-step flows, so this delegates to `start_flow/2`.
+
+  ## Examples
+
+      {:ok, run_id} = PgFlow.enqueue(MyApp.Jobs.SendEmail, %{"to" => "user@example.com"})
+
+  """
+  @spec enqueue(module(), map()) :: {:ok, String.t()} | {:error, term()}
+  def enqueue(job_module, input) when is_atom(job_module) and is_map(input) do
+    start_flow(job_module, input)
+  end
+
+  @doc """
+  Enqueues a background job with options.
+
+  Currently options are reserved for future use (e.g., scheduled jobs).
+
+  ## Examples
+
+      {:ok, run_id} = PgFlow.enqueue(MyApp.Jobs.SendEmail, %{"to" => "user@example.com"}, [])
+
+  """
+  @spec enqueue(module(), map(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def enqueue(job_module, input, _opts) when is_atom(job_module) and is_map(input) do
+    start_flow(job_module, input)
+  end
+
+  @doc """
   Starts a worker for the given flow.
 
   ## Options

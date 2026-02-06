@@ -222,3 +222,39 @@ defmodule PgFlow.TestFlows do
     end
   end
 end
+
+defmodule PgFlow.TestJobs do
+  @moduledoc """
+  Example jobs for testing the PgFlow Job framework.
+  """
+
+  defmodule SimpleJob do
+    @moduledoc """
+    A simple background job for testing.
+    """
+    use PgFlow.Job
+
+    @job queue: :simple_job, max_attempts: 3
+
+    perform do
+      fn input, _ctx ->
+        %{result: input["value"] * 2}
+      end
+    end
+  end
+
+  defmodule EmailJob do
+    @moduledoc """
+    An email-sending job with custom options.
+    """
+    use PgFlow.Job
+
+    @job queue: :email_job, max_attempts: 5, base_delay: 10, timeout: 120
+
+    perform do
+      fn input, _ctx ->
+        %{sent_to: input["to"], subject: input["subject"]}
+      end
+    end
+  end
+end

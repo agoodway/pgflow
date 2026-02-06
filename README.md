@@ -1,6 +1,6 @@
 # PgFlow
 
-A native Elixir implementation of [pgflow](https://pgflow.dev) — a PostgreSQL-based workflow engine built on [pgmq](https://github.com/pgmq/pgmq). PostgreSQL and pgmq do the heavy lifting - queuing, visibility timeouts, and delivery guarantees live in the database. Elixir workers are thin polling clients. This implementation attempts to be compatible with the existing TypeScript/Deno [pgflow](https://github.com/pgflow-dev/pgflow) project, sharing the same database schema and SQL functions.
+A native Elixir implementation of [pgflow](https://pgflow.dev) — a PostgreSQL-based workflow engine built on [pgmq](https://github.com/pgmq/pgmq). Define multi-step DAG workflows ("flows") or simple one-off background jobs ("jobs") — both backed by the same PostgreSQL queuing infrastructure with retries, visibility timeouts, and delivery guarantees. Elixir workers are thin polling clients. This implementation attempts to be compatible with the existing TypeScript/Deno [pgflow](https://github.com/pgflow-dev/pgflow) project, sharing the same database schema and SQL functions.
 
 ![pgflow](pgflow.png)
 
@@ -336,6 +336,60 @@ end
 
 **Exceptions** are caught and treated as failures with the exception message.
 
+## Background Jobs
+
+PgFlow also supports simple background jobs — one-off tasks like sending emails or processing webhooks. Jobs are single-step flows under the hood, reusing the same queuing infrastructure, retries, and dashboard visibility.
+
+### Define a Job
+
+```elixir
+defmodule MyApp.Jobs.SendEmail do
+  use PgFlow.Job
+
+  @job queue: :send_email, max_attempts: 5, base_delay: 10, timeout: 120
+
+  perform do
+    fn input, _ctx ->
+      Mailer.send(input["to"], input["subject"], input["body"])
+      %{sent: true}
+    end
+  end
+end
+```
+
+### Job Options
+
+The `@job` module attribute accepts:
+
+| Option          | Type    | Default  | Description                                   |
+|-----------------|---------|----------|-----------------------------------------------|
+| `:queue`        | atom    | required | Unique identifier for the job queue           |
+| `:max_attempts` | integer | 1        | Maximum retry attempts for failed jobs        |
+| `:base_delay`   | integer | 1        | Base delay in seconds for exponential backoff |
+| `:timeout`      | integer | 30       | Job execution timeout in seconds              |
+
+### Compile the Job to Database
+
+```bash
+mix pgflow.gen.job MyApp.Jobs.SendEmail
+mix ecto.migrate
+```
+
+### Enqueue a Job
+
+```elixir
+{:ok, run_id} = PgFlow.enqueue(MyApp.Jobs.SendEmail, %{"to" => "user@example.com", "subject" => "Hello"})
+```
+
+### Configure Workers for Jobs
+
+```elixir
+config :my_app, MyApp.PgFlow,
+  repo: MyApp.Repo,
+  flows: [MyApp.Flows.ProcessOrder],
+  jobs: [MyApp.Jobs.SendEmail]
+```
+
 ## Configuration Reference
 
 ### Worker Options
@@ -343,7 +397,8 @@ end
 ```elixir
 config :my_app, MyApp.PgFlow,
   repo: MyApp.Repo,                    # Required: Ecto repository
-  flows: [MyFlow],                     # Required: List of flow modules
+  flows: [MyFlow],                     # Flow modules to start workers for
+  jobs: [MyJob],                       # Job modules to start workers for
   max_concurrency: 10,                 # Max parallel tasks per worker
   batch_size: 10,                      # Messages per poll
   poll_interval: 0,                    # Milliseconds between polls (0 = immediate re-poll)
@@ -355,6 +410,7 @@ config :my_app, MyApp.PgFlow,
 | Task                             | Description                                    |
 |----------------------------------|------------------------------------------------|
 | `mix pgflow.gen.flow MyApp.Flow` | Generate migration to compile flow to database |
+| `mix pgflow.gen.job MyApp.Job`   | Generate migration to compile job to database  |
 | `mix pgflow.copy_migrations`     | Copy pgflow schema migrations to your project  |
 | `mix pgflow.sync_test_sql`       | Download latest pgflow SQL for testing         |
 | `mix pgflow.test.setup`          | Set up test database                           |
@@ -476,6 +532,17 @@ This Elixir implementation is fully compatible with the TypeScript/Deno version:
 - Same SQL functions (`pgflow.start_flow`, `pgflow.complete_task`, etc.)
 - Same PGMQ message format
 - Workers can run side-by-side (Elixir and TypeScript processing same flows)
+
+### Schema Divergences from Upstream!
+
+The Elixir implementation adds the following extensions to the pgflow schema that are **not present** in the upstream TypeScript/Deno project:
+
+| Change                  | Table            | Description                                                                                                                                                                    |
+|-------------------------|------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `flow_type` column      | `pgflow.flows`   | `text NOT NULL DEFAULT 'flow'` with `CHECK (flow_type IN ('flow', 'job'))`. Distinguishes background jobs (single-step flows) from multi-step DAG workflows in the dashboard. |
+| Extension SQL functions | `pgflow` schema  | `register_worker`, `mark_worker_stopped`, `recover_stalled_tasks`, `flow_exists`, `get_flow_input`, `get_step_output` — helper functions for the Elixir OTP worker system.    |
+
+These additions are backward-compatible: existing flow records default to `flow_type = 'flow'`, and extension functions don't modify core pgflow tables. TypeScript workers can safely ignore them.
 
 ## License
 

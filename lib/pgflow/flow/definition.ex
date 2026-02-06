@@ -33,14 +33,18 @@ defmodule PgFlow.Flow.Definition do
     :slug,
     :module,
     opts: [],
-    steps: []
+    steps: [],
+    flow_type: :flow
   ]
+
+  @type flow_type :: :flow | :job
 
   @type t :: %__MODULE__{
           slug: atom(),
           module: module(),
           opts: keyword(),
-          steps: [Step.t()]
+          steps: [Step.t()],
+          flow_type: flow_type()
         }
 
   @doc """

@@ -123,5 +123,16 @@ $$;
 
 --SPLIT--
 
+-- SCHEMA EXTENSION: flow_type column on pgflow.flows
+-- This column is an Elixir-specific extension NOT present in the upstream
+-- TypeScript pgflow project. It distinguishes background jobs (single-step
+-- flows) from multi-step DAG workflows in the dashboard.
+-- Default 'flow' ensures backward compatibility with existing flow records.
+ALTER TABLE pgflow.flows
+  ADD COLUMN IF NOT EXISTS flow_type text NOT NULL DEFAULT 'flow'
+  CONSTRAINT flow_type_is_valid CHECK (flow_type IN ('flow', 'job'));
+
+--SPLIT--
+
 -- Version tracking
 COMMENT ON VIEW $SCHEMA$.extensions_version IS 'PgFlow version=1';
