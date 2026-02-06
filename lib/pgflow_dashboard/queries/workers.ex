@@ -3,7 +3,7 @@ defmodule PgFlowDashboard.Queries.Workers do
   Database queries for worker-related data.
   """
 
-  import PgFlowDashboard.Queries.Base
+  import PgFlow.Queries.Base
 
   @doc """
   Counts workers matching the given filters.
@@ -21,7 +21,7 @@ defmodule PgFlowDashboard.Queries.Workers do
       health_status_to_string(Keyword.get(opts, :health_status))
     ]
 
-    execute_rpc(repo, "count_workers", params, mode: :count)
+    execute_rpc(repo, "count_workers", params, schema: "pgflow_dashboard", mode: :count)
   end
 
   @doc """
@@ -44,7 +44,7 @@ defmodule PgFlowDashboard.Queries.Workers do
       parse_uuid(Keyword.get(opts, :cursor))
     ]
 
-    execute_rpc(repo, "list_workers", params, mode: :list)
+    execute_rpc(repo, "list_workers", params, schema: "pgflow_dashboard", mode: :list)
   end
 
   @doc """
@@ -52,7 +52,10 @@ defmodule PgFlowDashboard.Queries.Workers do
   """
   @spec get_worker(module(), String.t()) :: {:ok, map()} | {:error, :not_found | term()}
   def get_worker(repo, worker_id) do
-    execute_rpc(repo, "get_worker", [parse_uuid(worker_id)], mode: :single)
+    execute_rpc(repo, "get_worker", [parse_uuid(worker_id)],
+      schema: "pgflow_dashboard",
+      mode: :single
+    )
   end
 
   @doc """
@@ -61,7 +64,11 @@ defmodule PgFlowDashboard.Queries.Workers do
   @spec list_worker_tasks(module(), String.t(), keyword()) :: list(map())
   def list_worker_tasks(repo, worker_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
-    execute_rpc(repo, "list_worker_tasks", [parse_uuid(worker_id), limit], mode: :list)
+
+    execute_rpc(repo, "list_worker_tasks", [parse_uuid(worker_id), limit],
+      schema: "pgflow_dashboard",
+      mode: :list
+    )
   end
 
   @doc """
@@ -78,7 +85,10 @@ defmodule PgFlowDashboard.Queries.Workers do
       direction_to_string(direction)
     ]
 
-    case execute_rpc(repo, "get_adjacent_worker", params, mode: :single) do
+    case execute_rpc(repo, "get_adjacent_worker", params,
+           schema: "pgflow_dashboard",
+           mode: :single
+         ) do
       {:ok, %{worker_id: adjacent_id}} when not is_nil(adjacent_id) ->
         {:ok, adjacent_id}
 

@@ -184,9 +184,24 @@ defmodule PgFlow.QueriesTest do
   end
 
   # ── get_flow_input ─────────────────────────────────────────────────
-  # NOTE: get_flow_input/2 has a known issue where it passes string UUIDs
-  # to Postgrex which expects binary UUIDs. Tests added after the source
-  # fix lands.
+
+  describe "get_flow_input/2" do
+    test "returns input data for existing run" do
+      flow_slug = compile_flow(SimpleFlow)
+      input = %{"value" => 42, "nested" => %{"key" => "data"}}
+      run_id = start_flow_run(flow_slug, input)
+
+      assert {:ok, returned_input} = Queries.get_flow_input(TestRepo, run_id)
+      assert returned_input == input
+    end
+
+    test "returns {:error, :not_found} for nonexistent run" do
+      _flow_slug = compile_flow(SimpleFlow)
+      nonexistent_id = Ecto.UUID.generate()
+
+      assert {:error, :not_found} = Queries.get_flow_input(TestRepo, nonexistent_id)
+    end
+  end
 
   # ── read_with_poll ─────────────────────────────────────────────────
 
@@ -360,6 +375,43 @@ defmodule PgFlow.QueriesTest do
     test "returns {:ok, 0} when no stalled tasks exist" do
       _flow_slug = compile_flow(SimpleFlow)
       assert {:ok, 0} = Queries.recover_stalled_tasks(TestRepo, 60)
+    end
+
+    test "recovers tasks stalled beyond threshold" do
+      flow_slug = compile_flow(SimpleFlow)
+      _run_id = start_flow_run(flow_slug, %{"value" => 42})
+
+      worker_id = register_worker(flow_slug)
+      {_messages, task_details} = read_and_start_tasks(flow_slug, worker_id)
+
+      # Get the task info to backdate it
+      [_flow_slug_bin, run_id_bin, step_slug, _input, _msg_id, task_index | _] =
+        hd(task_details)
+
+      # Backdate started_at and queued_at to make task appear stalled
+      # (DB constraint: started_at must be >= queued_at)
+      TestRepo.query!(
+        """
+        UPDATE pgflow.step_tasks
+        SET started_at = NOW() - INTERVAL '120 seconds',
+            queued_at = NOW() - INTERVAL '121 seconds'
+        WHERE run_id = $1 AND step_slug = $2 AND task_index = $3
+        """,
+        [run_id_bin, step_slug, task_index]
+      )
+
+      # Recover with 60-second threshold
+      assert {:ok, count} = Queries.recover_stalled_tasks(TestRepo, 60)
+      assert count == 1
+
+      # Verify task is reset to queued
+      %{rows: [[status]]} =
+        TestRepo.query!(
+          "SELECT status FROM pgflow.step_tasks WHERE run_id = $1 AND step_slug = $2",
+          [run_id_bin, step_slug]
+        )
+
+      assert status == "queued"
     end
   end
 end

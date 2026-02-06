@@ -99,7 +99,12 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
       run_id = start_flow_run(flow_slug, %{"value" => 42})
 
       # Read messages from the queue to get msg_ids
-      {:ok, messages} = Queries.read_with_poll(TestRepo, flow_slug, 30, 10, max_poll_seconds: 1, poll_interval_ms: 100)
+      {:ok, messages} =
+        Queries.read_with_poll(TestRepo, flow_slug, 30, 10,
+          max_poll_seconds: 1,
+          poll_interval_ms: 100
+        )
+
       assert length(messages) > 0
 
       msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
@@ -149,7 +154,12 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
       flow_slug = compile_flow(StalledFlow)
       run_id = start_flow_run(flow_slug, %{"value" => 42})
 
-      {:ok, messages} = Queries.read_with_poll(TestRepo, flow_slug, 30, 10, max_poll_seconds: 1, poll_interval_ms: 100)
+      {:ok, messages} =
+        Queries.read_with_poll(TestRepo, flow_slug, 30, 10,
+          max_poll_seconds: 1,
+          poll_interval_ms: 100
+        )
+
       msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
       worker_id = Ecto.UUID.generate()
 
@@ -178,7 +188,12 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
       flow_slug = compile_flow(StalledFlow)
       run_id = start_flow_run(flow_slug, %{"value" => 42})
 
-      {:ok, messages} = Queries.read_with_poll(TestRepo, flow_slug, 30, 10, max_poll_seconds: 1, poll_interval_ms: 100)
+      {:ok, messages} =
+        Queries.read_with_poll(TestRepo, flow_slug, 30, 10,
+          max_poll_seconds: 1,
+          poll_interval_ms: 100
+        )
+
       msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
       worker_id = Ecto.UUID.generate()
 

@@ -99,12 +99,16 @@ defmodule PgFlow.Worker.LifecycleTest do
   describe "transition/2 - invalid transitions" do
     test "created -> running returns error" do
       lifecycle = Lifecycle.new()
-      assert {:error, {:invalid_transition, :created, :running}} = Lifecycle.transition(lifecycle, :running)
+
+      assert {:error, {:invalid_transition, :created, :running}} =
+               Lifecycle.transition(lifecycle, :running)
     end
 
     test "created -> stopped returns error" do
       lifecycle = Lifecycle.new()
-      assert {:error, {:invalid_transition, :created, :stopped}} = Lifecycle.transition(lifecycle, :stopped)
+
+      assert {:error, {:invalid_transition, :created, :stopped}} =
+               Lifecycle.transition(lifecycle, :stopped)
     end
 
     test "running -> created returns error" do
@@ -113,7 +117,8 @@ defmodule PgFlow.Worker.LifecycleTest do
         |> Lifecycle.transition!(:starting)
         |> Lifecycle.transition!(:running)
 
-      assert {:error, {:invalid_transition, :running, :created}} = Lifecycle.transition(lifecycle, :created)
+      assert {:error, {:invalid_transition, :running, :created}} =
+               Lifecycle.transition(lifecycle, :created)
     end
 
     test "stopped -> running returns error" do
@@ -124,7 +129,8 @@ defmodule PgFlow.Worker.LifecycleTest do
         |> Lifecycle.transition!(:stopping)
         |> Lifecycle.transition!(:stopped)
 
-      assert {:error, {:invalid_transition, :stopped, :running}} = Lifecycle.transition(lifecycle, :running)
+      assert {:error, {:invalid_transition, :stopped, :running}} =
+               Lifecycle.transition(lifecycle, :running)
     end
 
     test "stopped -> starting returns error (cannot leave terminal)" do
@@ -135,7 +141,8 @@ defmodule PgFlow.Worker.LifecycleTest do
         |> Lifecycle.transition!(:stopping)
         |> Lifecycle.transition!(:stopped)
 
-      assert {:error, {:invalid_transition, :stopped, :starting}} = Lifecycle.transition(lifecycle, :starting)
+      assert {:error, {:invalid_transition, :stopped, :starting}} =
+               Lifecycle.transition(lifecycle, :starting)
     end
   end
 

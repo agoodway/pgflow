@@ -3,14 +3,14 @@ defmodule PgFlowDashboard.Queries.Flows do
   Database queries for flow-related data.
   """
 
-  import PgFlowDashboard.Queries.Base
+  import PgFlow.Queries.Base
 
   @doc """
   Lists flows with statistics.
   """
   @spec list_flows(module()) :: list(map())
   def list_flows(repo) do
-    execute_rpc(repo, "list_flows", [], mode: :list)
+    execute_rpc(repo, "list_flows", [], schema: "pgflow_dashboard", mode: :list)
   end
 
   @doc """
@@ -18,8 +18,11 @@ defmodule PgFlowDashboard.Queries.Flows do
   """
   @spec get_flow_with_graph(module(), String.t()) :: {:ok, map()} | {:error, :not_found | term()}
   def get_flow_with_graph(repo, flow_slug) do
-    with {:ok, flow} <- execute_rpc(repo, "get_flow", [flow_slug], mode: :single) do
-      steps = execute_rpc(repo, "list_flow_steps", [flow_slug], mode: :list)
+    with {:ok, flow} <-
+           execute_rpc(repo, "get_flow", [flow_slug], schema: "pgflow_dashboard", mode: :single) do
+      steps =
+        execute_rpc(repo, "list_flow_steps", [flow_slug], schema: "pgflow_dashboard", mode: :list)
+
       {:ok, Map.put(flow, :steps, steps)}
     end
   end

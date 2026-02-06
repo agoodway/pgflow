@@ -3,7 +3,7 @@ defmodule PgFlowDashboard.Queries.Metrics do
   Database queries for dashboard metrics with caching.
   """
 
-  import PgFlowDashboard.Queries.Base
+  import PgFlow.Queries.Base
 
   alias PgFlowDashboard.Cache.MetricsCache
 
@@ -24,7 +24,7 @@ defmodule PgFlowDashboard.Queries.Metrics do
   end
 
   defp fetch_overview_metrics(repo) do
-    case execute_rpc(repo, "get_overview_metrics", [], mode: :single) do
+    case execute_rpc(repo, "get_overview_metrics", [], schema: "pgflow_dashboard", mode: :single) do
       {:ok, metrics} -> metrics
       {:error, _} -> default_metrics()
     end

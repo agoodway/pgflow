@@ -11,6 +11,9 @@ defmodule PgFlow.Queries do
   """
 
   alias Ecto.Adapters.SQL
+  import PgFlow.Queries.Base, only: [execute_rpc: 4, parse_uuid: 1]
+
+  @pgflow_schema "pgflow"
 
   @doc """
   Starts a new flow execution.
@@ -279,20 +282,14 @@ defmodule PgFlow.Queries do
   @spec get_flow_input(Ecto.Repo.t(), String.t()) ::
           {:ok, map() | list()} | {:error, term()}
   def get_flow_input(repo, run_id) do
-    sql = "SELECT input FROM pgflow.runs WHERE run_id = $1"
-
-    case SQL.query(repo, sql, [run_id]) do
-      {:ok, %{rows: [[input_json]]}} ->
-        case Jason.decode(input_json) do
-          {:ok, input} -> {:ok, input}
-          {:error, error} -> {:error, error}
-        end
-
-      {:ok, %{rows: []}} ->
-        {:error, :not_found}
-
-      {:error, error} ->
-        {:error, error}
+    case execute_rpc(repo, "get_flow_input", [parse_uuid(run_id)],
+           schema: @pgflow_schema,
+           mode: :raw
+         ) do
+      {:ok, [%{get_flow_input: nil}]} -> {:error, :not_found}
+      {:ok, [%{get_flow_input: input}]} -> {:ok, input}
+      {:ok, []} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -321,12 +318,9 @@ defmodule PgFlow.Queries do
   @spec flow_exists?(Ecto.Repo.t(), String.t()) ::
           {:ok, boolean()} | {:error, term()}
   def flow_exists?(repo, flow_slug) do
-    sql = "SELECT 1 FROM pgflow.flows WHERE flow_slug = $1"
-
-    case SQL.query(repo, sql, [flow_slug]) do
-      {:ok, %{num_rows: 1}} -> {:ok, true}
-      {:ok, %{num_rows: 0}} -> {:ok, false}
-      {:error, error} -> {:error, error}
+    case execute_rpc(repo, "flow_exists", [flow_slug], schema: @pgflow_schema, mode: :raw) do
+      {:ok, [%{flow_exists: result}]} -> {:ok, result}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -355,19 +349,10 @@ defmodule PgFlow.Queries do
   @spec register_worker(Ecto.Repo.t(), String.t(), String.t(), String.t()) ::
           {:ok, nil} | {:error, term()}
   def register_worker(repo, worker_id, queue_name, function_name) do
-    sql = """
-    INSERT INTO pgflow.workers (worker_id, queue_name, function_name, started_at, last_heartbeat_at)
-    VALUES ($1, $2, $3, NOW(), NOW())
-    ON CONFLICT (worker_id) DO UPDATE SET
-      last_heartbeat_at = NOW()
-    """
-
-    {:ok, worker_id_bin} = Ecto.UUID.dump(worker_id)
-
-    case SQL.query(repo, sql, [worker_id_bin, queue_name, function_name]) do
-      {:ok, _} -> {:ok, nil}
-      {:error, error} -> {:error, error}
-    end
+    execute_rpc(repo, "register_worker", [parse_uuid(worker_id), queue_name, function_name],
+      schema: @pgflow_schema,
+      mode: :void
+    )
   end
 
   @doc """
@@ -424,18 +409,10 @@ defmodule PgFlow.Queries do
   @spec mark_worker_stopped(Ecto.Repo.t(), String.t()) ::
           {:ok, nil} | {:error, term()}
   def mark_worker_stopped(repo, worker_id) do
-    sql = """
-    UPDATE pgflow.workers
-    SET stopped_at = clock_timestamp()
-    WHERE worker_id = $1
-    """
-
-    {:ok, worker_id_bin} = Ecto.UUID.dump(worker_id)
-
-    case SQL.query(repo, sql, [worker_id_bin]) do
-      {:ok, _} -> {:ok, nil}
-      {:error, error} -> {:error, error}
-    end
+    execute_rpc(repo, "mark_worker_stopped", [parse_uuid(worker_id)],
+      schema: @pgflow_schema,
+      mode: :void
+    )
   end
 
   @doc """
@@ -462,33 +439,13 @@ defmodule PgFlow.Queries do
   @spec recover_stalled_tasks(Ecto.Repo.t(), pos_integer()) ::
           {:ok, non_neg_integer()} | {:error, term()}
   def recover_stalled_tasks(repo, stale_threshold) do
-    sql = """
-    WITH stalled AS (
-      UPDATE pgflow.step_tasks
-      SET status = 'queued', started_at = NULL, last_worker_id = NULL
-      WHERE status = 'started'
-        AND started_at < NOW() - make_interval(secs => $1::double precision)
-      RETURNING flow_slug, message_id
-    ),
-    vt_reset AS (
-      SELECT pgflow.set_vt_batch(
-        s.flow_slug,
-        array_agg(s.message_id),
-        array_agg(0::integer)
-      )
-      FROM stalled s
-      WHERE s.message_id IS NOT NULL
-      GROUP BY s.flow_slug
-    )
-    SELECT
-      (SELECT count(*) FROM stalled) AS recovered_count,
-      (SELECT count(*) FROM vt_reset) AS vt_batches
-    """
-
-    case SQL.query(repo, sql, [stale_threshold]) do
-      {:ok, %{rows: [[count, _vt_batches]]}} -> {:ok, count}
-      {:ok, %{rows: []}} -> {:ok, 0}
-      {:error, error} -> {:error, error}
+    case execute_rpc(repo, "recover_stalled_tasks", [stale_threshold],
+           schema: @pgflow_schema,
+           mode: :single
+         ) do
+      {:ok, %{recovered_count: count}} -> {:ok, count}
+      {:error, :not_found} -> {:ok, 0}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -515,14 +472,13 @@ defmodule PgFlow.Queries do
   @spec get_step_output(Ecto.Repo.t(), String.t(), String.t()) ::
           {:ok, map() | nil} | {:error, term()}
   def get_step_output(repo, run_id, step_slug) do
-    sql = "SELECT output FROM pgflow.step_states WHERE run_id = $1 AND step_slug = $2"
-
-    {:ok, run_id_bin} = Ecto.UUID.dump(run_id)
-
-    case SQL.query(repo, sql, [run_id_bin, step_slug]) do
-      {:ok, %{rows: [[output]]}} -> {:ok, output}
-      {:ok, %{rows: []}} -> {:ok, nil}
-      {:error, error} -> {:error, error}
+    case execute_rpc(repo, "get_step_output", [parse_uuid(run_id), step_slug],
+           schema: @pgflow_schema,
+           mode: :raw
+         ) do
+      {:ok, [%{get_step_output: output}]} -> {:ok, output}
+      {:ok, []} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
     end
   end
 end

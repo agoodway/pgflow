@@ -8,6 +8,16 @@ db_available? =
 if db_available? do
   {:ok, _} = Application.ensure_all_started(:ecto_sql)
   {:ok, _} = PgFlow.TestRepo.start_link()
+
+  # Install PostgreSQL extension functions via PgEvolver's real migration path
+  defmodule PgFlow.Test.ExtensionsMigration do
+    use Ecto.Migration
+    def up, do: PgFlow.ExtensionsMigration.up()
+    def down, do: PgFlow.ExtensionsMigration.down()
+  end
+
+  Ecto.Migrator.up(PgFlow.TestRepo, 0, PgFlow.Test.ExtensionsMigration, log: false)
+
   Ecto.Adapters.SQL.Sandbox.mode(PgFlow.TestRepo, :manual)
   IO.puts("Database available - running all tests including integration")
   ExUnit.start()

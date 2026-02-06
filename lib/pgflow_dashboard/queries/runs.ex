@@ -3,7 +3,7 @@ defmodule PgFlowDashboard.Queries.Runs do
   Database queries for run-related data.
   """
 
-  import PgFlowDashboard.Queries.Base
+  import PgFlow.Queries.Base
 
   @doc """
   Lists runs with progress information.
@@ -27,7 +27,7 @@ defmodule PgFlowDashboard.Queries.Runs do
       parse_uuid(Keyword.get(opts, :cursor))
     ]
 
-    execute_rpc(repo, "list_runs", params, mode: :list)
+    execute_rpc(repo, "list_runs", params, schema: "pgflow_dashboard", mode: :list)
   end
 
   @doc """
@@ -48,7 +48,7 @@ defmodule PgFlowDashboard.Queries.Runs do
       status_to_string(Keyword.get(opts, :status))
     ]
 
-    execute_rpc(repo, "count_runs", params, mode: :count)
+    execute_rpc(repo, "count_runs", params, schema: "pgflow_dashboard", mode: :count)
   end
 
   @doc """
@@ -56,7 +56,7 @@ defmodule PgFlowDashboard.Queries.Runs do
   """
   @spec get_run(module(), String.t()) :: {:ok, map()} | {:error, :not_found | term()}
   def get_run(repo, run_id) do
-    execute_rpc(repo, "get_run", [parse_uuid(run_id)], mode: :single)
+    execute_rpc(repo, "get_run", [parse_uuid(run_id)], schema: "pgflow_dashboard", mode: :single)
   end
 
   @doc """
@@ -73,7 +73,7 @@ defmodule PgFlowDashboard.Queries.Runs do
       direction_to_string(direction)
     ]
 
-    case execute_rpc(repo, "get_adjacent_run", params, mode: :single) do
+    case execute_rpc(repo, "get_adjacent_run", params, schema: "pgflow_dashboard", mode: :single) do
       {:ok, %{run_id: adjacent_id}} when not is_nil(adjacent_id) ->
         {:ok, adjacent_id}
 
@@ -90,7 +90,10 @@ defmodule PgFlowDashboard.Queries.Runs do
   """
   @spec list_step_states(module(), String.t()) :: list(map())
   def list_step_states(repo, run_id) do
-    execute_rpc(repo, "list_step_states", [parse_uuid(run_id)], mode: :list)
+    execute_rpc(repo, "list_step_states", [parse_uuid(run_id)],
+      schema: "pgflow_dashboard",
+      mode: :list
+    )
   end
 
   @doc """
@@ -98,6 +101,9 @@ defmodule PgFlowDashboard.Queries.Runs do
   """
   @spec list_step_tasks(module(), String.t(), String.t()) :: list(map())
   def list_step_tasks(repo, run_id, step_slug) do
-    execute_rpc(repo, "list_step_tasks", [parse_uuid(run_id), step_slug], mode: :list)
+    execute_rpc(repo, "list_step_tasks", [parse_uuid(run_id), step_slug],
+      schema: "pgflow_dashboard",
+      mode: :list
+    )
   end
 end

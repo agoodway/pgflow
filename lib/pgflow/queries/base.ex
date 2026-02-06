@@ -1,40 +1,29 @@
-defmodule PgFlowDashboard.Queries.Base do
+defmodule PgFlow.Queries.Base do
   @moduledoc """
   Common query helpers for RPC-style database calls.
 
   Provides utilities for executing PostgreSQL functions and handling
   common result patterns in a consistent way.
-  """
-
-  @doc """
-  Executes a PostgreSQL function call and handles common result patterns.
 
   ## Options
 
+    * `:schema` - (required) The PostgreSQL schema to call functions in
     * `:mode` - Result handling mode:
       * `:single` - Expect single row, return `{:ok, map}` or `{:error, :not_found}`
       * `:list` - Expect multiple rows, return list of maps (default)
       * `:count` - Expect single value, return integer
       * `:raw` - Return the raw `{:ok, result}` or `{:error, reason}`
-
-  ## Examples
-
-      # List query (returns list of maps)
-      execute_rpc(repo, "list_runs", [time_start, nil, nil, 50, nil])
-
-      # Single item query (returns {:ok, map} or {:error, :not_found})
-      execute_rpc(repo, "get_run", [run_id], mode: :single)
-
-      # Count query (returns integer)
-      execute_rpc(repo, "count_runs", [time_start, nil, nil], mode: :count)
+      * `:void` - For write functions returning void, return `{:ok, nil}`
 
   """
+
   @spec execute_rpc(module(), String.t(), list(), keyword()) ::
           {:ok, map()} | {:error, :not_found | term()} | list(map()) | integer()
   def execute_rpc(repo, function_name, params, opts \\ []) do
+    schema = Keyword.fetch!(opts, :schema)
     mode = Keyword.get(opts, :mode, :list)
     placeholders = build_placeholders(params)
-    query = "SELECT * FROM pgflow_dashboard.#{function_name}(#{placeholders})"
+    query = "SELECT * FROM #{schema}.#{function_name}(#{placeholders})"
 
     case repo.query(query, params) do
       {:ok, %{rows: rows, columns: columns}} ->
@@ -52,6 +41,7 @@ defmodule PgFlowDashboard.Queries.Base do
     |> Enum.map_join(", ", &"$#{&1}")
   end
 
+  defp handle_result(_rows, _columns, :void), do: {:ok, nil}
   defp handle_result([], _columns, :single), do: {:error, :not_found}
   defp handle_result([], _columns, :list), do: []
   defp handle_result([[nil]], _columns, :single), do: {:error, :not_found}
@@ -61,6 +51,7 @@ defmodule PgFlowDashboard.Queries.Base do
   defp handle_result(rows, columns, :list), do: rows_to_maps(rows, columns)
   defp handle_result(rows, columns, :raw), do: {:ok, rows_to_maps(rows, columns)}
 
+  defp error_result(:void, reason), do: {:error, reason}
   defp error_result(:single, _reason), do: {:error, :not_found}
   defp error_result(:list, _reason), do: []
   defp error_result(:count, _reason), do: 0
