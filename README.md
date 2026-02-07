@@ -1,5 +1,7 @@
 # PgFlow
 
+Workflows, background and cron jobs in Elixir and Postgres powered by PGMQ
+
 A native Elixir implementation of [pgflow](https://pgflow.dev) — a PostgreSQL-based workflow engine built on [pgmq](https://github.com/pgmq/pgmq). Define multi-step DAG workflows ("flows") or simple one-off background jobs ("jobs") — both backed by the same PostgreSQL queuing infrastructure with retries, visibility timeouts, and delivery guarantees. Elixir workers are thin polling clients. This implementation attempts to be compatible with the existing TypeScript/Deno [pgflow](https://github.com/pgflow-dev/pgflow) project, sharing the same database schema and SQL functions.
 
 ![pgflow](pgflow.png)

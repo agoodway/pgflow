@@ -139,9 +139,9 @@ ALTER TABLE pgflow.flows
 
 --SPLIT--
 
--- Add constraint allowing all flow types including 'cron'
+-- Add constraint allowing flow types (cron scheduling is now an option on flow/job, not a separate type)
 ALTER TABLE pgflow.flows
-  ADD CONSTRAINT flow_type_is_valid CHECK (flow_type IN ('flow', 'job', 'cron'));
+  ADD CONSTRAINT flow_type_is_valid CHECK (flow_type IN ('flow', 'job'));
 
 --SPLIT--
 

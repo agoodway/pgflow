@@ -1,22 +1,23 @@
-defmodule PgflowDemo.Crons.ArticleFlowCleanup do
+defmodule PgflowDemo.Jobs.ArticleFlowCleanup do
   @moduledoc """
-  Hourly cleanup cron that prunes old article_flow run records.
+  Hourly cleanup job that prunes old article_flow run records.
 
-  Demonstrates PgFlow's cron functionality by calling `PgFlow.Queries.prune_data/3`
-  to remove only article_flow completed/failed runs older than the retention period.
+  Compiles to: `cron.schedule(...)` in Postgres via pg_cron extension.
   """
-  use PgFlow.Cron
+  use PgFlow.Job
 
   # Require to ensure module is compiled before macro expansion
   require PgFlow.Queries
 
-  @cron queue: :article_flow_cleanup,
-        expression: "0 * * * *",
-        max_attempts: 3,
-        timeout: 60,
-        input: %{"retention_hours" => 24}
+  @job queue: :article_flow_cleanup,
+       max_attempts: 3,
+       timeout: 60,
+       cron: [
+         schedule: "@hourly",
+         input: %{"retention_hours" => 24}
+       ]
 
-  schedule do
+  perform do
     fn input, _ctx ->
       retention_hours = input["retention_hours"] || 24
 

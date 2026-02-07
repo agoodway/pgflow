@@ -39,6 +39,18 @@ defmodule PgFlow.JobCompiler do
     base_sql ++ [update_sql]
   end
 
+  @doc """
+  Delegates to `FlowCompiler.has_cron?/1` to check if the module has cron configured.
+  """
+  @spec has_cron?(module()) :: boolean()
+  defdelegate has_cron?(module), to: FlowCompiler
+
+  @doc """
+  Delegates to `FlowCompiler.cron_unschedule_sql/1` for generating unschedule SQL.
+  """
+  @spec cron_unschedule_sql(atom()) :: String.t()
+  defdelegate cron_unschedule_sql(slug), to: FlowCompiler
+
   defp escape(str) when is_binary(str) do
     String.replace(str, "'", "''")
   end

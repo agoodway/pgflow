@@ -105,7 +105,7 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
           poll_interval_ms: 100
         )
 
-      assert length(messages) > 0
+      assert messages != []
 
       msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
       worker_id = Ecto.UUID.generate()

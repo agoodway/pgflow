@@ -62,7 +62,13 @@ defmodule PgFlow.MixProject do
     [
       setup: ["deps.get"],
       "ecto.setup": ["ecto.create", "ecto.migrate"],
-      "ecto.reset": ["ecto.drop", "ecto.setup"]
+      "ecto.reset": ["ecto.drop", "ecto.setup"],
+      # Run to check the quality of your code
+      quality: [
+        "compile --warnings-as-errors",
+        "format --check-formatted",
+        "credo --only warning"
+      ]
     ]
   end
 

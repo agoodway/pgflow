@@ -36,9 +36,9 @@ defmodule PgFlow.FlowTest do
       end
     end
 
-    test "requires :slug in @flow attribute" do
-      assert_raise KeyError, fn ->
-        defmodule MissingSlug do
+    test "requires :queue (or :slug) in @flow attribute" do
+      assert_raise CompileError, ~r/Missing :queue in @flow attribute/, fn ->
+        defmodule MissingQueue do
           use PgFlow.Flow
 
           @flow max_attempts: 3
@@ -50,7 +50,22 @@ defmodule PgFlow.FlowTest do
       end
     end
 
-    test "accepts valid @flow with slug" do
+    test "accepts :queue as the identifier" do
+      defmodule QueueIdentifierFlow do
+        use PgFlow.Flow
+
+        @flow queue: :queue_identifier_flow
+
+        step :process do
+          fn input, _ctx -> input end
+        end
+      end
+
+      assert QueueIdentifierFlow.__pgflow_slug__() == :queue_identifier_flow
+    end
+
+    test "accepts :slug as an alias for :queue" do
+      # SimpleFlow uses :slug, verify backward compatibility
       assert SimpleFlow.__pgflow_slug__() == :simple_flow
     end
   end
@@ -329,6 +344,130 @@ defmodule PgFlow.FlowTest do
       # DependentMapFlow has a map step that depends on generate_items (implicitly via array option)
       # The actual depends_on is empty because array is specified
       assert {:ok, ^definition} = Definition.validate(definition)
+    end
+  end
+
+  describe "cron option" do
+    test "accepts string shorthand" do
+      defmodule CronShorthandFlow do
+        use PgFlow.Flow
+
+        @flow slug: :cron_shorthand_flow, cron: "0 * * * *"
+
+        step :process do
+          fn input, _ctx -> input end
+        end
+      end
+
+      assert CronShorthandFlow.__pgflow_cron_expression__() == "0 * * * *"
+      assert CronShorthandFlow.__pgflow_cron_input__() == %{}
+    end
+
+    test "accepts @daily shorthand" do
+      defmodule CronDailyFlow do
+        use PgFlow.Flow
+
+        @flow slug: :cron_daily_flow, cron: "@daily"
+
+        step :process do
+          fn input, _ctx -> input end
+        end
+      end
+
+      assert CronDailyFlow.__pgflow_cron_expression__() == "@daily"
+      assert CronDailyFlow.__pgflow_cron_input__() == %{}
+    end
+
+    test "accepts valid cron schedule" do
+      defmodule CronFlow do
+        use PgFlow.Flow
+
+        @flow slug: :cron_flow, cron: [schedule: "0 * * * *"]
+
+        step :process do
+          fn input, _ctx -> input end
+        end
+      end
+
+      assert CronFlow.__pgflow_cron_expression__() == "0 * * * *"
+      assert CronFlow.__pgflow_cron_input__() == %{}
+    end
+
+    test "accepts cron with input" do
+      defmodule CronWithInputFlow do
+        use PgFlow.Flow
+
+        @flow slug: :cron_with_input_flow,
+              cron: [schedule: "*/5 * * * *", input: %{key: "value"}]
+
+        step :process do
+          fn input, _ctx -> input end
+        end
+      end
+
+      assert CronWithInputFlow.__pgflow_cron_expression__() == "*/5 * * * *"
+      assert CronWithInputFlow.__pgflow_cron_input__() == %{key: "value"}
+    end
+
+    test "flow without cron has nil expression" do
+      assert SimpleFlow.__pgflow_cron_expression__() == nil
+      assert SimpleFlow.__pgflow_cron_input__() == %{}
+    end
+
+    test "rejects cron without schedule" do
+      assert_raise CompileError, ~r/Missing :schedule in cron option/, fn ->
+        defmodule NoScheduleCronFlow do
+          use PgFlow.Flow
+
+          @flow slug: :x, cron: [input: %{}]
+
+          step :process do
+            fn input, _ctx -> input end
+          end
+        end
+      end
+    end
+
+    test "rejects invalid cron schedule" do
+      assert_raise CompileError, ~r/Invalid cron schedule/, fn ->
+        defmodule InvalidCronFlow do
+          use PgFlow.Flow
+
+          @flow slug: :x, cron: [schedule: "not a cron"]
+
+          step :process do
+            fn input, _ctx -> input end
+          end
+        end
+      end
+    end
+
+    test "rejects non-map input" do
+      assert_raise CompileError, ~r/:input must be a map/, fn ->
+        defmodule NonMapInputCronFlow do
+          use PgFlow.Flow
+
+          @flow slug: :x, cron: [schedule: "0 * * * *", input: "not a map"]
+
+          step :process do
+            fn input, _ctx -> input end
+          end
+        end
+      end
+    end
+
+    test "rejects unknown cron keys" do
+      assert_raise CompileError, ~r/Unknown cron option/, fn ->
+        defmodule UnknownCronKeysFlow do
+          use PgFlow.Flow
+
+          @flow slug: :x, cron: [schedule: "0 * * * *", unknown: true]
+
+          step :process do
+            fn input, _ctx -> input end
+          end
+        end
+      end
     end
   end
 end

@@ -10,7 +10,7 @@ defmodule PgFlow.EnqueueTest do
   defmodule EnqueueTestJob do
     use PgFlow.Job
 
-    @job queue: :enqueue_test_job, max_attempts: 3
+    @job slug: :enqueue_test_job, max_attempts: 3
 
     perform do
       fn input, _ctx ->
@@ -178,7 +178,7 @@ defmodule PgFlow.EnqueueTest do
       defmodule NotInDbJob do
         use PgFlow.Job
 
-        @job queue: :not_in_db_job
+        @job slug: :not_in_db_job
 
         perform do
           fn input, _ctx -> input end

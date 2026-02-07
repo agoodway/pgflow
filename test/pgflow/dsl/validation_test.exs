@@ -110,6 +110,16 @@ defmodule PgFlow.DSL.ValidationTest do
       end
     end
 
+    test ":slug accepts atoms" do
+      assert :ok == Validation.validate_option!(:slug, :my_slug, fake_env())
+    end
+
+    test ":slug rejects non-atoms" do
+      assert_raise CompileError, ~r/:slug must be an atom/, fn ->
+        Validation.validate_option!(:slug, "string", fake_env())
+      end
+    end
+
     test ":max_attempts accepts positive integers" do
       assert :ok == Validation.validate_option!(:max_attempts, 5, fake_env())
     end
@@ -180,13 +190,13 @@ defmodule PgFlow.DSL.ValidationTest do
       end
     end
 
-    test ":expression accepts strings" do
-      assert :ok == Validation.validate_option!(:expression, "0 9 * * *", fake_env())
+    test ":schedule accepts strings" do
+      assert :ok == Validation.validate_option!(:schedule, "0 9 * * *", fake_env())
     end
 
-    test ":expression rejects non-strings" do
-      assert_raise CompileError, ~r/:expression must be a string/, fn ->
-        Validation.validate_option!(:expression, :not_a_string, fake_env())
+    test ":schedule rejects non-strings" do
+      assert_raise CompileError, ~r/:schedule must be a string/, fn ->
+        Validation.validate_option!(:schedule, :not_a_string, fake_env())
       end
     end
 
@@ -197,6 +207,92 @@ defmodule PgFlow.DSL.ValidationTest do
     test ":input rejects non-maps" do
       assert_raise CompileError, ~r/:input must be a map/, fn ->
         Validation.validate_option!(:input, "not_a_map", fake_env())
+      end
+    end
+  end
+
+  describe "validate_cron_option!/2" do
+    test "accepts string shorthand" do
+      {expression, input} = Validation.validate_cron_option!("0 * * * *", fake_env())
+
+      assert expression == "0 * * * *"
+      assert input == %{}
+    end
+
+    test "accepts @hourly shorthand" do
+      {expression, input} = Validation.validate_cron_option!("@hourly", fake_env())
+
+      assert expression == "@hourly"
+      assert input == %{}
+    end
+
+    test "accepts valid cron schedule with no input" do
+      {schedule, input} =
+        Validation.validate_cron_option!([schedule: "0 * * * *"], fake_env())
+
+      assert schedule == "0 * * * *"
+      assert input == %{}
+    end
+
+    test "accepts valid cron schedule with input" do
+      {schedule, input} =
+        Validation.validate_cron_option!(
+          [schedule: "0 9 * * 1-5", input: %{type: "weekday"}],
+          fake_env()
+        )
+
+      assert schedule == "0 9 * * 1-5"
+      assert input == %{type: "weekday"}
+    end
+
+    test "raises for missing schedule" do
+      assert_raise CompileError, ~r/Missing :schedule in cron option/, fn ->
+        Validation.validate_cron_option!([input: %{}], fake_env())
+      end
+    end
+
+    test "raises for invalid cron schedule" do
+      assert_raise CompileError, ~r/Invalid cron schedule/, fn ->
+        Validation.validate_cron_option!([schedule: "not a cron"], fake_env())
+      end
+    end
+
+    test "raises for non-string schedule" do
+      assert_raise CompileError, ~r/cron :schedule must be a string/, fn ->
+        Validation.validate_cron_option!([schedule: :atom], fake_env())
+      end
+    end
+
+    test "raises for non-map input" do
+      assert_raise CompileError, ~r/cron :input must be a map/, fn ->
+        Validation.validate_cron_option!(
+          [schedule: "0 * * * *", input: "string"],
+          fake_env()
+        )
+      end
+    end
+
+    test "raises for unknown cron keys" do
+      assert_raise CompileError, ~r/Unknown cron option\(s\):.*:bogus/, fn ->
+        Validation.validate_cron_option!(
+          [schedule: "0 * * * *", bogus: true],
+          fake_env()
+        )
+      end
+    end
+
+    test "raises for non-string-or-keyword-list cron option" do
+      assert_raise CompileError, ~r/cron option must be a string or keyword list/, fn ->
+        Validation.validate_cron_option!(123, fake_env())
+      end
+    end
+
+    test "raises when input contains $$ sequence" do
+      assert_raise CompileError, ~r/cannot contain.*\$\$/, fn ->
+        Validation.validate_cron_option!(
+          [schedule: "0 * * * *", input: %{key: "value$$evil"}],
+          fake_env()
+        )
       end
     end
   end

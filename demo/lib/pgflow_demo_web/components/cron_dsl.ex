@@ -6,8 +6,8 @@ defmodule PgflowDemoWeb.Components.CronDSL do
 
   use Phoenix.Component
 
-  # Read the cron source at compile time
-  @cron_source_path "lib/pgflow_demo/crons/article_flow_cleanup.ex"
+  # Read the job source at compile time
+  @cron_source_path "lib/pgflow_demo/jobs/article_flow_cleanup.ex"
   @external_resource @cron_source_path
 
   @cron_source File.read!(@cron_source_path)
@@ -26,7 +26,7 @@ defmodule PgflowDemoWeb.Components.CronDSL do
   def get_highlighted_source, do: @highlighted_source
 
   @doc """
-  Calculates when the cron will next run based on the expression "0 * * * *" (hourly at minute 0).
+  Calculates when the cron will next run based on the expression "@hourly" (every hour at minute 0).
   """
   @spec get_next_run_info() :: %{
           next_run_at: DateTime.t(),
@@ -38,7 +38,7 @@ defmodule PgflowDemoWeb.Components.CronDSL do
     now = DateTime.utc_now()
     current_minute = now.minute
 
-    # For "0 * * * *" - runs at minute 0 of every hour
+    # For "@hourly" - runs at minute 0 of every hour
     next_run_at =
       if current_minute == 0 do
         # Already at minute 0, next run is in 1 hour
@@ -52,7 +52,7 @@ defmodule PgflowDemoWeb.Components.CronDSL do
     %{
       next_run_at: next_run_at,
       relative_time: Timex.from_now(next_run_at),
-      expression: "0 * * * *",
+      expression: "@hourly",
       human_schedule: "Hourly"
     }
   end

@@ -674,10 +674,11 @@ $$;
 --SPLIT--
 
 -- Function: list_crons()
--- Lists all crons with statistics and schedule info from pg_cron
+-- Lists all scheduled flows/jobs (detected by presence in cron.job table)
 CREATE OR REPLACE FUNCTION $SCHEMA$.list_crons()
 RETURNS TABLE (
   flow_slug text,
+  flow_type text,
   cron_expression text,
   is_active boolean,
   opt_max_attempts integer,
@@ -697,6 +698,7 @@ STABLE
 AS $$
   SELECT
     f.flow_slug,
+    f.flow_type,
     cj.schedule AS cron_expression,
     COALESCE(cj.active, true) AS is_active,
     f.opt_max_attempts,
@@ -711,7 +713,7 @@ AS $$
     lr.last_run_at,
     lr.last_run_status
   FROM $SCHEMA$.flow_stats f
-  LEFT JOIN cron.job cj ON cj.jobname = 'pgflow:' || f.flow_slug
+  INNER JOIN cron.job cj ON cj.jobname = 'pgflow:' || f.flow_slug
   LEFT JOIN LATERAL (
     SELECT r.completed_at AS last_run_at, r.status AS last_run_status
     FROM pgflow.runs r
@@ -719,17 +721,17 @@ AS $$
     ORDER BY r.started_at DESC
     LIMIT 1
   ) lr ON true
-  WHERE f.flow_type = 'cron'
   ORDER BY f.flow_slug
 $$;
 
 --SPLIT--
 
 -- Function: get_cron()
--- Gets a single cron's statistics and schedule info
+-- Gets a single scheduled flow/job's statistics and schedule info
 CREATE OR REPLACE FUNCTION $SCHEMA$.get_cron(p_flow_slug text)
 RETURNS TABLE (
   flow_slug text,
+  flow_type text,
   cron_expression text,
   is_active boolean,
   opt_max_attempts integer,
@@ -749,6 +751,7 @@ STABLE
 AS $$
   SELECT
     f.flow_slug,
+    f.flow_type,
     cj.schedule AS cron_expression,
     COALESCE(cj.active, true) AS is_active,
     f.opt_max_attempts,
@@ -763,7 +766,7 @@ AS $$
     lr.last_run_at,
     lr.last_run_status
   FROM $SCHEMA$.flow_stats f
-  LEFT JOIN cron.job cj ON cj.jobname = 'pgflow:' || f.flow_slug
+  INNER JOIN cron.job cj ON cj.jobname = 'pgflow:' || f.flow_slug
   LEFT JOIN LATERAL (
     SELECT r.completed_at AS last_run_at, r.status AS last_run_status
     FROM pgflow.runs r
@@ -772,7 +775,6 @@ AS $$
     LIMIT 1
   ) lr ON true
   WHERE f.flow_slug = p_flow_slug
-    AND f.flow_type = 'cron'
 $$;
 
 --SPLIT--

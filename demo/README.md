@@ -9,32 +9,57 @@ fetch_article → convert_to_markdown → summarize        → publish
                                     ↘ extract_keywords ↗
 ```
 
+## Database (Docker)
+
+The demo uses the same PostgreSQL container as the main pgflow library. Run these commands from the **root pgflow directory** (not the demo folder):
+
+```bash
+# Start the database
+docker compose up -d
+
+# Stop the database (preserves data)
+docker compose down
+
+# Stop and remove all data (full reset)
+docker compose down -v
+```
+
 ## Setup
 
 ```bash
-# 1. Start database (from root pgflow directory, uses same docker-compose as library)
+# 1. Start database (from root pgflow directory)
+cd ..
 docker compose up -d
+cd demo
 
 # 2. Install dependencies
-cd demo
 mix deps.get
 
-# 3. Setup database and run migrations
-mix ecto.setup
+# 3. Create the database
+mix ecto.create
 
-# 4. Generate flow migration (compiles flow definition to database)
+# 4. Generate PgFlow extensions migration (worker registration, flow queries)
+mix pgflow.gen.extensions_migration
+
+# 5. Generate PgFlow dashboard migration (dashboard views and functions)
+mix pgflow_dashboard.gen.migration
+
+# 6. Generate flow migration (compiles ArticleFlow definition to database)
 mix pgflow.gen.flow PgflowDemo.Flows.ArticleFlow
 
-# 5. Run the flow migration
+# 7. Generate job migration (compiles ArticleFlowCleanup scheduled job to database)
+mix pgflow.gen.job PgflowDemo.Jobs.ArticleFlowCleanup
+
+# 8. Run all migrations
 mix ecto.migrate
 
-# 6. Setup assets
+# 9. Setup assets
 mix assets.setup
 
-# 7. Set your OpenAI API key (required for LLM steps)
+# 10. Set your OpenAI API key (required for LLM steps)
 export OPENAI_API_KEY="sk-..."
 
-# 8. Run the server
+# 11. Run the server
 mix phx.server
 ```
 

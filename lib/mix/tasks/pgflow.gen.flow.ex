@@ -160,6 +160,9 @@ defmodule Mix.Tasks.Pgflow.Gen.Flow do
     # Generate SQL statements
     sql_statements = FlowCompiler.compile(definition)
 
+    # Check if flow has cron configured
+    has_cron = FlowCompiler.has_cron?(module)
+
     # Determine migrations path
     migrations_path = Keyword.get(opts, :migrations_path, "priv/repo/migrations")
 
@@ -174,7 +177,8 @@ defmodule Mix.Tasks.Pgflow.Gen.Flow do
     migration_module = "Compile#{camelize(flow_slug)}"
 
     # Generate the migration content
-    migration_content = generate_migration_content(migration_module, flow_slug, sql_statements)
+    migration_content =
+      generate_migration_content(migration_module, flow_slug, sql_statements, has_cron)
 
     # Write the migration file
     filename = "#{timestamp}_compile_#{flow_slug}.exs"
@@ -197,9 +201,9 @@ defmodule Mix.Tasks.Pgflow.Gen.Flow do
     """)
   end
 
-  defp generate_migration_content(migration_module, flow_slug, sql_statements) do
-    up_statements =
-      Enum.map_join(sql_statements, "\n", &"    execute \"#{&1}\"")
+  defp generate_migration_content(migration_module, flow_slug, sql_statements, has_cron) do
+    up_statements = format_execute_statements(sql_statements)
+    down_statements = build_down_statements(flow_slug, has_cron)
 
     """
     defmodule PgFlow.Repo.Migrations.#{migration_module} do
@@ -220,13 +224,40 @@ defmodule Mix.Tasks.Pgflow.Gen.Flow do
       end
 
       def down do
+    #{down_statements}
+      end
+    end
+    """
+  end
+
+  defp format_execute_statements(sql_statements) do
+    Enum.map_join(sql_statements, "\n", fn sql ->
+      escaped = String.replace(sql, "\"", "\\\"")
+      ~s(    execute "#{escaped}")
+    end)
+  end
+
+  defp build_down_statements(flow_slug, true = _has_cron) do
+    unschedule_sql = FlowCompiler.cron_unschedule_sql(String.to_atom(flow_slug))
+
+    """
+        execute "#{unschedule_sql}"
         execute "DELETE FROM pgflow.deps WHERE flow_slug = '#{flow_slug}'"
         execute "DELETE FROM pgflow.steps WHERE flow_slug = '#{flow_slug}'"
         execute "DELETE FROM pgflow.flows WHERE flow_slug = '#{flow_slug}'"
         execute "SELECT pgmq.drop_queue('#{flow_slug}')"
-      end
-    end
     """
+    |> String.trim_trailing()
+  end
+
+  defp build_down_statements(flow_slug, false = _has_cron) do
+    """
+        execute "DELETE FROM pgflow.deps WHERE flow_slug = '#{flow_slug}'"
+        execute "DELETE FROM pgflow.steps WHERE flow_slug = '#{flow_slug}'"
+        execute "DELETE FROM pgflow.flows WHERE flow_slug = '#{flow_slug}'"
+        execute "SELECT pgmq.drop_queue('#{flow_slug}')"
+    """
+    |> String.trim_trailing()
   end
 
   defp generate_timestamp do

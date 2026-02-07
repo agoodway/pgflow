@@ -682,14 +682,19 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               class="relative inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 text-white text-sm font-medium rounded-lg shadow-lg shadow-purple-500/20 transition-all duration-200 hover:shadow-purple-500/30"
             >
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
+                />
               </svg>
               Open Dashboard
             </a>
           </div>
         </div>
 
-        <!-- GitHub link (top right) -->
+    <!-- GitHub link (top right) -->
         <a
           href="https://github.com/agoodway/pgflow"
           target="_blank"
@@ -1113,14 +1118,13 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             />
           </div>
           <p class="mt-3 text-sm text-gray-400">
-            This cron runs hourly to prune article_flow runs older than 24 hours.
-            Like flows, crons are compiled to an Ecto migration that sets up pg_cron scheduling.
-            View in <a
+            Scheduled job that prunes old article_flow runs hourly.
+            <a
               href="/pgflow/crons/article_flow_cleanup"
               class="text-amber-400 hover:text-amber-300 underline underline-offset-2"
             >
-              PgFlow Dashboard
-            </a>.
+              View in Dashboard
+            </a>
           </p>
         </div>
 

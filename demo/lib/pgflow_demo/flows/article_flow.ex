@@ -7,11 +7,13 @@ defmodule PgflowDemo.Flows.ArticleFlow do
   fetch_article → convert_to_markdown → summarize        → publish
                                       ↘ extract_keywords ↗
   ```
+
+  Compiles to: `pgmq.article_flow` queue and `pgflow.flows`/`pgflow.steps` rows in Postgres.
   """
 
   use PgFlow.Flow
 
-  @flow slug: :article_flow, max_attempts: 3, base_delay: 5, timeout: 120
+  @flow queue: :article_flow, max_attempts: 3, base_delay: 5, timeout: 120
 
   # Fetch the article HTML from the URL
   step :fetch_article do

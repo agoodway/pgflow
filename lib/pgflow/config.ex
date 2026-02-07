@@ -45,11 +45,6 @@ defmodule PgFlow.Config do
       default: [],
       doc: "List of job modules to automatically register on startup"
     ],
-    crons: [
-      type: {:list, :atom},
-      default: [],
-      doc: "List of cron modules to automatically register on startup"
-    ],
     worker_name: [
       type: {:or, [:string, nil]},
       default: nil,

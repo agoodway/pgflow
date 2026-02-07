@@ -21,7 +21,7 @@ defmodule PgFlow.Supervisor do
   use Supervisor
   require Logger
 
-  alias PgFlow.{FlowRegistry, WorkerSupervisor}
+  alias PgFlow.{Config, FlowRegistry, WorkerSupervisor}
   alias PgFlow.Worker.StalledTaskRecovery
 
   @doc """
@@ -44,12 +44,11 @@ defmodule PgFlow.Supervisor do
   def init(config) do
     # Ensure config has all defaults applied, even if started directly
     # (e.g. {PgFlow.Supervisor, repo: MyRepo} without going through PgFlow.start_link)
-    config = PgFlow.Config.validate!(config)
+    config = Config.validate!(config)
 
     repo = Keyword.fetch!(config, :repo)
     flows = Keyword.get(config, :flows, [])
     jobs = Keyword.get(config, :jobs, [])
-    crons = Keyword.get(config, :crons, [])
     attach_logger = Keyword.get(config, :attach_default_logger, false)
 
     # Attach telemetry logger if configured
@@ -77,7 +76,6 @@ defmodule PgFlow.Supervisor do
              fn ->
                register_modules(flows, "flow", repo)
                register_modules(jobs, "job", repo)
-               register_modules(crons, "cron", repo)
              end
            ]},
         restart: :temporary

@@ -65,7 +65,17 @@ defmodule PgFlow.FlowCompiler do
   def compile(%Definition{} = definition) do
     flow_sql = create_flow_sql(definition)
     step_sqls = Enum.map(definition.steps, &add_step_sql(definition.slug, &1))
-    [flow_sql | step_sqls]
+    base_sql = [flow_sql | step_sqls]
+
+    case get_cron_expression(definition.module) do
+      nil ->
+        base_sql
+
+      cron_expression ->
+        cron_input = get_cron_input(definition.module)
+        cron_sql = cron_schedule_sql(definition.slug, cron_expression, cron_input)
+        base_sql ++ [cron_sql]
+    end
   end
 
   @doc """
@@ -140,5 +150,85 @@ defmodule PgFlow.FlowCompiler do
   @spec escape(String.t()) :: String.t()
   defp escape(str) when is_binary(str) do
     String.replace(str, "'", "''")
+  end
+
+  # Cron scheduling helpers
+
+  @doc """
+  Generates the SQL to schedule a flow/job with pg_cron.
+
+  ## Parameters
+
+    * `slug` - The flow/job slug atom
+    * `expression` - The cron expression string (e.g., "0 * * * *")
+    * `input` - The input map to pass to the flow/job
+
+  ## Returns
+
+    * A SQL string for scheduling the cron job
+
+  """
+  @spec cron_schedule_sql(atom(), String.t(), map()) :: String.t()
+  def cron_schedule_sql(slug, expression, input) do
+    flow_slug = Atom.to_string(slug)
+    job_name = "pgflow:#{flow_slug}"
+    json_input = Jason.encode!(input)
+
+    "SELECT cron.schedule('#{escape(job_name)}', '#{escape(expression)}', $$SELECT pgflow.start_flow('#{escape(flow_slug)}', '#{escape(json_input)}'::jsonb)$$)"
+  end
+
+  @doc """
+  Generates the SQL to unschedule a flow/job from pg_cron.
+
+  ## Parameters
+
+    * `slug` - The flow/job slug atom
+
+  ## Returns
+
+    * A SQL string for unscheduling the cron job
+
+  """
+  @spec cron_unschedule_sql(atom()) :: String.t()
+  def cron_unschedule_sql(slug) do
+    flow_slug = Atom.to_string(slug)
+    job_name = "pgflow:#{flow_slug}"
+
+    "SELECT cron.unschedule('#{escape(job_name)}')"
+  end
+
+  @doc """
+  Checks if the flow module has a cron expression configured.
+
+  ## Parameters
+
+    * `module` - The flow module
+
+  ## Returns
+
+    * `true` if the module has a cron expression, `false` otherwise
+
+  """
+  @spec has_cron?(module()) :: boolean()
+  def has_cron?(module) do
+    get_cron_expression(module) != nil
+  end
+
+  # Private helpers for getting cron config from module
+
+  defp get_cron_expression(module) do
+    if function_exported?(module, :__pgflow_cron_expression__, 0) do
+      module.__pgflow_cron_expression__()
+    else
+      nil
+    end
+  end
+
+  defp get_cron_input(module) do
+    if function_exported?(module, :__pgflow_cron_input__, 0) do
+      module.__pgflow_cron_input__()
+    else
+      %{}
+    end
   end
 end

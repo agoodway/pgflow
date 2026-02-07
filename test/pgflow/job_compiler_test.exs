@@ -56,7 +56,7 @@ defmodule PgFlow.JobCompilerTest do
       defmodule CompilerTestJob do
         use PgFlow.Job
 
-        @job queue: :compiler_test_job, max_attempts: 2, base_delay: 3, timeout: 45
+        @job slug: :compiler_test_job, max_attempts: 2, base_delay: 3, timeout: 45
 
         perform do
           fn input, _ctx -> %{done: true, input: input} end
@@ -74,6 +74,52 @@ defmodule PgFlow.JobCompilerTest do
       assert step_sql =~ "add_step('compiler_test_job', 'perform'"
       assert update_sql =~ "flow_type = 'job'"
       assert update_sql =~ "flow_slug = 'compiler_test_job'"
+    end
+
+    test "includes cron SQL for job with cron option" do
+      defmodule CronTestJob do
+        use PgFlow.Job
+
+        @job slug: :cron_test_job, cron: [schedule: "*/10 * * * *", input: %{scheduled: true}]
+
+        perform do
+          fn _input, _ctx -> :ok end
+        end
+      end
+
+      definition = CronTestJob.__pgflow_definition__()
+      sql_statements = JobCompiler.compile(definition)
+
+      # 1 flow + 1 step + 1 cron schedule + 1 update flow_type
+      assert length(sql_statements) == 4
+
+      cron_sql = Enum.at(sql_statements, 2)
+      assert cron_sql =~ "cron.schedule"
+      assert cron_sql =~ "'pgflow:cron_test_job'"
+      assert cron_sql =~ "'*/10 * * * *'"
+      assert cron_sql =~ ~s("scheduled":true)
+
+      update_sql = List.last(sql_statements)
+      assert update_sql =~ "flow_type = 'job'"
+    end
+
+    test "has_cron?/1 delegates to FlowCompiler" do
+      defmodule HasCronTestJob do
+        use PgFlow.Job
+
+        @job slug: :has_cron_test_job, cron: [schedule: "0 0 * * *"]
+
+        perform do
+          fn _input, _ctx -> :ok end
+        end
+      end
+
+      assert JobCompiler.has_cron?(HasCronTestJob)
+    end
+
+    test "cron_unschedule_sql/1 delegates to FlowCompiler" do
+      sql = JobCompiler.cron_unschedule_sql(:my_job)
+      assert sql == "SELECT cron.unschedule('pgflow:my_job')"
     end
   end
 end

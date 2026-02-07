@@ -37,7 +37,7 @@ defmodule PgFlow.Flow.Definition do
     flow_type: :flow
   ]
 
-  @type flow_type :: :flow | :job | :cron
+  @type flow_type :: :flow | :job
 
   @type t :: %__MODULE__{
           slug: atom(),

@@ -11,7 +11,7 @@ defmodule PgFlow.Flow do
       defmodule MyApp.Flows.Example do
         use PgFlow.Flow
 
-        @flow slug: :example, max_attempts: 3, base_delay: 5, timeout: 60
+        @flow queue: :example, max_attempts: 3, base_delay: 5, timeout: 60
 
         step :first do
           fn input, ctx ->
@@ -36,10 +36,13 @@ defmodule PgFlow.Flow do
 
   The `@flow` module attribute accepts the following options:
 
-    * `:slug` - (required) atom identifier for the flow
+    * `:queue` - (required) atom identifier for the flow queue (also accepts `:slug` as alias)
     * `:max_attempts` - maximum retry attempts for failed steps (default: 1)
     * `:base_delay` - base delay in seconds for exponential backoff (default: 1)
     * `:timeout` - step execution timeout in seconds (default: 30)
+    * `:cron` - (optional) schedule this flow via pg_cron with sub-options:
+      * `:schedule` - (required) cron schedule string (e.g., "@hourly", "0 9 * * *")
+      * `:input` - (optional) static input map passed to each scheduled run
 
   ## Step Options
 
@@ -152,34 +155,28 @@ defmodule PgFlow.Flow do
     end
   end
 
+  alias PgFlow.DSL.Validation
+  alias PgFlow.Flow.{Definition, Step}
+
   defmacro __before_compile__(env) do
     flow_attrs = Module.get_attribute(env.module, :flow)
     steps = Module.get_attribute(env.module, :pgflow_steps) |> Enum.reverse()
 
-    unless flow_attrs do
-      raise CompileError,
-        file: env.file,
-        line: env.line,
-        description:
-          "Missing @flow attribute. You must define @flow with at least a :slug option."
-    end
+    validate_flow_attrs!(flow_attrs, env)
 
-    slug = Keyword.fetch!(flow_attrs, :slug)
-    max_attempts = Keyword.get(flow_attrs, :max_attempts, 1)
-    base_delay = Keyword.get(flow_attrs, :base_delay, 1)
-    timeout = Keyword.get(flow_attrs, :timeout, 30)
-
-    flow_opts = [
-      max_attempts: max_attempts,
-      base_delay: base_delay,
-      timeout: timeout
-    ]
+    {slug, flow_opts, cron_expression, cron_input} = extract_flow_config(flow_attrs, env)
 
     # Generate handler functions for each step
     handler_clauses = generate_handler_clauses(steps)
 
     # Generate step definitions
-    step_defs = generate_step_definitions(steps, max_attempts, base_delay, timeout)
+    step_defs =
+      generate_step_definitions(
+        steps,
+        flow_opts[:max_attempts],
+        flow_opts[:base_delay],
+        flow_opts[:timeout]
+      )
 
     quote do
       @doc """
@@ -196,13 +193,23 @@ defmodule PgFlow.Flow do
       Returns the flow definition struct.
       """
       def __pgflow_definition__ do
-        %PgFlow.Flow.Definition{
+        %unquote(Definition){
           slug: unquote(slug),
           module: __MODULE__,
           steps: unquote(Macro.escape(step_defs)),
           opts: unquote(Macro.escape(flow_opts))
         }
       end
+
+      @doc """
+      Returns the cron expression, or nil if not scheduled.
+      """
+      def __pgflow_cron_expression__, do: unquote(cron_expression)
+
+      @doc """
+      Returns the static cron input map.
+      """
+      def __pgflow_cron_input__, do: unquote(Macro.escape(cron_input))
 
       @doc """
       Pattern-matched handler function for each step.
@@ -271,7 +278,7 @@ defmodule PgFlow.Flow do
           :map -> :map
         end
 
-      %PgFlow.Flow.Step{
+      %Step{
         slug: slug,
         step_type: step_type,
         depends_on: depends_on,
@@ -281,5 +288,48 @@ defmodule PgFlow.Flow do
         start_delay: start_delay
       }
     end)
+  end
+
+  # Validation and config extraction helpers to reduce __before_compile__ complexity
+
+  defp validate_flow_attrs!(nil, env) do
+    raise CompileError,
+      file: env.file,
+      line: env.line,
+      description: "Missing @flow attribute. You must define @flow with at least a :queue option."
+  end
+
+  defp validate_flow_attrs!(flow_attrs, env) do
+    unless Keyword.has_key?(flow_attrs, :queue) or Keyword.has_key?(flow_attrs, :slug) do
+      raise CompileError,
+        file: env.file,
+        line: env.line,
+        description:
+          "Missing :queue in @flow attribute. You must define @flow with a :queue option."
+    end
+  end
+
+  defp extract_flow_config(flow_attrs, env) do
+    slug = Keyword.get(flow_attrs, :queue) || Keyword.fetch!(flow_attrs, :slug)
+    max_attempts = Keyword.get(flow_attrs, :max_attempts, 1)
+    base_delay = Keyword.get(flow_attrs, :base_delay, 1)
+    timeout = Keyword.get(flow_attrs, :timeout, 30)
+
+    {cron_expression, cron_input} = extract_cron_config(flow_attrs, env)
+
+    flow_opts = [
+      max_attempts: max_attempts,
+      base_delay: base_delay,
+      timeout: timeout
+    ]
+
+    {slug, flow_opts, cron_expression, cron_input}
+  end
+
+  defp extract_cron_config(flow_attrs, env) do
+    case Keyword.get(flow_attrs, :cron) do
+      nil -> {nil, %{}}
+      cron_opts -> Validation.validate_cron_option!(cron_opts, env)
+    end
   end
 end

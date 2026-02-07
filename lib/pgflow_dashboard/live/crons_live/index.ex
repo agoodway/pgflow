@@ -60,9 +60,18 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
             >
               <div class="flex items-start justify-between mb-2">
                 <h3 class="text-lg font-semibold text-slate-900 dark:text-white">{cron.flow_slug}</h3>
-                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
-                  cron
-                </span>
+                <div class="flex gap-1">
+                  <span class={[
+                    "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
+                    cron.flow_type == "job" && "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400",
+                    cron.flow_type == "flow" && "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400"
+                  ]}>
+                    {cron.flow_type}
+                  </span>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
+                    cron
+                  </span>
+                </div>
               </div>
 
               <div class="mb-3">

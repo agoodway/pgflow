@@ -108,7 +108,7 @@ defmodule Mix.Tasks.Pgflow.Gen.Job do
           defmodule #{module_string} do
             use PgFlow.Job
 
-            @job queue: :my_job, max_attempts: 3
+            @job slug: :my_job, max_attempts: 3
 
             perform do
               fn input, _ctx -> %{result: input} end
@@ -141,6 +141,9 @@ defmodule Mix.Tasks.Pgflow.Gen.Job do
 
     sql_statements = JobCompiler.compile(definition)
 
+    # Check if job has cron configured
+    has_cron = JobCompiler.has_cron?(module)
+
     migrations_path = Keyword.get(opts, :migrations_path, "priv/repo/migrations")
     File.mkdir_p!(migrations_path)
 
@@ -149,7 +152,8 @@ defmodule Mix.Tasks.Pgflow.Gen.Job do
     job_slug = Atom.to_string(definition.slug)
     migration_module = "Compile#{camelize(job_slug)}"
 
-    migration_content = generate_migration_content(migration_module, job_slug, sql_statements)
+    migration_content =
+      generate_migration_content(migration_module, job_slug, sql_statements, has_cron)
 
     filename = "#{timestamp}_compile_#{job_slug}.exs"
     filepath = Path.join(migrations_path, filename)
@@ -172,9 +176,9 @@ defmodule Mix.Tasks.Pgflow.Gen.Job do
     """)
   end
 
-  defp generate_migration_content(migration_module, job_slug, sql_statements) do
-    up_statements =
-      Enum.map_join(sql_statements, "\n", &"    execute \"#{&1}\"")
+  defp generate_migration_content(migration_module, job_slug, sql_statements, has_cron) do
+    up_statements = format_execute_statements(sql_statements)
+    down_statements = build_down_statements(job_slug, has_cron)
 
     """
     defmodule PgFlow.Repo.Migrations.#{migration_module} do
@@ -195,13 +199,40 @@ defmodule Mix.Tasks.Pgflow.Gen.Job do
       end
 
       def down do
+    #{down_statements}
+      end
+    end
+    """
+  end
+
+  defp format_execute_statements(sql_statements) do
+    Enum.map_join(sql_statements, "\n", fn sql ->
+      escaped = String.replace(sql, "\"", "\\\"")
+      ~s(    execute "#{escaped}")
+    end)
+  end
+
+  defp build_down_statements(job_slug, true = _has_cron) do
+    unschedule_sql = JobCompiler.cron_unschedule_sql(String.to_atom(job_slug))
+
+    """
+        execute "#{unschedule_sql}"
         execute "DELETE FROM pgflow.deps WHERE flow_slug = '#{job_slug}'"
         execute "DELETE FROM pgflow.steps WHERE flow_slug = '#{job_slug}'"
         execute "DELETE FROM pgflow.flows WHERE flow_slug = '#{job_slug}'"
         execute "SELECT pgmq.drop_queue('#{job_slug}')"
-      end
-    end
     """
+    |> String.trim_trailing()
+  end
+
+  defp build_down_statements(job_slug, false = _has_cron) do
+    """
+        execute "DELETE FROM pgflow.deps WHERE flow_slug = '#{job_slug}'"
+        execute "DELETE FROM pgflow.steps WHERE flow_slug = '#{job_slug}'"
+        execute "DELETE FROM pgflow.flows WHERE flow_slug = '#{job_slug}'"
+        execute "SELECT pgmq.drop_queue('#{job_slug}')"
+    """
+    |> String.trim_trailing()
   end
 
   defp generate_timestamp do

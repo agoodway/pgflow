@@ -24,7 +24,7 @@ defmodule PgFlow.Job do
 
   The `@job` module attribute accepts the following options:
 
-    * `:queue` - (required) atom identifier for the job queue (becomes the flow slug)
+    * `:queue` - (required) atom identifier for the job queue (also accepts `:slug` as alias)
     * `:max_attempts` - maximum retry attempts for failed jobs (default: 1)
     * `:base_delay` - base delay in seconds for exponential backoff (default: 1)
     * `:timeout` - job execution timeout in seconds (default: 30)
@@ -74,55 +74,40 @@ defmodule PgFlow.Job do
     end
   end
 
-  @valid_keys [:queue, :max_attempts, :base_delay, :timeout]
+  alias PgFlow.DSL.Validation
+  alias PgFlow.Flow.{Definition, Step}
+
+  @valid_keys [:queue, :slug, :max_attempts, :base_delay, :timeout, :cron]
 
   defmacro __before_compile__(env) do
     job_attrs_list = Module.get_attribute(env.module, :job)
     steps = Module.get_attribute(env.module, :pgflow_steps) |> Enum.reverse()
 
-    job_attrs = validate_job_attr_count!(job_attrs_list, env)
-    validate_job_attrs!(job_attrs, env)
-    validate_steps!(steps, env)
+    job_attrs = validate_and_extract_attrs!(job_attrs_list, steps, env)
+    {slug, flow_opts, cron_expression, cron_input} = extract_job_config(job_attrs, env)
+    block = extract_perform_block(steps)
+    step_def = build_step_def(flow_opts)
 
-    slug = Keyword.fetch!(job_attrs, :queue)
-    max_attempts = Keyword.get(job_attrs, :max_attempts, 1)
-    base_delay = Keyword.get(job_attrs, :base_delay, 1)
-    timeout = Keyword.get(job_attrs, :timeout, 30)
+    generate_job_functions(slug, steps, step_def, flow_opts, block, cron_expression, cron_input)
+  end
 
-    flow_opts = [
-      max_attempts: max_attempts,
-      base_delay: base_delay,
-      timeout: timeout
-    ]
+  defp extract_perform_block([{:perform, :step, _opts, block}]), do: block
 
-    [{:perform, :step, _opts, block}] = steps
-
-    step_def = %PgFlow.Flow.Step{
-      slug: :perform,
-      step_type: :single,
-      depends_on: [],
-      max_attempts: max_attempts,
-      base_delay: base_delay,
-      timeout: timeout,
-      start_delay: 0
-    }
-
+  defp generate_job_functions(
+         slug,
+         steps,
+         step_def,
+         flow_opts,
+         block,
+         cron_expression,
+         cron_input
+       ) do
     quote do
-      @doc """
-      Returns the job queue slug.
-      """
       def __pgflow_slug__, do: unquote(slug)
-
-      @doc """
-      Returns the raw step definitions.
-      """
       def __pgflow_steps__, do: unquote(Macro.escape(steps))
 
-      @doc """
-      Returns the flow definition struct (with flow_type: :job).
-      """
       def __pgflow_definition__ do
-        %PgFlow.Flow.Definition{
+        %unquote(Definition){
           slug: unquote(slug),
           module: __MODULE__,
           steps: [unquote(Macro.escape(step_def))],
@@ -131,39 +116,29 @@ defmodule PgFlow.Job do
         }
       end
 
-      @doc """
-      Returns the perform handler function.
-      """
-      def __pgflow_handler__(:perform) do
-        unquote(block)
-      end
+      def __pgflow_handler__(:perform), do: unquote(block)
+      def __pgflow_handler__, do: unquote(block)
+      def __pgflow_handler__(slug), do: raise("No handler defined for step: #{inspect(slug)}")
 
-      def __pgflow_handler__ do
-        unquote(block)
-      end
-
-      def __pgflow_handler__(slug) do
-        raise "No handler defined for step: #{inspect(slug)}"
-      end
-
-      @doc """
-      Convenience wrapper for calling the job handler directly.
-
-      Useful for testing:
-
-          result = MyJob.perform(%{"key" => "value"}, ctx)
-
-      """
       def perform(input, ctx) do
         handler = __pgflow_handler__(:perform)
         handler.(input, ctx)
       end
+
+      def __pgflow_cron_expression__, do: unquote(cron_expression)
+      def __pgflow_cron_input__, do: unquote(Macro.escape(cron_input))
     end
   end
 
   # --- Validation helpers ---
 
-  alias PgFlow.DSL.Validation
+  # Combined validation to reduce __before_compile__ complexity
+  defp validate_and_extract_attrs!(job_attrs_list, steps, env) do
+    job_attrs = validate_job_attr_count!(job_attrs_list, env)
+    validate_job_attrs!(job_attrs, env)
+    validate_steps!(steps, env)
+    job_attrs
+  end
 
   defp validate_job_attr_count!([], _env), do: nil
   defp validate_job_attr_count!([single], _env), do: single
@@ -183,9 +158,55 @@ defmodule PgFlow.Job do
       )
 
   defp validate_job_attrs!(attrs, env) do
-    Validation.validate_required_keys!(attrs, [:queue], :job, env)
+    validate_has_queue_or_slug!(attrs, env)
     Validation.validate_unknown_keys!(attrs, @valid_keys, :job, env)
     validate_option_values!(attrs, env)
+  end
+
+  defp validate_has_queue_or_slug!(attrs, env) do
+    unless Keyword.has_key?(attrs, :queue) or Keyword.has_key?(attrs, :slug) do
+      Validation.compile_error!(
+        env,
+        "Missing :queue in @job attribute. You must define @job with a :queue option."
+      )
+    end
+  end
+
+  # Extract all job configuration from attrs
+  defp extract_job_config(attrs, env) do
+    slug = Keyword.get(attrs, :queue) || Keyword.fetch!(attrs, :slug)
+    max_attempts = Keyword.get(attrs, :max_attempts, 1)
+    base_delay = Keyword.get(attrs, :base_delay, 1)
+    timeout = Keyword.get(attrs, :timeout, 30)
+
+    {cron_expression, cron_input} = extract_cron_config(attrs, env)
+
+    flow_opts = [
+      max_attempts: max_attempts,
+      base_delay: base_delay,
+      timeout: timeout
+    ]
+
+    {slug, flow_opts, cron_expression, cron_input}
+  end
+
+  defp extract_cron_config(attrs, env) do
+    case Keyword.get(attrs, :cron) do
+      nil -> {nil, %{}}
+      opts -> Validation.validate_cron_option!(opts, env)
+    end
+  end
+
+  defp build_step_def(flow_opts) do
+    %Step{
+      slug: :perform,
+      step_type: :single,
+      depends_on: [],
+      max_attempts: flow_opts[:max_attempts],
+      base_delay: flow_opts[:base_delay],
+      timeout: flow_opts[:timeout],
+      start_delay: 0
+    }
   end
 
   defp validate_steps!(steps, env),
@@ -193,7 +214,15 @@ defmodule PgFlow.Job do
       Validation.validate_single_step!(steps, "Jobs must have exactly one `perform` block.", env)
 
   defp validate_option_values!(attrs, env) do
-    Validation.validate_option!(:queue, Keyword.fetch!(attrs, :queue), env)
+    # Validate :queue if present
+    if Keyword.has_key?(attrs, :queue) do
+      Validation.validate_option!(:queue, Keyword.fetch!(attrs, :queue), env)
+    end
+
+    # Validate :slug if present
+    if Keyword.has_key?(attrs, :slug) do
+      Validation.validate_option!(:slug, Keyword.fetch!(attrs, :slug), env)
+    end
 
     [:max_attempts, :base_delay, :timeout]
     |> Enum.filter(&Keyword.has_key?(attrs, &1))

@@ -216,7 +216,7 @@ defmodule PgFlow.QueriesTest do
           poll_interval_ms: 100
         )
 
-      assert length(messages) > 0
+      assert messages != []
       [msg_id | _] = hd(messages)
       assert is_integer(msg_id)
     end
@@ -253,7 +253,7 @@ defmodule PgFlow.QueriesTest do
       msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
       {:ok, task_details} = Queries.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
 
-      assert length(task_details) > 0
+      assert task_details != []
     end
   end
 

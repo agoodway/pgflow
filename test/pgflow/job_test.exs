@@ -8,7 +8,7 @@ defmodule PgFlow.JobTest do
       defmodule ValidJob do
         use PgFlow.Job
 
-        @job queue: :valid_job, max_attempts: 3
+        @job slug: :valid_job, max_attempts: 3
 
         perform do
           fn input, _ctx ->
@@ -41,7 +41,7 @@ defmodule PgFlow.JobTest do
       end
     end
 
-    test "requires :queue in @job attribute" do
+    test "requires :queue (or :slug) in @job attribute" do
       assert_raise CompileError, ~r/Missing :queue in @job attribute/, fn ->
         defmodule MissingQueue do
           use PgFlow.Job
@@ -55,12 +55,40 @@ defmodule PgFlow.JobTest do
       end
     end
 
+    test "accepts :queue as the identifier" do
+      defmodule QueueIdentifierJob do
+        use PgFlow.Job
+
+        @job queue: :queue_identifier_job
+
+        perform do
+          fn input, _ctx -> input end
+        end
+      end
+
+      assert QueueIdentifierJob.__pgflow_slug__() == :queue_identifier_job
+    end
+
+    test "accepts :slug as an alias for :queue" do
+      defmodule SlugAliasJob do
+        use PgFlow.Job
+
+        @job slug: :slug_alias_job
+
+        perform do
+          fn input, _ctx -> input end
+        end
+      end
+
+      assert SlugAliasJob.__pgflow_slug__() == :slug_alias_job
+    end
+
     test "requires exactly one perform block" do
       assert_raise CompileError, ~r/Jobs must have exactly one `perform` block/, fn ->
         defmodule NoPerform do
           use PgFlow.Job
 
-          @job queue: :no_perform
+          @job slug: :no_perform
         end
       end
     end
@@ -70,7 +98,7 @@ defmodule PgFlow.JobTest do
         defmodule MultiPerform do
           use PgFlow.Job
 
-          @job queue: :multi_perform
+          @job slug: :multi_perform
 
           perform do
             fn input, _ctx -> input end
@@ -90,8 +118,8 @@ defmodule PgFlow.JobTest do
         defmodule DuplicateJob do
           use PgFlow.Job
 
-          @job queue: :first
-          @job queue: :second
+          @job slug: :first
+          @job slug: :second
 
           perform do
             fn _input, _ctx -> :ok end
@@ -102,12 +130,12 @@ defmodule PgFlow.JobTest do
   end
 
   describe "@job option validation" do
-    test "rejects non-atom :queue" do
-      assert_raise CompileError, ~r/:queue must be an atom/, fn ->
-        defmodule StringQueue do
+    test "rejects non-atom :slug" do
+      assert_raise CompileError, ~r/:slug must be an atom/, fn ->
+        defmodule StringSlug do
           use PgFlow.Job
 
-          @job queue: "string_queue"
+          @job slug: "string_slug"
 
           perform do
             fn input, _ctx -> input end
@@ -121,7 +149,7 @@ defmodule PgFlow.JobTest do
         defmodule NegativeMaxAttempts do
           use PgFlow.Job
 
-          @job queue: :x, max_attempts: -1
+          @job slug: :x, max_attempts: -1
 
           perform do
             fn input, _ctx -> input end
@@ -135,7 +163,7 @@ defmodule PgFlow.JobTest do
         defmodule ZeroMaxAttempts do
           use PgFlow.Job
 
-          @job queue: :x, max_attempts: 0
+          @job slug: :x, max_attempts: 0
 
           perform do
             fn input, _ctx -> input end
@@ -149,7 +177,7 @@ defmodule PgFlow.JobTest do
         defmodule FloatMaxAttempts do
           use PgFlow.Job
 
-          @job queue: :x, max_attempts: 1.5
+          @job slug: :x, max_attempts: 1.5
 
           perform do
             fn input, _ctx -> input end
@@ -163,7 +191,7 @@ defmodule PgFlow.JobTest do
         defmodule NegativeBaseDelay do
           use PgFlow.Job
 
-          @job queue: :x, base_delay: -1
+          @job slug: :x, base_delay: -1
 
           perform do
             fn input, _ctx -> input end
@@ -176,7 +204,7 @@ defmodule PgFlow.JobTest do
       defmodule ZeroBaseDelay do
         use PgFlow.Job
 
-        @job queue: :zero_base_delay, base_delay: 0
+        @job slug: :zero_base_delay, base_delay: 0
 
         perform do
           fn input, _ctx -> input end
@@ -192,7 +220,7 @@ defmodule PgFlow.JobTest do
         defmodule ZeroTimeout do
           use PgFlow.Job
 
-          @job queue: :x, timeout: 0
+          @job slug: :x, timeout: 0
 
           perform do
             fn input, _ctx -> input end
@@ -206,7 +234,7 @@ defmodule PgFlow.JobTest do
         defmodule UnknownKeys do
           use PgFlow.Job
 
-          @job queue: :x, priority: :high
+          @job slug: :x, priority: :high
 
           perform do
             fn input, _ctx -> input end
@@ -217,18 +245,18 @@ defmodule PgFlow.JobTest do
   end
 
   describe "__pgflow_slug__/0" do
-    test "returns the job queue slug" do
+    test "returns the job slug" do
       defmodule SlugJob do
         use PgFlow.Job
 
-        @job queue: :my_queue
+        @job slug: :my_job_slug
 
         perform do
           fn input, _ctx -> input end
         end
       end
 
-      assert SlugJob.__pgflow_slug__() == :my_queue
+      assert SlugJob.__pgflow_slug__() == :my_job_slug
     end
   end
 
@@ -237,7 +265,7 @@ defmodule PgFlow.JobTest do
       defmodule DefinitionJob do
         use PgFlow.Job
 
-        @job queue: :definition_job, max_attempts: 5, base_delay: 10, timeout: 120
+        @job slug: :definition_job, max_attempts: 5, base_delay: 10, timeout: 120
 
         perform do
           fn input, _ctx -> %{processed: input} end
@@ -259,7 +287,7 @@ defmodule PgFlow.JobTest do
       defmodule SingleStepJob do
         use PgFlow.Job
 
-        @job queue: :single_step_job
+        @job slug: :single_step_job
 
         perform do
           fn input, _ctx -> input end
@@ -279,7 +307,7 @@ defmodule PgFlow.JobTest do
       defmodule DefaultOptsJob do
         use PgFlow.Job
 
-        @job queue: :default_opts_job
+        @job slug: :default_opts_job
 
         perform do
           fn input, _ctx -> input end
@@ -299,7 +327,7 @@ defmodule PgFlow.JobTest do
       defmodule HandlerJob do
         use PgFlow.Job
 
-        @job queue: :handler_job
+        @job slug: :handler_job
 
         perform do
           fn input, _ctx ->
@@ -319,7 +347,7 @@ defmodule PgFlow.JobTest do
       defmodule RaiseJob do
         use PgFlow.Job
 
-        @job queue: :raise_job
+        @job slug: :raise_job
 
         perform do
           fn input, _ctx -> input end
@@ -337,7 +365,7 @@ defmodule PgFlow.JobTest do
       defmodule WrapperJob do
         use PgFlow.Job
 
-        @job queue: :wrapper_job
+        @job slug: :wrapper_job
 
         perform do
           fn input, _ctx ->
@@ -364,7 +392,7 @@ defmodule PgFlow.JobTest do
       defmodule RawStepsJob do
         use PgFlow.Job
 
-        @job queue: :raw_steps_job
+        @job slug: :raw_steps_job
 
         perform do
           fn input, _ctx -> input end
@@ -374,6 +402,139 @@ defmodule PgFlow.JobTest do
       raw_steps = RawStepsJob.__pgflow_steps__()
       assert is_list(raw_steps)
       assert [{:perform, :step, [], _block}] = raw_steps
+    end
+  end
+
+  describe "cron option" do
+    test "accepts string shorthand" do
+      defmodule CronShorthandJob do
+        use PgFlow.Job
+
+        @job slug: :cron_shorthand_job, cron: "0 * * * *"
+
+        perform do
+          fn _input, _ctx -> :ok end
+        end
+      end
+
+      assert CronShorthandJob.__pgflow_cron_expression__() == "0 * * * *"
+      assert CronShorthandJob.__pgflow_cron_input__() == %{}
+    end
+
+    test "accepts @hourly shorthand" do
+      defmodule CronHourlyJob do
+        use PgFlow.Job
+
+        @job slug: :cron_hourly_job, cron: "@hourly"
+
+        perform do
+          fn _input, _ctx -> :ok end
+        end
+      end
+
+      assert CronHourlyJob.__pgflow_cron_expression__() == "@hourly"
+      assert CronHourlyJob.__pgflow_cron_input__() == %{}
+    end
+
+    test "accepts valid cron schedule" do
+      defmodule CronJob do
+        use PgFlow.Job
+
+        @job slug: :cron_job, cron: [schedule: "0 * * * *"]
+
+        perform do
+          fn _input, _ctx -> :ok end
+        end
+      end
+
+      assert CronJob.__pgflow_cron_expression__() == "0 * * * *"
+      assert CronJob.__pgflow_cron_input__() == %{}
+    end
+
+    test "accepts cron with input" do
+      defmodule CronWithInputJob do
+        use PgFlow.Job
+
+        @job slug: :cron_with_input_job, cron: [schedule: "*/5 * * * *", input: %{key: "value"}]
+
+        perform do
+          fn _input, _ctx -> :ok end
+        end
+      end
+
+      assert CronWithInputJob.__pgflow_cron_expression__() == "*/5 * * * *"
+      assert CronWithInputJob.__pgflow_cron_input__() == %{key: "value"}
+    end
+
+    test "job without cron has nil expression" do
+      defmodule NoCronJob do
+        use PgFlow.Job
+
+        @job slug: :no_cron_job
+
+        perform do
+          fn _input, _ctx -> :ok end
+        end
+      end
+
+      assert NoCronJob.__pgflow_cron_expression__() == nil
+      assert NoCronJob.__pgflow_cron_input__() == %{}
+    end
+
+    test "rejects cron without schedule" do
+      assert_raise CompileError, ~r/Missing :schedule in cron option/, fn ->
+        defmodule NoScheduleCron do
+          use PgFlow.Job
+
+          @job slug: :x, cron: [input: %{}]
+
+          perform do
+            fn _input, _ctx -> :ok end
+          end
+        end
+      end
+    end
+
+    test "rejects invalid cron schedule" do
+      assert_raise CompileError, ~r/Invalid cron schedule/, fn ->
+        defmodule InvalidCronJob do
+          use PgFlow.Job
+
+          @job slug: :x, cron: [schedule: "not a cron"]
+
+          perform do
+            fn _input, _ctx -> :ok end
+          end
+        end
+      end
+    end
+
+    test "rejects non-map input" do
+      assert_raise CompileError, ~r/:input must be a map/, fn ->
+        defmodule NonMapInputCron do
+          use PgFlow.Job
+
+          @job slug: :x, cron: [schedule: "0 * * * *", input: "not a map"]
+
+          perform do
+            fn _input, _ctx -> :ok end
+          end
+        end
+      end
+    end
+
+    test "rejects unknown cron keys" do
+      assert_raise CompileError, ~r/Unknown cron option/, fn ->
+        defmodule UnknownCronKeys do
+          use PgFlow.Job
+
+          @job slug: :x, cron: [schedule: "0 * * * *", unknown: true]
+
+          perform do
+            fn _input, _ctx -> :ok end
+          end
+        end
+      end
     end
   end
 end

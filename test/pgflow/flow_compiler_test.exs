@@ -281,4 +281,63 @@ defmodule PgFlow.FlowCompilerTest do
       assert map_step_sql =~ "'map'"
     end
   end
+
+  describe "cron SQL generation" do
+    test "cron_schedule_sql/3 generates correct SQL" do
+      sql = FlowCompiler.cron_schedule_sql(:test_flow, "0 * * * *", %{})
+
+      assert sql =~ "cron.schedule"
+      assert sql =~ "'pgflow:test_flow'"
+      assert sql =~ "'0 * * * *'"
+      assert sql =~ "pgflow.start_flow('test_flow'"
+    end
+
+    test "cron_schedule_sql/3 includes input JSON" do
+      sql = FlowCompiler.cron_schedule_sql(:test_flow, "*/5 * * * *", %{key: "value"})
+
+      assert sql =~ ~s('{"key":"value"}'::jsonb)
+    end
+
+    test "cron_unschedule_sql/1 generates correct SQL" do
+      sql = FlowCompiler.cron_unschedule_sql(:test_flow)
+
+      assert sql == "SELECT cron.unschedule('pgflow:test_flow')"
+    end
+
+    test "has_cron?/1 returns false for module without cron" do
+      refute FlowCompiler.has_cron?(PgFlow.TestFlows.SimpleFlow)
+    end
+
+    test "compile/1 includes cron SQL for flow with cron option" do
+      defmodule CronTestFlow do
+        use PgFlow.Flow
+
+        @flow slug: :cron_test_flow, cron: [schedule: "0 * * * *", input: %{test: true}]
+
+        step :process do
+          fn input, _ctx -> input end
+        end
+      end
+
+      definition = CronTestFlow.__pgflow_definition__()
+      sql_statements = FlowCompiler.compile(definition)
+
+      # 1 flow + 1 step + 1 cron schedule
+      assert length(sql_statements) == 3
+
+      cron_sql = List.last(sql_statements)
+      assert cron_sql =~ "cron.schedule"
+      assert cron_sql =~ "'pgflow:cron_test_flow'"
+      assert cron_sql =~ "'0 * * * *'"
+      assert cron_sql =~ ~s("test":true)
+    end
+
+    test "compile/1 does not include cron SQL for flow without cron option" do
+      definition = PgFlow.TestFlows.SimpleFlow.__pgflow_definition__()
+      sql_statements = FlowCompiler.compile(definition)
+
+      # No cron SQL should be present
+      refute Enum.any?(sql_statements, &(&1 =~ "cron.schedule"))
+    end
+  end
 end
