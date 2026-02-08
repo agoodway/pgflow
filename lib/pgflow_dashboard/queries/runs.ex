@@ -3,7 +3,7 @@ defmodule PgFlowDashboard.Queries.Runs do
   Database queries for run-related data.
   """
 
-  import PgFlow.Queries.Base
+  import PgFlow.Queries.Helpers
 
   @doc """
   Lists runs with progress information.
@@ -84,13 +84,7 @@ defmodule PgFlowDashboard.Queries.Runs do
       {:ok, %{get_adjacent_run: adjacent_id}} when not is_nil(adjacent_id) ->
         {:ok, format_uuid(adjacent_id)}
 
-      {:ok, %{run_id: nil}} ->
-        {:error, :not_found}
-
-      {:ok, %{get_adjacent_run: nil}} ->
-        {:error, :not_found}
-
-      {:error, :not_found} ->
+      _ ->
         {:error, :not_found}
     end
   end

@@ -5,7 +5,18 @@ defmodule PgFlowDashboard.Queries.Crons do
   Enriches cron data with calculated next run time using the Crontab library.
   """
 
-  import PgFlow.Queries.Base
+  import PgFlow.Queries.Helpers
+
+  alias Crontab.CronExpression.Parser, as: CronParser
+  alias Crontab.Scheduler, as: CronScheduler
+
+  @doc """
+  Counts all crons.
+  """
+  @spec count_crons(module()) :: integer()
+  def count_crons(repo) do
+    execute_rpc(repo, "count_crons", [], schema: "pgflow_dashboard", mode: :count)
+  end
 
   @doc """
   Lists crons with statistics and schedule info.
@@ -13,11 +24,18 @@ defmodule PgFlowDashboard.Queries.Crons do
   Enriches each cron with:
   - `next_run_at` - The next scheduled run time (calculated from cron expression)
   - `human_schedule` - Human-readable schedule description
+
+  ## Options
+    * `:limit` - Maximum number of crons to return
+    * `:cursor` - Cursor for pagination (flow_slug to start after)
   """
-  @spec list_crons(module()) :: list(map())
-  def list_crons(repo) do
+  @spec list_crons(module(), keyword()) :: list(map())
+  def list_crons(repo, opts \\ []) do
+    limit = Keyword.get(opts, :limit)
+    cursor = Keyword.get(opts, :cursor)
+
     repo
-    |> execute_rpc("list_crons", [], schema: "pgflow_dashboard", mode: :list)
+    |> execute_rpc("list_crons", [limit, cursor], schema: "pgflow_dashboard", mode: :list)
     |> Enum.map(&enrich_cron/1)
   end
 
@@ -62,15 +80,11 @@ defmodule PgFlowDashboard.Queries.Crons do
   defp calculate_next_run(nil), do: nil
 
   defp calculate_next_run(expression) do
-    case Crontab.CronExpression.Parser.parse(expression) do
-      {:ok, cron_expr} ->
-        case Crontab.Scheduler.get_next_run_date(cron_expr, DateTime.utc_now()) do
-          {:ok, next_run} -> next_run
-          _ -> nil
-        end
-
-      _ ->
-        nil
+    with {:ok, cron_expr} <- CronParser.parse(expression),
+         {:ok, next_run} <- CronScheduler.get_next_run_date(cron_expr, DateTime.utc_now()) do
+      next_run
+    else
+      _ -> nil
     end
   end
 
@@ -78,12 +92,10 @@ defmodule PgFlowDashboard.Queries.Crons do
   defp humanize_schedule(nil), do: nil
 
   defp humanize_schedule(expression) do
-    case Crontab.CronExpression.Parser.parse(expression) do
-      {:ok, cron_expr} ->
-        format_human_schedule(cron_expr)
-
-      _ ->
-        nil
+    with {:ok, cron_expr} <- CronParser.parse(expression) do
+      format_human_schedule(cron_expr)
+    else
+      _ -> nil
     end
   end
 
@@ -139,27 +151,28 @@ defmodule PgFlowDashboard.Queries.Crons do
 
   defp format_days([:*], [:*], [:*]), do: nil
 
-  defp format_days([:*], [:*], weekdays) when is_list(weekdays) do
-    case weekdays do
-      [{:-, 1, 5}] -> "Weekdays"
-      [{:-, 0, 6}] -> nil
-      [0] -> "Sundays"
-      [1] -> "Mondays"
-      [2] -> "Tuesdays"
-      [3] -> "Wednesdays"
-      [4] -> "Thursdays"
-      [5] -> "Fridays"
-      [6] -> "Saturdays"
-      _ -> nil
-    end
+  @weekday_names %{
+    0 => "Sundays",
+    1 => "Mondays",
+    2 => "Tuesdays",
+    3 => "Wednesdays",
+    4 => "Thursdays",
+    5 => "Fridays",
+    6 => "Saturdays"
+  }
+
+  defp format_days([:*], [:*], [{:-, 1, 5}]), do: "Weekdays"
+  defp format_days([:*], [:*], [{:-, 0, 6}]), do: nil
+
+  defp format_days([:*], [:*], [day]) when is_map_key(@weekday_names, day) do
+    @weekday_names[day]
   end
+
+  defp format_days([:*], [:*], _weekdays), do: nil
 
   defp format_days([1], [:*], [:*]), do: "Monthly"
   defp format_days([day], [:*], [:*]) when is_integer(day), do: "On day #{day} monthly"
   defp format_days(_days, _months, _weekdays), do: nil
 
-  defp format_hour(hour) when hour == 0, do: "0:00"
-  defp format_hour(hour) when hour < 12, do: "#{hour}:00"
-  defp format_hour(hour) when hour == 12, do: "12:00"
   defp format_hour(hour), do: "#{hour}:00"
 end

@@ -3,7 +3,7 @@ defmodule PgFlowDashboard.Queries.Workers do
   Database queries for worker-related data.
   """
 
-  import PgFlow.Queries.Base
+  import PgFlow.Queries.Helpers
 
   @doc """
   Counts workers matching the given filters.
@@ -92,10 +92,7 @@ defmodule PgFlowDashboard.Queries.Workers do
       {:ok, %{worker_id: adjacent_id}} when not is_nil(adjacent_id) ->
         {:ok, adjacent_id}
 
-      {:ok, %{worker_id: nil}} ->
-        {:error, :not_found}
-
-      {:error, :not_found} ->
+      _ ->
         {:error, :not_found}
     end
   end

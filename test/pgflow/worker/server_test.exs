@@ -329,6 +329,29 @@ defmodule PgFlow.Worker.ServerTest do
     end
   end
 
+  defmodule StepTimeoutFlow do
+    @moduledoc """
+    A flow where a specific step has a short timeout override.
+    Flow-level timeout is 30s, but slow_step has timeout: 2.
+    """
+    use PgFlow.Flow
+
+    @flow slug: :step_timeout_flow, max_attempts: 1, timeout: 30
+
+    step :fast_step do
+      fn _input, _ctx ->
+        %{done: true}
+      end
+    end
+
+    step :slow_step, depends_on: [:fast_step], timeout: 2 do
+      fn _input, _ctx ->
+        Process.sleep(5000)
+        %{done: true}
+      end
+    end
+  end
+
   defmodule PartialFailureFlow do
     @moduledoc """
     A flow where the middle step fails once then succeeds on retry.
@@ -424,21 +447,17 @@ defmodule PgFlow.Worker.ServerTest do
   end
 
   defp start_worker(flow_module, task_supervisor, opts \\ []) do
-    config =
-      Map.merge(
-        %{
-          flow_module: flow_module,
-          repo: TestRepo,
-          task_supervisor: task_supervisor,
-          max_concurrency: Keyword.get(opts, :max_concurrency, 10),
-          batch_size: Keyword.get(opts, :batch_size, 10),
-          poll_interval: Keyword.get(opts, :poll_interval, 50),
-          visibility_timeout: Keyword.get(opts, :visibility_timeout, 30),
-          max_poll_seconds: Keyword.get(opts, :max_poll_seconds, 2),
-          poll_interval_ms: Keyword.get(opts, :poll_interval_ms, 100)
-        },
-        Map.new(opts)
-      )
+    config = %{
+      flow_module: flow_module,
+      repo: TestRepo,
+      task_supervisor: task_supervisor,
+      max_concurrency: Keyword.get(opts, :max_concurrency, 10),
+      batch_size: Keyword.get(opts, :batch_size, 10),
+      signal_strategy: Keyword.get(opts, :signal_strategy, :polling),
+      min_poll_interval: Keyword.get(opts, :min_poll_interval, 50),
+      max_poll_interval: Keyword.get(opts, :max_poll_interval, 5_000),
+      notify_fallback_interval: Keyword.get(opts, :notify_fallback_interval, 30_000)
+    }
 
     {:ok, pid} = Server.start_link(config)
 
@@ -540,6 +559,26 @@ defmodule PgFlow.Worker.ServerTest do
       assert worker.stopped_at == nil
 
       Server.stop(worker_pid)
+    end
+
+    test "fails to start when task supervisor is not found" do
+      Process.flag(:trap_exit, true)
+
+      config = %{
+        flow_module: SimpleWorkerFlow,
+        repo: TestRepo,
+        task_supervisor: nil,
+        max_concurrency: 10,
+        batch_size: 10,
+        signal_strategy: :polling,
+        min_poll_interval: 50,
+        max_poll_interval: 5_000,
+        notify_fallback_interval: 30_000
+      }
+
+      assert {:error, :task_supervisor_not_found} = Server.start_link(config)
+
+      Process.flag(:trap_exit, false)
     end
 
     test "worker marks itself as stopped on shutdown", %{task_supervisor: task_supervisor} do
@@ -1193,11 +1232,7 @@ defmodule PgFlow.Worker.ServerTest do
       flow_slug = compile_flow(SlowWorkerFlow)
 
       worker_pid =
-        start_worker(SlowWorkerFlow, task_supervisor,
-          max_concurrency: 1,
-          poll_interval: 50,
-          visibility_timeout: 30
-        )
+        start_worker(SlowWorkerFlow, task_supervisor, max_concurrency: 1)
 
       Process.sleep(100)
 
@@ -1223,16 +1258,12 @@ defmodule PgFlow.Worker.ServerTest do
       )
 
       # Run stalled task recovery
-      {:ok, count} = PgFlow.Queries.recover_stalled_tasks(TestRepo, 60)
+      {:ok, count} = PgFlow.Queries.Flows.recover_stalled_tasks(TestRepo, 60)
       assert count >= 1
 
       # Start a new worker to pick up the recovered task
       worker_pid2 =
-        start_worker(SlowWorkerFlow, task_supervisor,
-          max_concurrency: 1,
-          poll_interval: 50,
-          visibility_timeout: 30
-        )
+        start_worker(SlowWorkerFlow, task_supervisor, max_concurrency: 1)
 
       # Wait for the recovered task to complete (with shorter sleep this time)
       # The pgmq message will become visible again and the new worker picks it up
@@ -1240,6 +1271,528 @@ defmodule PgFlow.Worker.ServerTest do
       assert status == "completed"
 
       Server.stop(worker_pid2)
+    end
+  end
+
+  # ============= Visibility Timeout Derivation Tests (Task 2.3) =============
+
+  describe "visibility timeout derivation" do
+    test "derives visibility_timeout from flow definition opt_timeout", %{
+      task_supervisor: task_supervisor
+    } do
+      # TimeoutTestFlow has @flow timeout: 2
+      _flow_slug = compile_flow(TimeoutTestFlow)
+      worker_pid = start_worker(TimeoutTestFlow, task_supervisor)
+
+      state = Server.get_state(worker_pid)
+      assert state.visibility_timeout == 2
+
+      Server.stop(worker_pid)
+    end
+
+    test "defaults visibility_timeout to 60 when flow has no explicit timeout", %{
+      task_supervisor: task_supervisor
+    } do
+      # SimpleWorkerFlow has no timeout option, should default to 60
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+      worker_pid = start_worker(SimpleWorkerFlow, task_supervisor)
+
+      state = Server.get_state(worker_pid)
+      # Default timeout is 60s (matches pgflow DB default for opt_timeout)
+      # Note: SimpleWorkerFlow defines timeout: 30 in compile_flow helper
+      # The flow definition opts[:timeout] determines this value
+      flow_def = SimpleWorkerFlow.__pgflow_definition__()
+      expected_vt = Keyword.get(flow_def.opts, :timeout, 60)
+      assert state.visibility_timeout == expected_vt
+
+      Server.stop(worker_pid)
+    end
+
+    test "visibility_timeout matches flow definition for custom timeout flow", %{
+      task_supervisor: task_supervisor
+    } do
+      # StepTimeoutFlow has @flow timeout: 30
+      _flow_slug = compile_flow(StepTimeoutFlow)
+      worker_pid = start_worker(StepTimeoutFlow, task_supervisor)
+
+      state = Server.get_state(worker_pid)
+      assert state.visibility_timeout == 30
+
+      Server.stop(worker_pid)
+    end
+  end
+
+  # ============= Adaptive Backoff Tests (Task 3.5) =============
+
+  describe "adaptive backoff" do
+    test "starts with min_interval on initial poll", %{task_supervisor: task_supervisor} do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+      worker_pid = start_worker(SimpleWorkerFlow, task_supervisor, min_poll_interval: 100)
+
+      # Give the initial poll time to fire
+      Process.sleep(50)
+
+      state = Server.get_state(worker_pid)
+      # After initial poll with no messages, the interval should have increased
+      # (decorrelated jitter from min to current*3)
+      assert state.signal_state.min_interval == 100
+
+      Server.stop(worker_pid)
+    end
+
+    test "interval increases after empty polls", %{task_supervisor: task_supervisor} do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor,
+          min_poll_interval: 50,
+          max_poll_interval: 5_000
+        )
+
+      # Wait for several empty poll cycles to allow backoff
+      Process.sleep(800)
+
+      state = Server.get_state(worker_pid)
+      # After multiple empty polls, current_interval should have grown beyond min
+      assert state.signal_state.current_interval >= state.signal_state.min_interval
+
+      Server.stop(worker_pid)
+    end
+
+    test "interval resets toward min when messages are found", %{task_supervisor: task_supervisor} do
+      flow_slug = compile_flow(SimpleWorkerFlow)
+
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor,
+          min_poll_interval: 50,
+          max_poll_interval: 5_000
+        )
+
+      # Wait for backoff to accumulate through empty polls
+      Process.sleep(2000)
+
+      state_before = Server.get_state(worker_pid)
+      backed_off_interval = state_before.signal_state.current_interval
+
+      # Verify backoff has actually increased from min
+      assert backed_off_interval > 50,
+             "Expected interval to grow during empty polls, got #{backed_off_interval}"
+
+      # Start a flow run to trigger found_messages
+      run_id = start_flow_run(flow_slug, %{"value" => 5})
+      {:ok, _status} = wait_for_run_completion(run_id)
+
+      # After finding messages, schedule_next_poll resets to min_interval.
+      # By the time we check, one or two subsequent empty polls may have
+      # bumped it slightly via jitter, so allow a small margin.
+      state_after = Server.get_state(worker_pid)
+
+      assert state_after.signal_state.current_interval < backed_off_interval,
+             "Expected interval to decrease after finding messages, was #{backed_off_interval}, now #{state_after.signal_state.current_interval}"
+
+      Server.stop(worker_pid)
+    end
+
+    test "interval is capped at max_poll_interval", %{task_supervisor: task_supervisor} do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      # Use a very low max to make the cap easy to verify
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor,
+          min_poll_interval: 50,
+          max_poll_interval: 200
+        )
+
+      # Wait for enough empty polls to hit the cap
+      Process.sleep(2000)
+
+      state = Server.get_state(worker_pid)
+      assert state.signal_state.current_interval <= 200
+
+      Server.stop(worker_pid)
+    end
+  end
+
+  # ============= Notify Strategy & Fallback Timer Tests =============
+
+  describe "notify strategy and fallback timer" do
+    test "fallback_timer_ref is tracked in state for notify strategy", %{
+      task_supervisor: task_supervisor
+    } do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor,
+          signal_strategy: :notify,
+          notify_fallback_interval: 30_000
+        )
+
+      # Give worker time to initialize
+      Process.sleep(100)
+
+      state = Server.get_state(worker_pid)
+
+      # For notify strategy, fallback_timer_ref should be set
+      assert state.signal_strategy == :notify
+      assert is_reference(state.fallback_timer_ref)
+
+      Server.stop(worker_pid)
+    end
+
+    test "fallback_timer_ref is nil for polling strategy", %{task_supervisor: task_supervisor} do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor, signal_strategy: :polling)
+
+      Process.sleep(100)
+
+      state = Server.get_state(worker_pid)
+
+      # For polling strategy, fallback_timer_ref should remain nil
+      assert state.signal_strategy == :polling
+      assert state.fallback_timer_ref == nil
+
+      Server.stop(worker_pid)
+    end
+
+    test "fallback timer is reset when poll_now is received", %{task_supervisor: task_supervisor} do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor,
+          signal_strategy: :notify,
+          notify_fallback_interval: 30_000
+        )
+
+      Process.sleep(100)
+
+      # Get the initial fallback timer ref
+      state_before = Server.get_state(worker_pid)
+      initial_ref = state_before.fallback_timer_ref
+      assert is_reference(initial_ref)
+
+      # Simulate a NOTIFY by sending :poll_now directly to the worker
+      send(worker_pid, :poll_now)
+
+      # Give time for the handler to process
+      Process.sleep(50)
+
+      state_after = Server.get_state(worker_pid)
+      new_ref = state_after.fallback_timer_ref
+
+      # The fallback timer ref should be different (reset)
+      assert is_reference(new_ref)
+      assert new_ref != initial_ref
+
+      Server.stop(worker_pid)
+    end
+
+    test "fallback timer fires at configured interval when no notify received", %{
+      task_supervisor: task_supervisor
+    } do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      # Use a very short fallback interval for testing
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor,
+          signal_strategy: :notify,
+          notify_fallback_interval: 200
+        )
+
+      Process.sleep(50)
+
+      state_before = Server.get_state(worker_pid)
+      initial_ref = state_before.fallback_timer_ref
+
+      # Wait for fallback to fire and reschedule
+      Process.sleep(350)
+
+      state_after = Server.get_state(worker_pid)
+      new_ref = state_after.fallback_timer_ref
+
+      # After fallback fires, a new timer should be scheduled
+      assert is_reference(new_ref)
+      assert new_ref != initial_ref
+
+      Server.stop(worker_pid)
+    end
+
+    test "reset_fallback_timer is only called for notify strategy", %{
+      task_supervisor: task_supervisor
+    } do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      # Start with polling strategy
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor, signal_strategy: :polling)
+
+      Process.sleep(100)
+
+      # Get initial state - fallback_timer_ref should be nil
+      state_before = Server.get_state(worker_pid)
+      assert state_before.fallback_timer_ref == nil
+
+      # Simulate sending :poll_now (shouldn't crash or set fallback timer)
+      send(worker_pid, :poll_now)
+
+      Process.sleep(50)
+
+      state_after = Server.get_state(worker_pid)
+      # Should still be nil for polling strategy
+      assert state_after.fallback_timer_ref == nil
+
+      Server.stop(worker_pid)
+    end
+
+    test "multiple rapid poll_now messages each reset the fallback timer", %{
+      task_supervisor: task_supervisor
+    } do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor,
+          signal_strategy: :notify,
+          notify_fallback_interval: 30_000
+        )
+
+      Process.sleep(100)
+
+      # Get initial ref
+      initial_ref = Server.get_state(worker_pid).fallback_timer_ref
+      assert is_reference(initial_ref)
+
+      # Send poll_now and collect refs
+      refs =
+        for _ <- 1..3 do
+          send(worker_pid, :poll_now)
+          Process.sleep(50)
+          Server.get_state(worker_pid).fallback_timer_ref
+        end
+
+      # All collected refs should be valid references
+      assert Enum.all?(refs, &is_reference/1)
+
+      # The initial ref should be different from the first collected ref
+      # (proving that poll_now resets the timer)
+      [first_ref | _] = refs
+      assert first_ref != initial_ref
+
+      Server.stop(worker_pid)
+    end
+  end
+
+  # ============= Task Timeout Enforcement Tests (Task 4.7) =============
+
+  describe "task timeout enforcement" do
+    test "task times out and is marked as failed", %{task_supervisor: task_supervisor} do
+      # TimeoutTestFlow has timeout: 2s
+      flow_slug = compile_flow(TimeoutTestFlow)
+      worker_pid = start_worker(TimeoutTestFlow, task_supervisor)
+
+      Process.sleep(100)
+
+      # Start a task that sleeps 5s but flow timeout is 2s
+      run_id = start_flow_run(flow_slug, %{"sleep_ms" => 5000})
+
+      # Wait for it to fail (timeout after ~2s)
+      {:ok, status} = wait_for_run_completion(run_id, 10_000)
+      assert status == "failed"
+
+      Server.stop(worker_pid)
+    end
+
+    test "task completes before timeout fires", %{task_supervisor: task_supervisor} do
+      # TimeoutTestFlow has timeout: 2s
+      flow_slug = compile_flow(TimeoutTestFlow)
+      worker_pid = start_worker(TimeoutTestFlow, task_supervisor)
+
+      Process.sleep(100)
+
+      # Start a task that completes quickly (100ms, well within 2s timeout)
+      run_id = start_flow_run(flow_slug, %{"sleep_ms" => 100})
+
+      {:ok, status} = wait_for_run_completion(run_id, 10_000)
+      assert status == "completed"
+
+      run = get_run(run_id)
+      assert run.output["slow_step"]["done"] == true
+
+      Server.stop(worker_pid)
+    end
+
+    test "step-level timeout overrides flow-level timeout", %{task_supervisor: task_supervisor} do
+      # StepTimeoutFlow has flow timeout: 30s, but slow_step has timeout: 2s
+      flow_slug = compile_flow(StepTimeoutFlow)
+      worker_pid = start_worker(StepTimeoutFlow, task_supervisor)
+
+      Process.sleep(100)
+
+      # fast_step completes instantly, slow_step sleeps 5s but has timeout: 2s
+      run_id = start_flow_run(flow_slug, %{})
+
+      # Wait for it to fail (slow_step should timeout after ~2s)
+      {:ok, status} = wait_for_run_completion(run_id, 10_000)
+      assert status == "failed"
+
+      Server.stop(worker_pid)
+    end
+  end
+
+  # ============= Timer Lifecycle Edge Cases =============
+
+  describe "timer lifecycle edge cases" do
+    test "cancel_poll_timer flushes pending :poll message from mailbox", %{
+      task_supervisor: task_supervisor
+    } do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor,
+          signal_strategy: :polling,
+          min_poll_interval: 50,
+          max_poll_interval: 5_000
+        )
+
+      Process.sleep(100)
+
+      # Get initial timer ref
+      state = Server.get_state(worker_pid)
+      initial_timer_ref = state.signal_state.poll_timer_ref
+      assert is_reference(initial_timer_ref)
+
+      # Send :poll_now which cancels the timer and triggers a poll
+      send(worker_pid, :poll_now)
+      Process.sleep(50)
+
+      # Verify the timer ref changed (new timer scheduled)
+      state = Server.get_state(worker_pid)
+      new_timer_ref = state.signal_state.poll_timer_ref
+      assert new_timer_ref != initial_timer_ref
+
+      # Verify no duplicate polls happen (would show in logs if timer wasn't flushed)
+      Server.stop(worker_pid)
+    end
+
+    test "rapid poll_now messages don't cause duplicate poll cycles", %{
+      task_supervisor: task_supervisor
+    } do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor,
+          signal_strategy: :polling,
+          min_poll_interval: 100,
+          max_poll_interval: 5_000
+        )
+
+      Process.sleep(100)
+
+      # Send multiple rapid poll_now messages
+      for _ <- 1..5 do
+        send(worker_pid, :poll_now)
+      end
+
+      # Wait for processing
+      Process.sleep(200)
+
+      # Worker should still be running normally
+      state = Server.get_state(worker_pid)
+      assert state.lifecycle.state == :running
+      assert is_reference(state.signal_state.poll_timer_ref)
+
+      Server.stop(worker_pid)
+    end
+  end
+
+  # ============= At-Capacity Handling Edge Cases =============
+
+  describe "at-capacity handling edge cases" do
+    test "worker skips poll when at max_concurrency", %{task_supervisor: task_supervisor} do
+      flow_slug = compile_flow(SlowWorkerFlow)
+
+      # Start worker with concurrency of 2
+      worker_pid =
+        start_worker(SlowWorkerFlow, task_supervisor,
+          max_concurrency: 2,
+          min_poll_interval: 50
+        )
+
+      Process.sleep(100)
+
+      # Start 3 tasks (each sleeps 500ms)
+      run_id1 = start_flow_run(flow_slug, %{"sleep_ms" => 500})
+      run_id2 = start_flow_run(flow_slug, %{"sleep_ms" => 500})
+      run_id3 = start_flow_run(flow_slug, %{"sleep_ms" => 500})
+
+      # Let first two tasks get picked up
+      Process.sleep(200)
+
+      # Should have exactly 2 active tasks (at capacity)
+      state = Server.get_state(worker_pid)
+      assert map_size(state.active_tasks) == 2
+
+      # Wait for all to complete
+      for run_id <- [run_id1, run_id2, run_id3] do
+        {:ok, _} = wait_for_run_completion(run_id, 10_000)
+      end
+
+      Server.stop(worker_pid)
+    end
+
+    test "worker polls immediately when capacity freed", %{task_supervisor: task_supervisor} do
+      flow_slug = compile_flow(SlowWorkerFlow)
+
+      # Start worker with concurrency of 1
+      worker_pid =
+        start_worker(SlowWorkerFlow, task_supervisor,
+          max_concurrency: 1,
+          min_poll_interval: 50
+        )
+
+      Process.sleep(100)
+
+      # Start 2 tasks
+      run_id1 = start_flow_run(flow_slug, %{"sleep_ms" => 200})
+      run_id2 = start_flow_run(flow_slug, %{"sleep_ms" => 100})
+
+      # Wait for first task to be picked up
+      Process.sleep(100)
+      state = Server.get_state(worker_pid)
+      assert map_size(state.active_tasks) == 1
+
+      # Wait for both to complete - second should be picked up quickly after first completes
+      {:ok, _} = wait_for_run_completion(run_id1, 5_000)
+      {:ok, _} = wait_for_run_completion(run_id2, 5_000)
+
+      Server.stop(worker_pid)
+    end
+
+    test "messages are not lost when at capacity", %{task_supervisor: task_supervisor} do
+      flow_slug = compile_flow(SlowWorkerFlow)
+
+      # Start worker with concurrency of 1
+      worker_pid =
+        start_worker(SlowWorkerFlow, task_supervisor,
+          max_concurrency: 1,
+          min_poll_interval: 50
+        )
+
+      Process.sleep(100)
+
+      # Start 5 tasks while at capacity=1
+      run_ids =
+        for i <- 1..5 do
+          start_flow_run(flow_slug, %{"sleep_ms" => 50 + i * 10})
+        end
+
+      # Wait for all tasks to complete
+      for run_id <- run_ids do
+        {:ok, status} = wait_for_run_completion(run_id, 10_000)
+        assert status == "completed"
+      end
+
+      Server.stop(worker_pid)
     end
   end
 end

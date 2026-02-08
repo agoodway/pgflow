@@ -3,7 +3,8 @@ defmodule PgFlow.QueriesTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.TestRepo
-  alias PgFlow.Queries
+  alias PgFlow.Queries.Flows
+  alias PgFlow.Queries.Workers, as: WorkerQueries
 
   @moduletag timeout: 30_000
   @moduletag :integration
@@ -103,19 +104,19 @@ defmodule PgFlow.QueriesTest do
 
   defp register_worker(flow_slug) do
     worker_id = Ecto.UUID.generate()
-    {:ok, _} = Queries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+    {:ok, _} = WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
     worker_id
   end
 
   defp read_and_start_tasks(flow_slug, worker_id) do
     {:ok, messages} =
-      Queries.read_with_poll(TestRepo, flow_slug, 30, 10,
+      Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
         max_poll_seconds: 1,
         poll_interval_ms: 100
       )
 
     msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
-    {:ok, task_details} = Queries.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
+    {:ok, task_details} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
     {messages, task_details}
   end
 
@@ -130,9 +131,9 @@ defmodule PgFlow.QueriesTest do
       {_messages, _task_details} = read_and_start_tasks(flow_slug, worker_id)
 
       output = %{"result" => 42}
-      {:ok, _} = Queries.complete_task(TestRepo, run_id, "process", 0, output)
+      {:ok, _} = Flows.complete_task(TestRepo, run_id, "process", 0, output)
 
-      {:ok, step_output} = Queries.get_step_output(TestRepo, run_id, "process")
+      {:ok, step_output} = Flows.get_step_output(TestRepo, run_id, "process")
       assert step_output == output
     end
 
@@ -140,7 +141,7 @@ defmodule PgFlow.QueriesTest do
       flow_slug = compile_flow(SimpleFlow)
       run_id = start_flow_run(flow_slug, %{"value" => 42})
 
-      {:ok, step_output} = Queries.get_step_output(TestRepo, run_id, "process")
+      {:ok, step_output} = Flows.get_step_output(TestRepo, run_id, "process")
       assert step_output == nil
     end
 
@@ -148,7 +149,7 @@ defmodule PgFlow.QueriesTest do
       flow_slug = compile_flow(SimpleFlow)
       run_id = start_flow_run(flow_slug, %{"value" => 42})
 
-      {:ok, step_output} = Queries.get_step_output(TestRepo, run_id, "nonexistent")
+      {:ok, step_output} = Flows.get_step_output(TestRepo, run_id, "nonexistent")
       assert step_output == nil
     end
   end
@@ -158,14 +159,14 @@ defmodule PgFlow.QueriesTest do
   describe "start_flow/3" do
     test "returns {:ok, run_id} as UUID string" do
       flow_slug = compile_flow(SimpleFlow)
-      {:ok, run_id} = Queries.start_flow(TestRepo, flow_slug, %{"value" => 1})
+      {:ok, run_id} = Flows.start_flow(TestRepo, flow_slug, %{"value" => 1})
 
       assert is_binary(run_id)
       assert {:ok, _} = Ecto.UUID.cast(run_id)
     end
 
     test "returns error for nonexistent flow slug" do
-      result = Queries.start_flow(TestRepo, "nonexistent_flow", %{"value" => 1})
+      result = Flows.start_flow(TestRepo, "nonexistent_flow", %{"value" => 1})
       assert {:error, _} = result
     end
   end
@@ -175,11 +176,11 @@ defmodule PgFlow.QueriesTest do
   describe "flow_exists?/2" do
     test "returns {:ok, true} for existing flow" do
       flow_slug = compile_flow(SimpleFlow)
-      assert {:ok, true} = Queries.flow_exists?(TestRepo, flow_slug)
+      assert {:ok, true} = Flows.flow_exists?(TestRepo, flow_slug)
     end
 
     test "returns {:ok, false} for nonexistent flow" do
-      assert {:ok, false} = Queries.flow_exists?(TestRepo, "nonexistent_flow")
+      assert {:ok, false} = Flows.flow_exists?(TestRepo, "nonexistent_flow")
     end
   end
 
@@ -191,7 +192,7 @@ defmodule PgFlow.QueriesTest do
       input = %{"value" => 42, "nested" => %{"key" => "data"}}
       run_id = start_flow_run(flow_slug, input)
 
-      assert {:ok, returned_input} = Queries.get_flow_input(TestRepo, run_id)
+      assert {:ok, returned_input} = Flows.get_flow_input(TestRepo, run_id)
       assert returned_input == input
     end
 
@@ -199,7 +200,7 @@ defmodule PgFlow.QueriesTest do
       _flow_slug = compile_flow(SimpleFlow)
       nonexistent_id = Ecto.UUID.generate()
 
-      assert {:error, :not_found} = Queries.get_flow_input(TestRepo, nonexistent_id)
+      assert {:error, :not_found} = Flows.get_flow_input(TestRepo, nonexistent_id)
     end
   end
 
@@ -211,7 +212,7 @@ defmodule PgFlow.QueriesTest do
       _run_id = start_flow_run(flow_slug, %{"value" => 42})
 
       {:ok, messages} =
-        Queries.read_with_poll(TestRepo, flow_slug, 30, 10,
+        Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
           max_poll_seconds: 1,
           poll_interval_ms: 100
         )
@@ -226,7 +227,7 @@ defmodule PgFlow.QueriesTest do
       # Don't start a run — queue should be empty
 
       {:ok, messages} =
-        Queries.read_with_poll(TestRepo, flow_slug, 30, 10,
+        Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
           max_poll_seconds: 1,
           poll_interval_ms: 100
         )
@@ -245,13 +246,13 @@ defmodule PgFlow.QueriesTest do
       worker_id = register_worker(flow_slug)
 
       {:ok, messages} =
-        Queries.read_with_poll(TestRepo, flow_slug, 30, 10,
+        Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
           max_poll_seconds: 1,
           poll_interval_ms: 100
         )
 
       msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
-      {:ok, task_details} = Queries.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
+      {:ok, task_details} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
 
       assert task_details != []
     end
@@ -268,7 +269,7 @@ defmodule PgFlow.QueriesTest do
       {_messages, _task_details} = read_and_start_tasks(flow_slug, worker_id)
 
       output = %{"result" => 42}
-      assert {:ok, _} = Queries.complete_task(TestRepo, run_id, "process", 0, output)
+      assert {:ok, _} = Flows.complete_task(TestRepo, run_id, "process", 0, output)
     end
 
     test "run status updates after completing all tasks" do
@@ -279,7 +280,7 @@ defmodule PgFlow.QueriesTest do
       {_messages, _task_details} = read_and_start_tasks(flow_slug, worker_id)
 
       output = %{"result" => 42}
-      {:ok, _} = Queries.complete_task(TestRepo, run_id, "process", 0, output)
+      {:ok, _} = Flows.complete_task(TestRepo, run_id, "process", 0, output)
 
       # Check run status via direct SQL
       %{rows: [[status]]} =
@@ -302,7 +303,7 @@ defmodule PgFlow.QueriesTest do
       worker_id = register_worker(flow_slug)
       {_messages, _task_details} = read_and_start_tasks(flow_slug, worker_id)
 
-      assert {:ok, _} = Queries.fail_task(TestRepo, run_id, "process", 0, "Something went wrong")
+      assert {:ok, _} = Flows.fail_task(TestRepo, run_id, "process", 0, "Something went wrong")
     end
   end
 
@@ -313,15 +314,19 @@ defmodule PgFlow.QueriesTest do
       flow_slug = compile_flow(SimpleFlow)
       worker_id = Ecto.UUID.generate()
 
-      assert {:ok, nil} = Queries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+      assert {:ok, nil} =
+               WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
     end
 
     test "upserts on conflict (call twice, no error)" do
       flow_slug = compile_flow(SimpleFlow)
       worker_id = Ecto.UUID.generate()
 
-      assert {:ok, nil} = Queries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
-      assert {:ok, nil} = Queries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+      assert {:ok, nil} =
+               WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+
+      assert {:ok, nil} =
+               WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
     end
   end
 
@@ -331,9 +336,9 @@ defmodule PgFlow.QueriesTest do
     test "sets stopped_at timestamp" do
       flow_slug = compile_flow(SimpleFlow)
       worker_id = Ecto.UUID.generate()
-      {:ok, nil} = Queries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+      {:ok, nil} = WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
 
-      assert {:ok, nil} = Queries.mark_worker_stopped(TestRepo, worker_id)
+      assert {:ok, nil} = WorkerQueries.mark_worker_stopped(TestRepo, worker_id)
 
       # Verify stopped_at is set
       %{rows: [[stopped_at]]} =
@@ -354,18 +359,18 @@ defmodule PgFlow.QueriesTest do
       _run_id = start_flow_run(flow_slug, %{"value" => 42})
 
       {:ok, messages} =
-        Queries.read_with_poll(TestRepo, flow_slug, 30, 10,
+        Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
           max_poll_seconds: 1,
           poll_interval_ms: 100
         )
 
       [msg_id | _] = hd(messages)
-      assert {:ok, true} = Queries.delete_message(TestRepo, flow_slug, msg_id)
+      assert {:ok, true} = Flows.delete_message(TestRepo, flow_slug, msg_id)
     end
 
     test "returns {:ok, false} for nonexistent message" do
       flow_slug = compile_flow(SimpleFlow)
-      assert {:ok, false} = Queries.delete_message(TestRepo, flow_slug, 999_999)
+      assert {:ok, false} = Flows.delete_message(TestRepo, flow_slug, 999_999)
     end
   end
 
@@ -375,7 +380,7 @@ defmodule PgFlow.QueriesTest do
     test "returns {:ok, result} with zero counts when no old data exists" do
       _flow_slug = compile_flow(SimpleFlow)
 
-      assert {:ok, result} = Queries.prune_data(TestRepo, 24)
+      assert {:ok, result} = Flows.prune_data(TestRepo, 24)
 
       assert result == %{
                deleted_runs: 0,
@@ -394,7 +399,7 @@ defmodule PgFlow.QueriesTest do
 
       # Complete the task to mark run as completed
       output = %{"result" => 42}
-      {:ok, _} = Queries.complete_task(TestRepo, run_id, "process", 0, output)
+      {:ok, _} = Flows.complete_task(TestRepo, run_id, "process", 0, output)
 
       # Backdate the run to make it appear older than retention
       # Must also backdate started_at due to completed_at_is_after_started_at constraint
@@ -409,7 +414,7 @@ defmodule PgFlow.QueriesTest do
       )
 
       # Prune with 24 hour retention - should delete the 48-hour-old run
-      assert {:ok, result} = Queries.prune_data(TestRepo, 24)
+      assert {:ok, result} = Flows.prune_data(TestRepo, 24)
       assert result.deleted_runs == 1
       assert result.deleted_step_states >= 1
       assert result.deleted_step_tasks >= 1
@@ -427,14 +432,14 @@ defmodule PgFlow.QueriesTest do
       # Complete both flows
       worker_id1 = register_worker(flow_slug1)
       {_m1, _t1} = read_and_start_tasks(flow_slug1, worker_id1)
-      {:ok, _} = Queries.complete_task(TestRepo, run_id1, "process", 0, %{"result" => 1})
+      {:ok, _} = Flows.complete_task(TestRepo, run_id1, "process", 0, %{"result" => 1})
 
       worker_id2 = register_worker(flow_slug2)
       {_m2, _t2} = read_and_start_tasks(flow_slug2, worker_id2)
-      {:ok, _} = Queries.complete_task(TestRepo, run_id2, "first", 0, %{"first_result" => 2})
+      {:ok, _} = Flows.complete_task(TestRepo, run_id2, "first", 0, %{"first_result" => 2})
       # Read and start the second step
       {_m3, _t3} = read_and_start_tasks(flow_slug2, worker_id2)
-      {:ok, _} = Queries.complete_task(TestRepo, run_id2, "second", 0, %{"second_result" => 4})
+      {:ok, _} = Flows.complete_task(TestRepo, run_id2, "second", 0, %{"second_result" => 4})
 
       # Backdate both runs
       # Must also backdate started_at due to completed_at_is_after_started_at constraint
@@ -449,7 +454,7 @@ defmodule PgFlow.QueriesTest do
       )
 
       # Prune only the first flow
-      assert {:ok, result} = Queries.prune_data(TestRepo, 24, flow_slugs: [flow_slug1])
+      assert {:ok, result} = Flows.prune_data(TestRepo, 24, flow_slugs: [flow_slug1])
       assert result.deleted_runs == 1
 
       # Verify the second flow's run still exists
@@ -470,11 +475,11 @@ defmodule PgFlow.QueriesTest do
       {_messages, _task_details} = read_and_start_tasks(flow_slug, worker_id)
 
       # Complete the task
-      {:ok, _} = Queries.complete_task(TestRepo, run_id, "process", 0, %{"result" => 42})
+      {:ok, _} = Flows.complete_task(TestRepo, run_id, "process", 0, %{"result" => 42})
 
       # Don't backdate - run is fresh
       # Prune with 24 hour retention - should NOT delete fresh run
-      assert {:ok, result} = Queries.prune_data(TestRepo, 24)
+      assert {:ok, result} = Flows.prune_data(TestRepo, 24)
       assert result.deleted_runs == 0
     end
   end
@@ -484,7 +489,7 @@ defmodule PgFlow.QueriesTest do
   describe "recover_stalled_tasks/2" do
     test "returns {:ok, 0} when no stalled tasks exist" do
       _flow_slug = compile_flow(SimpleFlow)
-      assert {:ok, 0} = Queries.recover_stalled_tasks(TestRepo, 60)
+      assert {:ok, 0} = Flows.recover_stalled_tasks(TestRepo, 60)
     end
 
     test "recovers tasks stalled beyond threshold" do
@@ -511,7 +516,7 @@ defmodule PgFlow.QueriesTest do
       )
 
       # Recover with 60-second threshold
-      assert {:ok, count} = Queries.recover_stalled_tasks(TestRepo, 60)
+      assert {:ok, count} = Flows.recover_stalled_tasks(TestRepo, 60)
       assert count == 1
 
       # Verify task is reset to queued

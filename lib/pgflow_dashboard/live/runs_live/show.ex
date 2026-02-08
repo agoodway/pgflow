@@ -14,7 +14,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   }
 
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries
+  alias PgFlowDashboard.Queries.{Flows, Runs}
 
   @impl true
   def mount(%{"id" => run_id}, session, socket) do
@@ -46,7 +46,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   @impl true
   def handle_params(%{"step" => step_slug}, _uri, socket) do
     # Pre-select step from query parameter (e.g., from run history grid click)
-    tasks = Queries.list_step_tasks(socket.assigns.repo, socket.assigns.run_id, step_slug)
+    tasks = Runs.list_step_tasks(socket.assigns.repo, socket.assigns.run_id, step_slug)
 
     socket =
       socket
@@ -124,7 +124,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
         |> assign(:step_tasks, [])
       else
         # Select the step and load its tasks
-        tasks = Queries.list_step_tasks(socket.assigns.repo, socket.assigns.run_id, step_slug)
+        tasks = Runs.list_step_tasks(socket.assigns.repo, socket.assigns.run_id, step_slug)
 
         socket
         |> assign(:selected_step, step_slug)
@@ -179,7 +179,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   def handle_event("handle_keydown", _, socket), do: {:noreply, socket}
 
   defp navigate_to_adjacent_run(socket, direction) do
-    case Queries.get_adjacent_run(socket.assigns.repo, socket.assigns.run_id, direction) do
+    case Runs.get_adjacent_run(socket.assigns.repo, socket.assigns.run_id, direction) do
       {:ok, adjacent_run_id} ->
         push_navigate(socket, to: "#{socket.assigns.base_path}/runs/#{adjacent_run_id}")
 
@@ -213,7 +213,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   end
 
   defp select_step(socket, step_slug) do
-    tasks = Queries.list_step_tasks(socket.assigns.repo, socket.assigns.run_id, step_slug)
+    tasks = Runs.list_step_tasks(socket.assigns.repo, socket.assigns.run_id, step_slug)
 
     socket
     |> assign(:selected_step, step_slug)
@@ -221,14 +221,14 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   end
 
   defp load_run(socket) do
-    case Queries.get_run(socket.assigns.repo, socket.assigns.run_id) do
+    case Runs.get_run(socket.assigns.repo, socket.assigns.run_id) do
       {:ok, run} -> assign(socket, :run, run)
       {:error, _} -> assign(socket, :run, nil)
     end
   end
 
   defp load_step_states(socket) do
-    states = Queries.list_step_states(socket.assigns.repo, socket.assigns.run_id)
+    states = Runs.list_step_states(socket.assigns.repo, socket.assigns.run_id)
     state_map = Map.new(states, fn s -> {s.step_slug, s.status} end)
 
     socket
@@ -238,7 +238,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
 
   defp load_flow_steps(socket) do
     if socket.assigns.run do
-      case Queries.get_flow_with_graph(socket.assigns.repo, socket.assigns.run.flow_slug) do
+      case Flows.get_flow_with_graph(socket.assigns.repo, socket.assigns.run.flow_slug) do
         {:ok, flow} -> assign(socket, :flow_steps, flow.steps)
         {:error, _} -> assign(socket, :flow_steps, [])
       end

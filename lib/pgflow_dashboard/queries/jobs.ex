@@ -3,14 +3,29 @@ defmodule PgFlowDashboard.Queries.Jobs do
   Database queries for job-related data.
   """
 
-  import PgFlow.Queries.Base
+  import PgFlow.Queries.Helpers
+
+  @doc """
+  Counts all jobs.
+  """
+  @spec count_jobs(module()) :: integer()
+  def count_jobs(repo) do
+    execute_rpc(repo, "count_jobs", [], schema: "pgflow_dashboard", mode: :count)
+  end
 
   @doc """
   Lists jobs with statistics.
+
+  ## Options
+    * `:limit` - Maximum number of jobs to return
+    * `:cursor` - Cursor for pagination (flow_slug to start after)
   """
-  @spec list_jobs(module()) :: list(map())
-  def list_jobs(repo) do
-    execute_rpc(repo, "list_jobs", [], schema: "pgflow_dashboard", mode: :list)
+  @spec list_jobs(module(), keyword()) :: list(map())
+  def list_jobs(repo, opts \\ []) do
+    limit = Keyword.get(opts, :limit)
+    cursor = Keyword.get(opts, :cursor)
+
+    execute_rpc(repo, "list_jobs", [limit, cursor], schema: "pgflow_dashboard", mode: :list)
   end
 
   @doc """

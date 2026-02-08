@@ -1,7 +1,10 @@
 services:
   db:
-    # Must match image in pkgs/core/atlas/atlas.hcl for baseline compatibility
-    image: jumski/atlas-postgres-pgflow:17.6.1.054
+    # Build from local Dockerfile with pgmq 1.8.0 (supports enable_notify_insert)
+    # Previously: jumski/atlas-postgres-pgflow:17.6.1.054 (pgmq 1.5.1)
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - '54322:5432'
     volumes:

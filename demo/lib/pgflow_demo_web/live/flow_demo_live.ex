@@ -679,7 +679,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <div class="absolute -inset-[2px] rounded-lg border-traveling"></div>
             <a
               href="/pgflow"
-              class="relative inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 text-white text-sm font-medium rounded-lg shadow-lg shadow-purple-500/20 transition-all duration-200 hover:shadow-purple-500/30"
+              class="relative inline-flex items-center gap-1.5 px-2 py-2 sm:px-3 sm:py-1.5 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600 text-white text-sm font-medium rounded-lg shadow-lg shadow-purple-500/20 transition-all duration-200 hover:shadow-purple-500/30"
+              title="Open Dashboard"
             >
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path
@@ -689,7 +690,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                   d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
                 />
               </svg>
-              Open Dashboard
+              <span class="hidden sm:inline">Open Dashboard</span>
             </a>
           </div>
         </div>

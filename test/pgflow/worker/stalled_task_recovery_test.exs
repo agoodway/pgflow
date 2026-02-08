@@ -11,7 +11,8 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.TestRepo
-  alias PgFlow.Queries
+  alias PgFlow.Queries.Flows
+  alias PgFlow.Queries.Workers, as: WorkerQueries
   alias PgFlow.Worker.StalledTaskRecovery
 
   @moduletag timeout: 30_000
@@ -100,7 +101,7 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
 
       # Read messages from the queue to get msg_ids
       {:ok, messages} =
-        Queries.read_with_poll(TestRepo, flow_slug, 30, 10,
+        Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
           max_poll_seconds: 1,
           poll_interval_ms: 100
         )
@@ -111,10 +112,10 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
       worker_id = Ecto.UUID.generate()
 
       # Register the worker first (FK constraint requires it)
-      {:ok, _} = Queries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+      {:ok, _} = WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
 
       # Call start_tasks to transition to 'started' status
-      {:ok, _task_details} = Queries.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
+      {:ok, _task_details} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
 
       # Verify task is in 'started' status
       {:ok, run_id_bin} = Ecto.UUID.dump(run_id)
@@ -135,7 +136,7 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
       )
 
       # Recover with 60s threshold
-      {:ok, count} = Queries.recover_stalled_tasks(TestRepo, 60)
+      {:ok, count} = Flows.recover_stalled_tasks(TestRepo, 60)
       assert count == 1
 
       # Verify task is back to 'queued'
@@ -155,7 +156,7 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
       run_id = start_flow_run(flow_slug, %{"value" => 42})
 
       {:ok, messages} =
-        Queries.read_with_poll(TestRepo, flow_slug, 30, 10,
+        Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
           max_poll_seconds: 1,
           poll_interval_ms: 100
         )
@@ -163,11 +164,11 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
       msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
       worker_id = Ecto.UUID.generate()
 
-      {:ok, _} = Queries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
-      {:ok, _} = Queries.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
+      {:ok, _} = WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+      {:ok, _} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
 
       # Do NOT backdate — task was just started
-      {:ok, count} = Queries.recover_stalled_tasks(TestRepo, 60)
+      {:ok, count} = Flows.recover_stalled_tasks(TestRepo, 60)
       assert count == 0
 
       # Verify task is still 'started'
@@ -189,7 +190,7 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
       run_id = start_flow_run(flow_slug, %{"value" => 42})
 
       {:ok, messages} =
-        Queries.read_with_poll(TestRepo, flow_slug, 30, 10,
+        Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
           max_poll_seconds: 1,
           poll_interval_ms: 100
         )
@@ -197,8 +198,8 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
       msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
       worker_id = Ecto.UUID.generate()
 
-      {:ok, _} = Queries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
-      {:ok, _} = Queries.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
+      {:ok, _} = WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+      {:ok, _} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
 
       # Backdate both queued_at and started_at to simulate a stalled task
       {:ok, run_id_bin} = Ecto.UUID.dump(run_id)

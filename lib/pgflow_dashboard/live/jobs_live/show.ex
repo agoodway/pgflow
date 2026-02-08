@@ -7,7 +7,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
 
   alias PgFlowDashboard.Components.{Layouts, StatusBadge}
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries
+  alias PgFlowDashboard.Queries.{Jobs, Runs}
 
   @page_size 20
 
@@ -59,7 +59,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_job(socket) do
-    case Queries.get_job(socket.assigns.repo, socket.assigns.job_slug) do
+    case Jobs.get_job(socket.assigns.repo, socket.assigns.job_slug) do
       {:ok, job} -> assign(socket, :job, job)
       {:error, _} -> assign(socket, :job, nil)
     end
@@ -67,7 +67,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
 
   defp load_run_history(socket) do
     grid_cells =
-      Queries.get_job_run_history_grid(
+      Jobs.get_run_history_grid(
         socket.assigns.repo,
         socket.assigns.job_slug,
         limit: socket.assigns.config[:max_grid_runs] || 50
@@ -78,7 +78,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
 
   defp load_recent_runs(socket) do
     runs =
-      Queries.list_runs(socket.assigns.repo,
+      Runs.list_runs(socket.assigns.repo,
         flow_slug: socket.assigns.job_slug,
         limit: @page_size + 1
       )

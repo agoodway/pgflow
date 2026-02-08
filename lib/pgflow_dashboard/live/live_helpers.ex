@@ -192,4 +192,49 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
   defp normalize_status("started"), do: :started
   defp normalize_status("created"), do: :created
   defp normalize_status(_), do: :unknown
+
+  @doc """
+  Splits a list fetched with limit+1 into results and has_more flag.
+
+  When fetching paginated data, request `page_size + 1` items. This function
+  splits the result to determine if there are more items available.
+
+  ## Examples
+
+      iex> paginate_results([1, 2, 3], 2)
+      {[1, 2], true}
+
+      iex> paginate_results([1, 2], 2)
+      {[1, 2], false}
+
+  """
+  def paginate_results(items, page_size) do
+    if length(items) > page_size do
+      {Enum.take(items, page_size), true}
+    else
+      {items, false}
+    end
+  end
+
+  @doc """
+  Determines view mode based on count and threshold.
+
+  Returns `:card` for small datasets (≤ threshold) and `:list` for larger ones.
+  Default threshold is 12 (fits nicely in a 3-column grid).
+
+  ## Examples
+
+      iex> determine_view_mode(5)
+      :card
+
+      iex> determine_view_mode(15)
+      :list
+
+      iex> determine_view_mode(15, 20)
+      :card
+
+  """
+  def determine_view_mode(count, threshold \\ 12) do
+    if count <= threshold, do: :card, else: :list
+  end
 end

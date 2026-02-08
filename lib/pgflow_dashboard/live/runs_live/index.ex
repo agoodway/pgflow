@@ -9,7 +9,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
 
   alias PgFlowDashboard.Components.{Layouts, ProgressBar, StatusBadge, TypeBadge}
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries
+  alias PgFlowDashboard.Queries.{Crons, Flows, Jobs, Runs}
 
   @page_size 50
 
@@ -73,7 +73,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
 
   def handle_event("load_more", _, socket) do
     runs =
-      Queries.list_runs(socket.assigns.repo,
+      Runs.list_runs(socket.assigns.repo,
         flow_slug: socket.assigns.flow_filter,
         status: socket.assigns.status_filter,
         flow_type: socket.assigns.type_filter,
@@ -118,9 +118,9 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_flows_and_jobs(socket) do
-    flows = Queries.list_flows(socket.assigns.repo)
-    jobs = Queries.list_jobs(socket.assigns.repo)
-    crons = Queries.list_crons(socket.assigns.repo)
+    flows = Flows.list_flows(socket.assigns.repo)
+    jobs = Jobs.list_jobs(socket.assigns.repo)
+    crons = Crons.list_crons(socket.assigns.repo)
 
     socket
     |> assign(:flows, flows)
@@ -132,7 +132,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
     reset = Keyword.get(opts, :reset, false)
 
     runs =
-      Queries.list_runs(socket.assigns.repo,
+      Runs.list_runs(socket.assigns.repo,
         flow_slug: socket.assigns.flow_filter,
         status: socket.assigns.status_filter,
         flow_type: socket.assigns.type_filter,
@@ -150,7 +150,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
     cursor = if runs != [], do: List.last(runs).run_id, else: nil
 
     total_count =
-      Queries.count_runs(socket.assigns.repo,
+      Runs.count_runs(socket.assigns.repo,
         flow_slug: socket.assigns.flow_filter,
         status: socket.assigns.status_filter,
         flow_type: socket.assigns.type_filter,
@@ -169,7 +169,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
     current_count = max(socket.assigns.runs_count, @page_size)
 
     runs =
-      Queries.list_runs(socket.assigns.repo,
+      Runs.list_runs(socket.assigns.repo,
         flow_slug: socket.assigns.flow_filter,
         status: socket.assigns.status_filter,
         flow_type: socket.assigns.type_filter,

@@ -63,6 +63,12 @@ defmodule PgFlowDashboard.Components.Layouts do
                 Workers
               </.nav_link>
               <.nav_link
+                navigate={"#{@base_path}/runs"}
+                current={@current_page == :runs}
+              >
+                Runs
+              </.nav_link>
+              <.nav_link
                 navigate={"#{@base_path}/flows"}
                 current={@current_page == :flows}
               >
@@ -79,12 +85,6 @@ defmodule PgFlowDashboard.Components.Layouts do
                 current={@current_page == :crons}
               >
                 Crons
-              </.nav_link>
-              <.nav_link
-                navigate={"#{@base_path}/runs"}
-                current={@current_page == :runs}
-              >
-                Runs
               </.nav_link>
             </div>
           </div>
@@ -316,6 +316,13 @@ defmodule PgFlowDashboard.Components.Layouts do
             Workers
           </.mobile_nav_link>
           <.mobile_nav_link
+            navigate={"#{@base_path}/runs"}
+            current={@current_page == :runs}
+            icon="play"
+          >
+            Runs
+          </.mobile_nav_link>
+          <.mobile_nav_link
             navigate={"#{@base_path}/flows"}
             current={@current_page == :flows}
             icon="workflow"
@@ -335,13 +342,6 @@ defmodule PgFlowDashboard.Components.Layouts do
             icon="clock"
           >
             Crons
-          </.mobile_nav_link>
-          <.mobile_nav_link
-            navigate={"#{@base_path}/runs"}
-            current={@current_page == :runs}
-            icon="play"
-          >
-            Runs
           </.mobile_nav_link>
         </nav>
 

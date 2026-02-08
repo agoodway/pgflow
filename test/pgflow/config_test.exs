@@ -27,12 +27,12 @@ defmodule PgFlow.ConfigTest do
         Config.validate!(
           repo: ValidTestRepo,
           max_concurrency: 20,
-          poll_interval: 200
+          min_poll_interval: 100
         )
 
       assert config[:repo] == ValidTestRepo
       assert config[:max_concurrency] == 20
-      assert config[:poll_interval] == 200
+      assert config[:min_poll_interval] == 100
     end
 
     test "accepts all valid options" do
@@ -43,10 +43,11 @@ defmodule PgFlow.ConfigTest do
           jobs: [SomeJob],
           max_concurrency: 20,
           batch_size: 15,
-          poll_interval: 200,
-          visibility_timeout: 5,
-          max_poll_seconds: 3,
-          poll_interval_ms: 50,
+          signal_strategy: :notify,
+          min_poll_interval: 100,
+          max_poll_interval: 10_000,
+          notify_fallback_interval: 60_000,
+          notify_throttle_ms: 500,
           attach_default_logger: false
         )
 
@@ -55,10 +56,11 @@ defmodule PgFlow.ConfigTest do
       assert config[:jobs] == [SomeJob]
       assert config[:max_concurrency] == 20
       assert config[:batch_size] == 15
-      assert config[:poll_interval] == 200
-      assert config[:visibility_timeout] == 5
-      assert config[:max_poll_seconds] == 3
-      assert config[:poll_interval_ms] == 50
+      assert config[:signal_strategy] == :notify
+      assert config[:min_poll_interval] == 100
+      assert config[:max_poll_interval] == 10_000
+      assert config[:notify_fallback_interval] == 60_000
+      assert config[:notify_throttle_ms] == 500
       assert config[:attach_default_logger] == false
     end
   end
@@ -82,28 +84,34 @@ defmodule PgFlow.ConfigTest do
       assert config[:batch_size] == 10
     end
 
-    test "applies default for :poll_interval" do
+    test "applies default for :signal_strategy" do
       config = Config.validate!(repo: ValidTestRepo)
 
-      assert config[:poll_interval] == 0
+      assert config[:signal_strategy] == :polling
     end
 
-    test "applies default for :visibility_timeout" do
+    test "applies default for :min_poll_interval" do
       config = Config.validate!(repo: ValidTestRepo)
 
-      assert config[:visibility_timeout] == 5
+      assert config[:min_poll_interval] == 50
     end
 
-    test "applies default for :max_poll_seconds" do
+    test "applies default for :max_poll_interval" do
       config = Config.validate!(repo: ValidTestRepo)
 
-      assert config[:max_poll_seconds] == 2
+      assert config[:max_poll_interval] == 5_000
     end
 
-    test "applies default for :poll_interval_ms" do
+    test "applies default for :notify_fallback_interval" do
       config = Config.validate!(repo: ValidTestRepo)
 
-      assert config[:poll_interval_ms] == 100
+      assert config[:notify_fallback_interval] == 30_000
+    end
+
+    test "applies default for :notify_throttle_ms" do
+      config = Config.validate!(repo: ValidTestRepo)
+
+      assert config[:notify_throttle_ms] == 250
     end
 
     test "applies default for :attach_default_logger" do
@@ -126,10 +134,11 @@ defmodule PgFlow.ConfigTest do
       assert config[:jobs] == []
       assert config[:max_concurrency] == 10
       assert config[:batch_size] == 10
-      assert config[:poll_interval] == 0
-      assert config[:visibility_timeout] == 5
-      assert config[:max_poll_seconds] == 2
-      assert config[:poll_interval_ms] == 100
+      assert config[:signal_strategy] == :polling
+      assert config[:min_poll_interval] == 50
+      assert config[:max_poll_interval] == 5_000
+      assert config[:notify_fallback_interval] == 30_000
+      assert config[:notify_throttle_ms] == 250
       assert config[:attach_default_logger] == false
     end
 
@@ -164,7 +173,7 @@ defmodule PgFlow.ConfigTest do
 
     test "raises ArgumentError even with other valid options" do
       assert_raise ArgumentError, ~r/required :repo option not found/, fn ->
-        Config.validate!(max_concurrency: 20, poll_interval: 200)
+        Config.validate!(max_concurrency: 20, min_poll_interval: 200)
       end
     end
   end
@@ -206,27 +215,33 @@ defmodule PgFlow.ConfigTest do
       end
     end
 
-    test "raises when :poll_interval is negative" do
+    test "raises when :min_poll_interval is not a positive integer" do
       assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
-        Config.validate!(repo: ValidTestRepo, poll_interval: -1)
+        Config.validate!(repo: ValidTestRepo, min_poll_interval: 0)
       end
     end
 
-    test "raises when :max_poll_seconds is not a positive integer" do
+    test "raises when :max_poll_interval is not a positive integer" do
       assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
-        Config.validate!(repo: ValidTestRepo, max_poll_seconds: 0)
+        Config.validate!(repo: ValidTestRepo, max_poll_interval: 0)
       end
     end
 
-    test "raises when :poll_interval_ms is negative" do
+    test "raises when :notify_fallback_interval is not a positive integer" do
       assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
-        Config.validate!(repo: ValidTestRepo, poll_interval_ms: -1)
+        Config.validate!(repo: ValidTestRepo, notify_fallback_interval: 0)
       end
     end
 
-    test "raises when :visibility_timeout is not a positive integer" do
+    test "raises when :notify_throttle_ms is negative" do
       assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
-        Config.validate!(repo: ValidTestRepo, visibility_timeout: 0)
+        Config.validate!(repo: ValidTestRepo, notify_throttle_ms: -1)
+      end
+    end
+
+    test "raises when :signal_strategy is invalid" do
+      assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
+        Config.validate!(repo: ValidTestRepo, signal_strategy: :invalid)
       end
     end
 
@@ -338,36 +353,44 @@ defmodule PgFlow.ConfigTest do
       assert schema[:batch_size][:type] == :pos_integer
     end
 
-    test "schema includes :poll_interval option with default" do
+    test "schema includes :signal_strategy option with default" do
       schema = Config.schema()
 
-      assert Keyword.has_key?(schema, :poll_interval)
-      assert schema[:poll_interval][:default] == 0
-      assert schema[:poll_interval][:type] == :non_neg_integer
+      assert Keyword.has_key?(schema, :signal_strategy)
+      assert schema[:signal_strategy][:default] == :polling
+      assert schema[:signal_strategy][:type] == {:in, [:polling, :notify]}
     end
 
-    test "schema includes :visibility_timeout option with default" do
+    test "schema includes :min_poll_interval option with default" do
       schema = Config.schema()
 
-      assert Keyword.has_key?(schema, :visibility_timeout)
-      assert schema[:visibility_timeout][:default] == 5
-      assert schema[:visibility_timeout][:type] == :pos_integer
+      assert Keyword.has_key?(schema, :min_poll_interval)
+      assert schema[:min_poll_interval][:default] == 50
+      assert schema[:min_poll_interval][:type] == :pos_integer
     end
 
-    test "schema includes :max_poll_seconds option with default" do
+    test "schema includes :max_poll_interval option with default" do
       schema = Config.schema()
 
-      assert Keyword.has_key?(schema, :max_poll_seconds)
-      assert schema[:max_poll_seconds][:default] == 2
-      assert schema[:max_poll_seconds][:type] == :pos_integer
+      assert Keyword.has_key?(schema, :max_poll_interval)
+      assert schema[:max_poll_interval][:default] == 5_000
+      assert schema[:max_poll_interval][:type] == :pos_integer
     end
 
-    test "schema includes :poll_interval_ms option with default" do
+    test "schema includes :notify_fallback_interval option with default" do
       schema = Config.schema()
 
-      assert Keyword.has_key?(schema, :poll_interval_ms)
-      assert schema[:poll_interval_ms][:default] == 100
-      assert schema[:poll_interval_ms][:type] == :non_neg_integer
+      assert Keyword.has_key?(schema, :notify_fallback_interval)
+      assert schema[:notify_fallback_interval][:default] == 30_000
+      assert schema[:notify_fallback_interval][:type] == :pos_integer
+    end
+
+    test "schema includes :notify_throttle_ms option with default" do
+      schema = Config.schema()
+
+      assert Keyword.has_key?(schema, :notify_throttle_ms)
+      assert schema[:notify_throttle_ms][:default] == 250
+      assert schema[:notify_throttle_ms][:type] == :non_neg_integer
     end
 
     test "schema includes :attach_default_logger option with default" do
@@ -422,24 +445,24 @@ defmodule PgFlow.ConfigTest do
       assert config[:flows] == [Flow1, Flow2, Flow3]
     end
 
-    test "accepts minimum valid values including zero for non_neg_integer fields" do
+    test "accepts minimum valid values for pos_integer fields and zero for non_neg_integer fields" do
       config =
         Config.validate!(
           repo: ValidTestRepo,
           max_concurrency: 1,
           batch_size: 1,
-          poll_interval: 0,
-          visibility_timeout: 1,
-          max_poll_seconds: 1,
-          poll_interval_ms: 0
+          min_poll_interval: 1,
+          max_poll_interval: 1,
+          notify_fallback_interval: 1,
+          notify_throttle_ms: 0
         )
 
       assert config[:max_concurrency] == 1
       assert config[:batch_size] == 1
-      assert config[:poll_interval] == 0
-      assert config[:visibility_timeout] == 1
-      assert config[:max_poll_seconds] == 1
-      assert config[:poll_interval_ms] == 0
+      assert config[:min_poll_interval] == 1
+      assert config[:max_poll_interval] == 1
+      assert config[:notify_fallback_interval] == 1
+      assert config[:notify_throttle_ms] == 0
     end
 
     test "accepts large positive integer values" do
@@ -448,18 +471,18 @@ defmodule PgFlow.ConfigTest do
           repo: ValidTestRepo,
           max_concurrency: 1000,
           batch_size: 1000,
-          poll_interval: 10_000,
-          visibility_timeout: 3600,
-          max_poll_seconds: 30,
-          poll_interval_ms: 5000
+          min_poll_interval: 10_000,
+          max_poll_interval: 60_000,
+          notify_fallback_interval: 120_000,
+          notify_throttle_ms: 5000
         )
 
       assert config[:max_concurrency] == 1000
       assert config[:batch_size] == 1000
-      assert config[:poll_interval] == 10_000
-      assert config[:visibility_timeout] == 3600
-      assert config[:max_poll_seconds] == 30
-      assert config[:poll_interval_ms] == 5000
+      assert config[:min_poll_interval] == 10_000
+      assert config[:max_poll_interval] == 60_000
+      assert config[:notify_fallback_interval] == 120_000
+      assert config[:notify_throttle_ms] == 5000
     end
 
     test "accepts attach_default_logger as false" do
@@ -472,6 +495,76 @@ defmodule PgFlow.ConfigTest do
       config = Config.validate!(repo: ValidTestRepo, attach_default_logger: true)
 
       assert config[:attach_default_logger] == true
+    end
+
+    test "accepts signal_strategy as :polling" do
+      config = Config.validate!(repo: ValidTestRepo, signal_strategy: :polling)
+
+      assert config[:signal_strategy] == :polling
+    end
+
+    test "accepts signal_strategy as :notify" do
+      config = Config.validate!(repo: ValidTestRepo, signal_strategy: :notify)
+
+      assert config[:signal_strategy] == :notify
+    end
+  end
+
+  describe "validate!/1 interval bounds validation" do
+    test "raises when min_poll_interval > max_poll_interval" do
+      assert_raise ArgumentError,
+                   ~r/min_poll_interval \(1000ms\) must be <= max_poll_interval \(500ms\)/,
+                   fn ->
+                     Config.validate!(
+                       repo: ValidTestRepo,
+                       min_poll_interval: 1000,
+                       max_poll_interval: 500
+                     )
+                   end
+    end
+
+    test "accepts when min_poll_interval == max_poll_interval" do
+      config =
+        Config.validate!(repo: ValidTestRepo, min_poll_interval: 1000, max_poll_interval: 1000)
+
+      assert config[:min_poll_interval] == 1000
+      assert config[:max_poll_interval] == 1000
+    end
+
+    test "accepts when min_poll_interval < max_poll_interval" do
+      config =
+        Config.validate!(repo: ValidTestRepo, min_poll_interval: 100, max_poll_interval: 5000)
+
+      assert config[:min_poll_interval] == 100
+      assert config[:max_poll_interval] == 5000
+    end
+
+    test "raises when max_poll_interval exceeds 5 minute limit" do
+      assert_raise ArgumentError,
+                   ~r/max_poll_interval \(400000ms\) exceeds maximum allowed \(300000ms = 5 minutes\)/,
+                   fn ->
+                     Config.validate!(repo: ValidTestRepo, max_poll_interval: 400_000)
+                   end
+    end
+
+    test "accepts max_poll_interval at exactly 5 minute limit" do
+      config = Config.validate!(repo: ValidTestRepo, max_poll_interval: 300_000)
+
+      assert config[:max_poll_interval] == 300_000
+    end
+
+    test "raises when notify_fallback_interval exceeds 10 minute limit" do
+      assert_raise ArgumentError,
+                   ~r/notify_fallback_interval \(700000ms\) exceeds maximum allowed \(600000ms = 10 minutes\)/,
+                   fn ->
+                     Config.validate!(repo: ValidTestRepo, notify_fallback_interval: 700_000)
+                   end
+    end
+
+    test "accepts notify_fallback_interval at exactly 10 minute limit" do
+      config = Config.validate!(repo: ValidTestRepo, notify_fallback_interval: 600_000)
+
+      assert config[:notify_fallback_interval] == 600_000
     end
   end
 end

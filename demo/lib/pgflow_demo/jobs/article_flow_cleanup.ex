@@ -6,8 +6,11 @@ defmodule PgflowDemo.Jobs.ArticleFlowCleanup do
   """
   use PgFlow.Job
 
+  alias PgFlow.Queries.Flows, as: FlowQueries
+  alias PgflowDemo.Repo
+
   # Require to ensure module is compiled before macro expansion
-  require PgFlow.Queries
+  require FlowQueries
 
   @job queue: :article_flow_cleanup,
        max_attempts: 3,
@@ -22,8 +25,8 @@ defmodule PgflowDemo.Jobs.ArticleFlowCleanup do
       retention_hours = input["retention_hours"] || 24
 
       {:ok, result} =
-        PgFlow.Queries.prune_data(
-          PgflowDemo.Repo,
+        FlowQueries.prune_data(
+          Repo,
           retention_hours,
           flow_slugs: ["article_flow"]
         )

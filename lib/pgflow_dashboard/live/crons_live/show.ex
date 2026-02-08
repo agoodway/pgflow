@@ -7,7 +7,7 @@ defmodule PgFlowDashboard.Live.CronsLive.Show do
 
   alias PgFlowDashboard.Components.{Layouts, StatusBadge}
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries
+  alias PgFlowDashboard.Queries.{Crons, Runs}
 
   @page_size 20
 
@@ -62,7 +62,7 @@ defmodule PgFlowDashboard.Live.CronsLive.Show do
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_cron(socket) do
-    case Queries.get_cron(socket.assigns.repo, socket.assigns.cron_slug) do
+    case Crons.get_cron(socket.assigns.repo, socket.assigns.cron_slug) do
       {:ok, cron} -> assign(socket, :cron, cron)
       {:error, _} -> assign(socket, :cron, nil)
     end
@@ -70,7 +70,7 @@ defmodule PgFlowDashboard.Live.CronsLive.Show do
 
   defp load_run_history(socket) do
     grid_cells =
-      Queries.get_cron_run_history_grid(
+      Crons.get_run_history_grid(
         socket.assigns.repo,
         socket.assigns.cron_slug,
         limit: socket.assigns.config[:max_grid_runs] || 50
@@ -81,7 +81,7 @@ defmodule PgFlowDashboard.Live.CronsLive.Show do
 
   defp load_recent_runs(socket) do
     runs =
-      Queries.list_runs(socket.assigns.repo,
+      Runs.list_runs(socket.assigns.repo,
         flow_slug: socket.assigns.cron_slug,
         limit: @page_size + 1
       )

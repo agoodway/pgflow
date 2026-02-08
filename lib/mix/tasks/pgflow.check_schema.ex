@@ -30,7 +30,7 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
   use Mix.Task
 
   @required_tables ~w(flows steps deps runs step_states step_tasks workers)
-  @required_functions ~w(start_flow complete_task fail_task read_with_poll start_tasks)
+  @required_functions ~w(start_flow complete_task fail_task start_tasks)
 
   @impl Mix.Task
   def run(args) do

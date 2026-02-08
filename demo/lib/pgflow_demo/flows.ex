@@ -4,6 +4,7 @@ defmodule PgflowDemo.Flows do
   """
 
   alias PgflowDemo.Repo
+  alias PgFlow.Queries.Flows, as: FlowQueries
 
   @doc """
   Fetches the output for a specific step in a flow run.
@@ -12,7 +13,7 @@ defmodule PgflowDemo.Flows do
   """
   @spec get_step_output(String.t(), String.t()) :: map() | nil
   def get_step_output(run_id, step_slug) do
-    case PgFlow.Queries.get_step_output(Repo, run_id, step_slug) do
+    case FlowQueries.get_step_output(Repo, run_id, step_slug) do
       {:ok, output} -> output
       {:error, _} -> nil
     end

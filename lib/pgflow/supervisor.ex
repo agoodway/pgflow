@@ -22,7 +22,11 @@ defmodule PgFlow.Supervisor do
   require Logger
 
   alias PgFlow.{Config, FlowRegistry, WorkerSupervisor}
+  alias PgFlow.Queries.Pgmq, as: PgmqQueries
+  alias PgFlow.Signal
   alias PgFlow.Worker.StalledTaskRecovery
+
+  @task_supervisor PgFlow.TaskSupervisor
 
   @doc """
   Starts the PgFlow supervisor with the given configuration.
@@ -51,36 +55,19 @@ defmodule PgFlow.Supervisor do
     jobs = Keyword.get(config, :jobs, [])
     attach_logger = Keyword.get(config, :attach_default_logger, false)
 
-    # Attach telemetry logger if configured
-    if attach_logger do
-      attach_telemetry_logger()
-    end
+    if attach_logger, do: PgFlow.Telemetry.attach_default_logger()
 
-    children = [
-      # Start TaskSupervisor first — workers depend on it for async task execution
-      {Task.Supervisor, name: PgFlow.TaskSupervisor},
+    signal_strategy = Keyword.get(config, :signal_strategy, :polling)
+    notify_throttle_ms = Keyword.get(config, :notify_throttle_ms, 250)
 
-      # Start the WorkerSupervisor to manage flow workers
-      {WorkerSupervisor, config},
-
-      # Start stalled task recovery to reclaim orphaned tasks
-      {StalledTaskRecovery, config},
-
-      # Register flows/jobs and start workers — runs after WorkerSupervisor is alive
-      # Uses :temporary restart since it's a one-shot initialization task
-      %{
-        id: :flow_starter,
-        start:
-          {Task, :start_link,
-           [
-             fn ->
-               register_modules(flows, "flow", repo)
-               register_modules(jobs, "job", repo)
-             end
-           ]},
-        restart: :temporary
-      }
-    ]
+    children =
+      List.flatten([
+        {Task.Supervisor, name: @task_supervisor},
+        notify_child(signal_strategy, repo, notify_throttle_ms),
+        {WorkerSupervisor, config},
+        {StalledTaskRecovery, config},
+        starter_child(flows, jobs, repo, signal_strategy, notify_throttle_ms)
+      ])
 
     # Use :rest_for_one so if TaskSupervisor crashes, WorkerSupervisor
     # and StalledTaskRecovery (which depend on it) also restart
@@ -93,140 +80,70 @@ defmodule PgFlow.Supervisor do
 
   # Private Functions
 
-  defp register_modules(modules, module_type, repo) do
-    Enum.each(modules, fn module ->
-      try do
-        FlowRegistry.register(module)
-        Logger.info("Registered #{module_type}: #{inspect(module)}")
+  defp notify_child(:notify, repo, throttle_ms),
+    do: [{Signal.Notify, [repo: repo, notify_throttle_ms: throttle_ms]}]
 
-        case WorkerSupervisor.start_worker(module, repo: repo) do
-          {:ok, _pid} ->
-            Logger.info("Started worker for #{module_type}: #{inspect(module)}")
+  defp notify_child(_strategy, _repo, _throttle_ms), do: []
 
-          {:error, reason} ->
-            Logger.error(
-              "Failed to start worker for #{module_type} #{inspect(module)}: #{inspect(reason)}"
-            )
-        end
-      rescue
-        error ->
-          Logger.error(
-            "Failed to register #{module_type} #{inspect(module)}: #{Exception.message(error)}"
-          )
-      end
-    end)
+  defp starter_child(flows, jobs, repo, signal_strategy, notify_throttle_ms) do
+    %{
+      id: :flow_starter,
+      start:
+        {Task, :start_link,
+         [
+           fn ->
+             register_modules(flows, "flow", repo, signal_strategy, notify_throttle_ms)
+             register_modules(jobs, "job", repo, signal_strategy, notify_throttle_ms)
+           end
+         ]},
+      restart: :temporary
+    }
   end
 
-  defp attach_telemetry_logger do
-    events = [
-      [:pgflow, :flow, :started],
-      [:pgflow, :flow, :completed],
-      [:pgflow, :flow, :failed],
-      [:pgflow, :step, :started],
-      [:pgflow, :step, :completed],
-      [:pgflow, :step, :failed],
-      [:pgflow, :task, :started],
-      [:pgflow, :task, :completed],
-      [:pgflow, :task, :failed],
-      [:pgflow, :worker, :started],
-      [:pgflow, :worker, :stopped],
-      [:pgflow, :worker, :poll],
-      [:pgflow, :worker, :error]
-    ]
-
-    :telemetry.attach_many(
-      "pgflow-default-logger",
-      events,
-      &__MODULE__.handle_telemetry_event/4,
-      nil
-    )
-
-    Logger.debug("Attached PgFlow telemetry logger")
-  end
-
-  @doc false
-  def handle_telemetry_event([:pgflow, :flow, :started], _measurements, metadata, _config) do
-    Logger.info("Flow started: #{metadata.flow_slug}, run_id: #{metadata.run_id}")
-  end
-
-  def handle_telemetry_event([:pgflow, :flow, :completed], measurements, metadata, _config) do
-    duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
-
-    Logger.info(
-      "Flow completed: #{metadata.flow_slug}, run_id: #{metadata.run_id}, duration: #{duration_ms}ms"
+  defp register_modules(modules, module_type, repo, signal_strategy, notify_throttle_ms) do
+    Enum.each(
+      modules,
+      &register_module(&1, module_type, repo, signal_strategy, notify_throttle_ms)
     )
   end
 
-  def handle_telemetry_event([:pgflow, :flow, :failed], measurements, metadata, _config) do
-    duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
+  defp register_module(module, module_type, repo, signal_strategy, notify_throttle_ms) do
+    FlowRegistry.register(module)
+    Logger.info("Registered #{module_type}: #{inspect(module)}")
 
-    Logger.error(
-      "Flow failed: #{metadata.flow_slug}, run_id: #{metadata.run_id}, " <>
-        "error: #{metadata.error}, duration: #{duration_ms}ms"
-    )
+    case WorkerSupervisor.start_worker(module, repo: repo) do
+      {:ok, pid} ->
+        Logger.info("Started worker for #{module_type}: #{inspect(module)}")
+        maybe_enable_notify(signal_strategy, module, pid, repo, notify_throttle_ms)
+
+      {:error, reason} ->
+        Logger.error(
+          "Failed to start worker for #{module_type} #{inspect(module)}: #{inspect(reason)}"
+        )
+    end
+  rescue
+    error ->
+      Logger.error(
+        "Failed to register #{module_type} #{inspect(module)}: #{Exception.message(error)}"
+      )
   end
 
-  def handle_telemetry_event([:pgflow, :step, :started], _measurements, metadata, _config) do
-    Logger.debug("Step started: #{metadata.step_slug}, run_id: #{metadata.run_id}")
+  defp maybe_enable_notify(:notify, module, pid, repo, throttle_ms) do
+    flow_slug = module.__pgflow_definition__().slug |> Atom.to_string()
+
+    # Enable pgmq notifications BEFORE registering with Signal.Notify.
+    # Must happen outside the SimpleConnection process to avoid blocking
+    # the socket read loop and missing notifications.
+    case PgmqQueries.enable_notify_insert(repo, flow_slug, throttle_ms) do
+      :ok ->
+        Logger.debug("Enabled pgmq notifications for #{flow_slug} with #{throttle_ms}ms throttle")
+
+      {:error, reason} ->
+        Logger.error("Failed to enable pgmq notify for #{flow_slug}: #{inspect(reason)}")
+    end
+
+    Signal.Notify.register_worker(flow_slug, pid)
   end
 
-  def handle_telemetry_event([:pgflow, :step, :completed], measurements, metadata, _config) do
-    duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
-
-    Logger.debug(
-      "Step completed: #{metadata.step_slug}, run_id: #{metadata.run_id}, duration: #{duration_ms}ms"
-    )
-  end
-
-  def handle_telemetry_event([:pgflow, :step, :failed], measurements, metadata, _config) do
-    duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
-
-    Logger.warning(
-      "Step failed: #{metadata.step_slug}, run_id: #{metadata.run_id}, " <>
-        "error: #{metadata.error}, duration: #{duration_ms}ms"
-    )
-  end
-
-  def handle_telemetry_event([:pgflow, :task, :started], _measurements, metadata, _config) do
-    Logger.debug(
-      "Task started: #{metadata.step_slug}, run_id: #{metadata.run_id}, task_index: #{metadata.task_index}"
-    )
-  end
-
-  def handle_telemetry_event([:pgflow, :task, :completed], measurements, metadata, _config) do
-    duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
-
-    Logger.debug(
-      "Task completed: #{metadata.step_slug}, run_id: #{metadata.run_id}, " <>
-        "task_index: #{metadata.task_index}, duration: #{duration_ms}ms"
-    )
-  end
-
-  def handle_telemetry_event([:pgflow, :task, :failed], measurements, metadata, _config) do
-    duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
-
-    Logger.warning(
-      "Task failed: #{metadata.step_slug}, run_id: #{metadata.run_id}, " <>
-        "task_index: #{metadata.task_index}, error: #{metadata.error}, duration: #{duration_ms}ms"
-    )
-  end
-
-  def handle_telemetry_event([:pgflow, :worker, :started], _measurements, metadata, _config) do
-    Logger.info("Worker started: #{metadata.flow_slug}")
-  end
-
-  def handle_telemetry_event([:pgflow, :worker, :stopped], _measurements, metadata, _config) do
-    Logger.info("Worker stopped: #{metadata.flow_slug}")
-  end
-
-  def handle_telemetry_event([:pgflow, :worker, :poll], measurements, metadata, _config) do
-    Logger.debug(
-      "Worker poll: #{metadata.flow_slug}, messages: #{measurements.message_count}, " <>
-        "duration: #{measurements.duration}ms"
-    )
-  end
-
-  def handle_telemetry_event([:pgflow, :worker, :error], _measurements, metadata, _config) do
-    Logger.error("Worker error: #{metadata.flow_slug}, error: #{metadata.error}")
-  end
+  defp maybe_enable_notify(_strategy, _module, _pid, _repo, _throttle_ms), do: :ok
 end

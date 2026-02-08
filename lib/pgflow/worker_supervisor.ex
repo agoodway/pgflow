@@ -84,10 +84,10 @@ defmodule PgFlow.WorkerSupervisor do
       repo: repo,
       max_concurrency: Keyword.fetch!(config, :max_concurrency),
       batch_size: Keyword.fetch!(config, :batch_size),
-      poll_interval: Keyword.fetch!(config, :poll_interval),
-      visibility_timeout: Keyword.fetch!(config, :visibility_timeout),
-      max_poll_seconds: Keyword.fetch!(config, :max_poll_seconds),
-      poll_interval_ms: Keyword.fetch!(config, :poll_interval_ms)
+      signal_strategy: Keyword.fetch!(config, :signal_strategy),
+      min_poll_interval: Keyword.fetch!(config, :min_poll_interval),
+      max_poll_interval: Keyword.fetch!(config, :max_poll_interval),
+      notify_fallback_interval: Keyword.fetch!(config, :notify_fallback_interval)
     }
 
     WorkerServer.start_link(worker_config)

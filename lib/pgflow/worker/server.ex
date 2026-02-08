@@ -5,9 +5,18 @@ defmodule PgFlow.Worker.Server do
   Each worker is responsible for a single flow/queue and can execute
   multiple tasks concurrently up to the configured limit.
 
-  Implements the two-phase polling protocol:
-  1. read_with_poll() - Reserve messages from pgmq
+  Implements the two-phase protocol:
+  1. pgmq.read() - Reserve messages from pgmq (non-blocking)
   2. start_tasks() - Create step_tasks records and get task details
+
+  ## Signal Strategies
+
+  The worker supports two signal strategies for detecting new messages:
+
+    * `:polling` - Adaptive jittered exponential backoff (50ms → 5s).
+      Polls fast when busy, backs off when idle.
+    * `:notify` - LISTEN/NOTIFY via pgmq's `enable_notify_insert`.
+      Near-instant wake-ups with a 30s fallback poll.
 
   ## Configuration
 
@@ -19,10 +28,10 @@ defmodule PgFlow.Worker.Server do
         worker_id: "550e8400-e29b-41d4-a716-446655440000",
         max_concurrency: 10,
         batch_size: 10,
-        poll_interval: 0,
-        visibility_timeout: 5,
-        max_poll_seconds: 2,
-        poll_interval_ms: 100
+        signal_strategy: :polling,
+        min_poll_interval: 50,
+        max_poll_interval: 5_000,
+        notify_fallback_interval: 30_000
       }
 
   ## State Structure
@@ -34,13 +43,12 @@ defmodule PgFlow.Worker.Server do
     * `worker_id` - UUID for this worker (string format)
     * `repo` - Ecto repo module
     * `task_supervisor` - PID of Task.Supervisor for async execution
-    * `active_tasks` - Map of task_ref => task_metadata
+    * `active_tasks` - Map of task_ref => task_metadata (includes timeout_timer_ref)
     * `max_concurrency` - Max parallel tasks (default: 10)
     * `batch_size` - Messages per poll (default: 10)
-    * `poll_interval` - Milliseconds between polls (default: 0)
-    * `visibility_timeout` - Seconds for message visibility (default: 5)
-    * `max_poll_seconds` - Seconds for pgmq to block waiting (default: 2)
-    * `poll_interval_ms` - Milliseconds between pgmq poll attempts (default: 100)
+    * `visibility_timeout` - Seconds for message visibility (derived from flow's opt_timeout)
+    * `signal_strategy` - `:polling` or `:notify`
+    * `signal_state` - Adaptive backoff state for `:polling` strategy
     * `lifecycle` - Worker lifecycle state machine (see `PgFlow.Worker.Lifecycle`)
 
   ## Lifecycle
@@ -69,14 +77,24 @@ defmodule PgFlow.Worker.Server do
   require Logger
 
   alias PgFlow.Logger, as: PgLogger
-  alias PgFlow.Queries
+  alias PgFlow.Queries.Flows
+  alias PgFlow.Queries.Workers, as: WorkerQueries
   alias PgFlow.Worker.Lifecycle
 
   @type task_metadata :: %{
           run_id: String.t(),
           step_slug: String.t(),
           task_index: non_neg_integer(),
-          msg_id: pos_integer()
+          msg_id: pos_integer(),
+          timeout_timer_ref: reference() | nil,
+          task_pid: pid() | nil
+        }
+
+  @type signal_state :: %{
+          current_interval: pos_integer(),
+          min_interval: pos_integer(),
+          max_interval: pos_integer(),
+          poll_timer_ref: reference() | nil
         }
 
   @type state :: %{
@@ -89,10 +107,12 @@ defmodule PgFlow.Worker.Server do
           active_tasks: %{reference() => task_metadata()},
           max_concurrency: pos_integer(),
           batch_size: pos_integer(),
-          poll_interval: non_neg_integer(),
           visibility_timeout: pos_integer(),
-          max_poll_seconds: pos_integer(),
-          poll_interval_ms: non_neg_integer(),
+          signal_strategy: :polling | :notify,
+          signal_state: signal_state(),
+          notify_fallback_interval: pos_integer(),
+          fallback_timer_ref: reference() | nil,
+          flow_def: term(),
           lifecycle: Lifecycle.t()
         }
 
@@ -109,10 +129,10 @@ defmodule PgFlow.Worker.Server do
     * `:task_supervisor` - (optional) PID of Task.Supervisor (uses PgFlow.TaskSupervisor if not provided)
     * `:max_concurrency` - (optional) Maximum concurrent tasks (default: 10)
     * `:batch_size` - (optional) Messages to fetch per poll (default: 10)
-    * `:poll_interval` - (optional) Milliseconds between polls (default: 0)
-    * `:visibility_timeout` - (optional) Seconds for message visibility (default: 5)
-    * `:max_poll_seconds` - (optional) Seconds for pgmq to block waiting (default: 2)
-    * `:poll_interval_ms` - (optional) Milliseconds between pgmq poll attempts (default: 100)
+    * `:signal_strategy` - (optional) Signal strategy, `:polling` or `:notify` (default: `:polling`)
+    * `:min_poll_interval` - (optional) Minimum ms between polls (default: 50)
+    * `:max_poll_interval` - (optional) Maximum ms between polls (default: 5000)
+    * `:notify_fallback_interval` - (optional) Fallback poll interval for `:notify` strategy (default: 30000)
 
   """
   @spec start_link(map()) :: GenServer.on_start()
@@ -150,6 +170,15 @@ defmodule PgFlow.Worker.Server do
     flow_def = flow_module.__pgflow_definition__()
     flow_slug = Atom.to_string(flow_def.slug)
 
+    # Derive visibility_timeout from flow's opt_timeout (default: 60s)
+    visibility_timeout = Keyword.get(flow_def.opts, :timeout, 60)
+
+    # Signal strategy config
+    signal_strategy = Map.get(config, :signal_strategy, :polling)
+    min_poll_interval = Map.get(config, :min_poll_interval, 50)
+    max_poll_interval = Map.get(config, :max_poll_interval, 5_000)
+    notify_fallback_interval = Map.get(config, :notify_fallback_interval, 30_000)
+
     # Generate or use provided worker_id
     worker_id = Map.get(config, :worker_id, Ecto.UUID.generate())
 
@@ -159,107 +188,101 @@ defmodule PgFlow.Worker.Server do
     # Get or default task supervisor
     task_supervisor = Map.get(config, :task_supervisor, Process.whereis(PgFlow.TaskSupervisor))
 
-    unless task_supervisor do
-      {:stop, :task_supervisor_not_found}
-    end
+    with task_supervisor when is_pid(task_supervisor) <- task_supervisor,
+         :ok <- validate_flow_exists(repo, flow_slug, flow_module) do
+      # Build signal state for adaptive backoff
+      signal_state = %{
+        current_interval: min_poll_interval,
+        min_interval: min_poll_interval,
+        max_interval: max_poll_interval,
+        poll_timer_ref: nil
+      }
 
-    # Check if flow exists in database before starting
-    case Queries.flow_exists?(repo, flow_slug) do
-      {:ok, true} ->
-        :ok
+      # Build state
+      state = %{
+        flow_module: flow_module,
+        flow_slug: flow_slug,
+        worker_id: worker_id,
+        worker_name: worker_name,
+        repo: repo,
+        task_supervisor: task_supervisor,
+        active_tasks: %{},
+        max_concurrency: Map.fetch!(config, :max_concurrency),
+        batch_size: Map.fetch!(config, :batch_size),
+        visibility_timeout: visibility_timeout,
+        signal_strategy: signal_strategy,
+        signal_state: signal_state,
+        notify_fallback_interval: notify_fallback_interval,
+        fallback_timer_ref: nil,
+        flow_def: flow_def,
+        lifecycle:
+          Lifecycle.new() |> Lifecycle.transition!(:starting) |> Lifecycle.transition!(:running)
+      }
 
-      {:ok, false} ->
-        raise """
-        Flow "#{flow_slug}" is not compiled in the database.
+      # Register worker in database
+      case register_worker(state) do
+        {:ok, _} ->
+          # Log startup banner with flow compilation status
+          PgLogger.startup_banner(%{
+            worker_name: worker_name,
+            worker_id: worker_id,
+            queue_name: flow_slug,
+            flows: [%{flow_slug: flow_slug, status: :ready}]
+          })
 
-        The PGMQ queue for this flow does not exist. Run the migration to compile it:
+          # Emit telemetry event
+          emit_telemetry([:worker, :start], %{}, %{
+            worker_id: worker_id,
+            worker_name: worker_name,
+            flow_slug: flow_slug
+          })
 
-            mix pgflow.gen.flow #{inspect(flow_module)}
-            mix ecto.migrate
+          # Start signal loop based on strategy
+          state = schedule_initial_poll(state)
 
-        Or if you haven't created the migration yet, generate it first.
-        """
+          {:ok, state}
 
-      {:error, error} ->
-        Logger.warning("Failed to check if flow exists: #{inspect(error)}")
-        :ok
-    end
-
-    # Build state
-    state = %{
-      flow_module: flow_module,
-      flow_slug: flow_slug,
-      worker_id: worker_id,
-      worker_name: worker_name,
-      repo: repo,
-      task_supervisor: task_supervisor,
-      active_tasks: %{},
-      max_concurrency: Map.fetch!(config, :max_concurrency),
-      batch_size: Map.fetch!(config, :batch_size),
-      poll_interval: Map.fetch!(config, :poll_interval),
-      visibility_timeout: Map.fetch!(config, :visibility_timeout),
-      max_poll_seconds: Map.fetch!(config, :max_poll_seconds),
-      poll_interval_ms: Map.fetch!(config, :poll_interval_ms),
-      lifecycle:
-        Lifecycle.new() |> Lifecycle.transition!(:starting) |> Lifecycle.transition!(:running)
-    }
-
-    # Register worker in database
-    case register_worker(state) do
-      {:ok, _} ->
-        # Log startup banner with flow compilation status
-        PgLogger.startup_banner(%{
-          worker_name: worker_name,
-          worker_id: worker_id,
-          queue_name: flow_slug,
-          flows: [%{flow_slug: flow_slug, status: :ready}]
-        })
-
-        # Emit telemetry event
-        emit_telemetry([:worker, :start], %{}, %{
-          worker_id: worker_id,
-          worker_name: worker_name,
-          flow_slug: flow_slug
-        })
-
-        # Start polling loop
-        schedule_poll(state)
-
-        {:ok, state}
-
-      {:error, reason} ->
-        Logger.error("Failed to register worker #{worker_id}: #{inspect(reason)}")
-        {:stop, {:registration_failed, reason}}
+        {:error, reason} ->
+          Logger.error("Failed to register worker #{worker_id}: #{inspect(reason)}")
+          {:stop, {:registration_failed, reason}}
+      end
+    else
+      nil -> {:stop, :task_supervisor_not_found}
     end
   end
 
   @impl true
   def handle_info(:poll, %{lifecycle: lifecycle} = state) do
     if Lifecycle.can_accept_work?(lifecycle) do
-      start_time = System.monotonic_time()
-
-      emit_telemetry([:worker, :poll, :start], %{}, %{
-        worker_id: state.worker_id,
-        flow_slug: state.flow_slug,
-        active_tasks: map_size(state.active_tasks)
-      })
-
-      state = poll_and_dispatch(state)
-
-      duration = System.monotonic_time() - start_time
-
-      emit_telemetry([:worker, :poll, :stop], %{duration: duration}, %{
-        worker_id: state.worker_id,
-        flow_slug: state.flow_slug,
-        active_tasks: map_size(state.active_tasks)
-      })
-
-      # Schedule next poll
-      schedule_poll(state)
-
+      state = do_poll_cycle(state)
       {:noreply, state}
     else
-      # Don't poll if not running (stopping or stopped)
+      {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info(:poll_now, %{lifecycle: lifecycle} = state) do
+    if Lifecycle.can_accept_work?(lifecycle) do
+      # Cancel any pending poll timer to avoid double-polling
+      state = cancel_poll_timer(state)
+      # Reset fallback timer since we got a NOTIFY (for :notify strategy)
+      state = reset_fallback_timer(state)
+      state = do_poll_cycle(state)
+      {:noreply, state}
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info(:fallback_poll, %{lifecycle: lifecycle} = state) do
+    if Lifecycle.can_accept_work?(lifecycle) do
+      state = do_poll_cycle(state)
+      # Reschedule the fallback timer and track the ref
+      fallback_ref = Process.send_after(self(), :fallback_poll, state.notify_fallback_interval)
+      {:noreply, %{state | fallback_timer_ref: fallback_ref}}
+    else
       {:noreply, state}
     end
   end
@@ -273,8 +296,28 @@ defmodule PgFlow.Worker.Server do
         {:noreply, state}
 
       {task_meta, new_active_tasks} ->
+        # Cancel the timeout timer
+        cancel_task_timeout(task_meta)
         handle_task_success(task_meta, result, state)
-        {:noreply, %{state | active_tasks: new_active_tasks}}
+        state = %{state | active_tasks: new_active_tasks}
+
+        # Only poll if the completed step has downstream dependents.
+        # This optimizes the :notify strategy by avoiding unnecessary polls
+        # when a terminal step completes (no downstream work to pick up).
+        # For steps with dependents, we poll immediately because:
+        # 1. complete_task may enqueue downstream tasks via start_ready_steps
+        # 2. The NOTIFY for those inserts may be throttled (pgmq throttle_interval_ms)
+        # 3. Without immediate poll, worker would wait for fallback_poll (30s)
+        has_dependents = step_has_dependents?(state.flow_module, task_meta.step_slug)
+
+        state =
+          if has_dependents and Lifecycle.can_accept_work?(state.lifecycle) do
+            schedule_immediate_poll(state)
+          else
+            state
+          end
+
+        {:noreply, state}
     end
   end
 
@@ -287,7 +330,47 @@ defmodule PgFlow.Worker.Server do
         {:noreply, state}
 
       {task_meta, new_active_tasks} ->
+        # Cancel the timeout timer
+        cancel_task_timeout(task_meta)
         handle_task_failure(task_meta, reason, state)
+        state = %{state | active_tasks: new_active_tasks}
+
+        # For failures, always poll if we can accept work - retries get re-queued
+        # and we want to pick them up promptly
+        state =
+          if Lifecycle.can_accept_work?(state.lifecycle) do
+            schedule_immediate_poll(state)
+          else
+            state
+          end
+
+        {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:task_timeout, ref}, state) do
+    case Map.pop(state.active_tasks, ref) do
+      {nil, _} ->
+        # Task already completed, ignore
+        {:noreply, state}
+
+      {task_meta, new_active_tasks} ->
+        # Terminate the task process gracefully
+        if task_meta.task_pid do
+          Task.Supervisor.terminate_child(state.task_supervisor, task_meta.task_pid)
+        end
+
+        # Resolve the timeout value for the error message
+        timeout_seconds = resolve_task_timeout(state, task_meta.step_slug)
+
+        # Report failure
+        handle_task_failure(
+          task_meta,
+          "Task timed out after #{timeout_seconds}s",
+          state
+        )
+
         {:noreply, %{state | active_tasks: new_active_tasks}}
     end
   end
@@ -353,12 +436,12 @@ defmodule PgFlow.Worker.Server do
   @spec register_worker(state()) :: {:ok, term()} | {:error, term()}
   defp register_worker(state) do
     function_name = "elixir:#{state.flow_module}"
-    Queries.register_worker(state.repo, state.worker_id, state.flow_slug, function_name)
+    WorkerQueries.register_worker(state.repo, state.worker_id, state.flow_slug, function_name)
   end
 
   @spec mark_worker_stopped(state()) :: :ok
   defp mark_worker_stopped(state) do
-    case Queries.mark_worker_stopped(state.repo, state.worker_id) do
+    case WorkerQueries.mark_worker_stopped(state.repo, state.worker_id) do
       {:ok, _} ->
         :ok
 
@@ -368,48 +451,187 @@ defmodule PgFlow.Worker.Server do
     end
   end
 
-  @spec schedule_poll(state()) :: reference()
-  defp schedule_poll(state) do
-    Process.send_after(self(), :poll, state.poll_interval)
+  defp validate_flow_exists(repo, flow_slug, flow_module) do
+    case Flows.flow_exists?(repo, flow_slug) do
+      {:ok, true} ->
+        :ok
+
+      {:ok, false} ->
+        raise """
+        Flow "#{flow_slug}" is not compiled in the database.
+
+        The PGMQ queue for this flow does not exist. Run the migration to compile it:
+
+            mix pgflow.gen.flow #{inspect(flow_module)}
+            mix ecto.migrate
+
+        Or if you haven't created the migration yet, generate it first.
+        """
+
+      {:error, error} ->
+        Logger.warning("Failed to check if flow exists: #{inspect(error)}")
+        :ok
+    end
   end
 
-  @spec poll_and_dispatch(state()) :: state()
+  # Schedules the initial poll based on signal strategy
+  defp schedule_initial_poll(state) do
+    case state.signal_strategy do
+      :polling ->
+        schedule_next_poll(state, :initial)
+
+      :notify ->
+        # For notify strategy, start the fallback timer and do an initial poll
+        fallback_ref = Process.send_after(self(), :fallback_poll, state.notify_fallback_interval)
+        state = %{state | fallback_timer_ref: fallback_ref}
+        # Do an immediate poll to pick up any existing messages
+        ref = Process.send_after(self(), :poll, 0)
+        put_in(state, [:signal_state, :poll_timer_ref], ref)
+    end
+  end
+
+  # Schedules the next poll with jittered exponential backoff
+  @spec schedule_next_poll(state(), :found_messages | :empty | :initial) :: state()
+  defp schedule_next_poll(state, poll_result) do
+    signal_state = state.signal_state
+
+    next_interval =
+      case poll_result do
+        :found_messages ->
+          # Reset to fast polling
+          signal_state.min_interval
+
+        :initial ->
+          # Start with minimum interval
+          signal_state.min_interval
+
+        :empty ->
+          # Decorrelated jitter: rand_uniform(min, prev * 3), capped at max
+          max_jitter = min(signal_state.current_interval * 3, signal_state.max_interval)
+          Enum.random(signal_state.min_interval..max(signal_state.min_interval, max_jitter))
+      end
+
+    ref = Process.send_after(self(), :poll, next_interval)
+
+    signal_state = %{signal_state | current_interval: next_interval, poll_timer_ref: ref}
+    %{state | signal_state: signal_state}
+  end
+
+  # Schedules an immediate poll (used when capacity frees up)
+  defp schedule_immediate_poll(state) do
+    state = cancel_poll_timer(state)
+    signal_state = %{state.signal_state | current_interval: state.signal_state.min_interval}
+    ref = Process.send_after(self(), :poll, 0)
+    %{state | signal_state: %{signal_state | poll_timer_ref: ref}}
+  end
+
+  # Cancels the pending poll timer if one exists and flushes any already-sent message
+  @spec cancel_poll_timer(state()) :: state()
+  defp cancel_poll_timer(state) do
+    case state.signal_state.poll_timer_ref do
+      nil ->
+        state
+
+      ref ->
+        Process.cancel_timer(ref)
+
+        # Flush any already-sent :poll message from mailbox
+        receive do
+          :poll -> :ok
+        after
+          0 -> :ok
+        end
+
+        put_in(state, [:signal_state, :poll_timer_ref], nil)
+    end
+  end
+
+  # Resets the fallback timer when a NOTIFY is received (for :notify strategy only)
+  # This reduces unnecessary polling when NOTIFY is working properly
+  @spec reset_fallback_timer(state()) :: state()
+  defp reset_fallback_timer(%{signal_strategy: :notify, fallback_timer_ref: ref} = state) do
+    if ref do
+      Process.cancel_timer(ref)
+
+      # Flush any already-sent :fallback_poll message from mailbox
+      receive do
+        :fallback_poll -> :ok
+      after
+        0 -> :ok
+      end
+    end
+
+    new_ref = Process.send_after(self(), :fallback_poll, state.notify_fallback_interval)
+    %{state | fallback_timer_ref: new_ref}
+  end
+
+  defp reset_fallback_timer(state), do: state
+
+  # Executes a full poll cycle: read, dispatch, schedule next
+  defp do_poll_cycle(state) do
+    start_time = System.monotonic_time()
+
+    emit_telemetry([:worker, :poll, :start], %{}, %{
+      worker_id: state.worker_id,
+      flow_slug: state.flow_slug,
+      active_tasks: map_size(state.active_tasks)
+    })
+
+    {state, poll_result} = poll_and_dispatch(state)
+
+    duration = System.monotonic_time() - start_time
+
+    emit_telemetry([:worker, :poll, :stop], %{duration: duration}, %{
+      worker_id: state.worker_id,
+      flow_slug: state.flow_slug,
+      active_tasks: map_size(state.active_tasks)
+    })
+
+    # Schedule next poll based on strategy
+    case state.signal_strategy do
+      :polling ->
+        schedule_next_poll(state, poll_result)
+
+      :notify ->
+        # For notify strategy, don't schedule another poll — wait for notification
+        # (the fallback timer handles the safety net)
+        state
+    end
+  end
+
+  @spec poll_and_dispatch(state()) :: {state(), :found_messages | :empty}
   defp poll_and_dispatch(state) do
     # Calculate how many tasks we can accept
     available_slots = state.max_concurrency - map_size(state.active_tasks)
 
     if available_slots <= 0 do
       # At capacity, don't poll
-      state
+      {state, :empty}
     else
       # Log polling activity
       PgLogger.polling(state.worker_name)
 
-      # Poll for messages (limited by available slots and batch size)
+      # Read messages (non-blocking, limited by available slots and batch size)
       batch_size = min(available_slots, state.batch_size)
 
-      case Queries.read_with_poll(
+      case Flows.read(
              state.repo,
              state.flow_slug,
              state.visibility_timeout,
-             batch_size,
-             max_poll_seconds: state.max_poll_seconds,
-             poll_interval_ms: state.poll_interval_ms
+             batch_size
            ) do
         {:ok, []} ->
-          # Log no tasks found
           PgLogger.task_count(state.worker_name, 0)
-          state
+          {state, :empty}
 
         {:ok, messages} ->
-          # Log task count
           PgLogger.task_count(state.worker_name, length(messages))
-          # Phase 2: Start tasks and get details
-          start_and_dispatch_tasks(state, messages)
+          state = start_and_dispatch_tasks(state, messages)
+          {state, :found_messages}
 
         {:error, reason} ->
           Logger.error("Failed to poll queue #{state.flow_slug}: #{inspect(reason)}")
-          state
+          {state, :empty}
       end
     end
   end
@@ -420,7 +642,7 @@ defmodule PgFlow.Worker.Server do
     msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
 
     # Call start_tasks to create step_tasks records and get task details
-    case Queries.start_tasks(state.repo, state.flow_slug, msg_ids, state.worker_id) do
+    case Flows.start_tasks(state.repo, state.flow_slug, msg_ids, state.worker_id) do
       {:ok, task_details} ->
         # Dispatch each task
         Enum.reduce(task_details, state, fn task_detail, acc_state ->
@@ -445,7 +667,7 @@ defmodule PgFlow.Worker.Server do
     run_id = Ecto.UUID.load!(run_id_bin)
 
     # Get step definition to determine input routing
-    step_slug_atom = String.to_existing_atom(step_slug)
+    step_slug_atom = String.to_atom(step_slug)
     step_def = get_step_definition(state.flow_module, step_slug_atom)
 
     # Parse inputs - Postgrex returns JSONB as maps/lists/primitives
@@ -516,21 +738,54 @@ defmodule PgFlow.Worker.Server do
         end
       end)
 
-    # Track task
+    # Schedule task timeout
+    timeout_ms = resolve_task_timeout(state, step_slug) * 1_000
+    timeout_timer_ref = Process.send_after(self(), {:task_timeout, task.ref}, timeout_ms)
+
+    # Track task with timeout timer and pid
     task_meta = %{
       run_id: run_id,
       step_slug: step_slug,
       task_index: task_index,
-      msg_id: msg_id
+      msg_id: msg_id,
+      timeout_timer_ref: timeout_timer_ref,
+      task_pid: task.pid
     }
 
     active_tasks = Map.put(state.active_tasks, task.ref, task_meta)
     %{state | active_tasks: active_tasks}
   end
 
+  # Resolves the timeout for a task: step-level override > flow-level > default 60s
+  defp resolve_task_timeout(state, step_slug) do
+    step_slug_atom =
+      if is_atom(step_slug), do: step_slug, else: String.to_atom(step_slug)
+
+    step_def = get_step_definition(state.flow_module, step_slug_atom)
+    flow_timeout = Keyword.get(state.flow_def.opts, :timeout, 60)
+
+    cond do
+      step_def && step_def.timeout -> step_def.timeout
+      true -> flow_timeout
+    end
+  end
+
+  # Cancels a task's timeout timer if it exists and flushes any already-sent message
+  defp cancel_task_timeout(%{timeout_timer_ref: ref}) when is_reference(ref) do
+    Process.cancel_timer(ref)
+
+    receive do
+      {:task_timeout, ^ref} -> :ok
+    after
+      0 -> :ok
+    end
+  end
+
+  defp cancel_task_timeout(_task_meta), do: :ok
+
   @spec handle_task_success(task_metadata(), term(), state()) :: :ok
   defp handle_task_success(task_meta, {:ok, output}, state) do
-    case Queries.complete_task(
+    case Flows.complete_task(
            state.repo,
            task_meta.run_id,
            task_meta.step_slug,
@@ -586,7 +841,7 @@ defmodule PgFlow.Worker.Server do
       msg_id: task_meta.msg_id
     }
 
-    case Queries.fail_task(
+    case Flows.fail_task(
            state.repo,
            task_meta.run_id,
            task_meta.step_slug,
@@ -619,7 +874,7 @@ defmodule PgFlow.Worker.Server do
     case result do
       [_flow_slug, _run_id, _step_slug, _task_index, _status, attempts_count | _rest]
       when is_integer(attempts_count) ->
-        flow_def = state.flow_module.__pgflow_definition__()
+        flow_def = state.flow_def
         max_attempts = Keyword.get(flow_def.opts, :max_attempts, 3)
         base_delay = Keyword.get(flow_def.opts, :base_delay, 1)
 
@@ -641,7 +896,7 @@ defmodule PgFlow.Worker.Server do
 
   @spec delete_message(state(), pos_integer()) :: :ok
   defp delete_message(state, msg_id) do
-    case Queries.delete_message(state.repo, state.flow_slug, msg_id) do
+    case Flows.delete_message(state.repo, state.flow_slug, msg_id) do
       {:ok, _} ->
         :ok
 
@@ -666,6 +921,20 @@ defmodule PgFlow.Worker.Server do
 
     Enum.find(definition.steps, fn step ->
       step.slug == step_slug
+    end)
+  end
+
+  # Check if a step has downstream dependents (other steps that depend on it)
+  # Used to determine if we should poll after completing a task - only poll
+  # if the completed step might trigger downstream work
+  defp step_has_dependents?(flow_module, step_slug) do
+    step_slug_atom =
+      if is_atom(step_slug), do: step_slug, else: String.to_atom(step_slug)
+
+    definition = flow_module.__pgflow_definition__()
+
+    Enum.any?(definition.steps, fn step ->
+      step_slug_atom in step.depends_on
     end)
   end
 
@@ -701,6 +970,7 @@ defmodule PgFlow.Worker.Server do
             wait_for_tasks(state)
 
           {task_meta, new_active_tasks} ->
+            cancel_task_timeout(task_meta)
             handle_task_success(task_meta, result, state)
             wait_for_tasks(%{state | active_tasks: new_active_tasks})
         end
@@ -712,7 +982,31 @@ defmodule PgFlow.Worker.Server do
             wait_for_tasks(state)
 
           {task_meta, new_active_tasks} ->
+            cancel_task_timeout(task_meta)
             handle_task_failure(task_meta, reason, state)
+            wait_for_tasks(%{state | active_tasks: new_active_tasks})
+        end
+
+      {:task_timeout, ref} ->
+        case Map.pop(state.active_tasks, ref) do
+          {nil, _} ->
+            # Already completed, ignore
+            wait_for_tasks(state)
+
+          {task_meta, new_active_tasks} ->
+            # Terminate the task and report failure (same as normal handler)
+            if task_meta.task_pid do
+              Task.Supervisor.terminate_child(state.task_supervisor, task_meta.task_pid)
+            end
+
+            timeout_seconds = resolve_task_timeout(state, task_meta.step_slug)
+
+            handle_task_failure(
+              task_meta,
+              "Task timed out after #{timeout_seconds}s",
+              state
+            )
+
             wait_for_tasks(%{state | active_tasks: new_active_tasks})
         end
     after

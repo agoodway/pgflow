@@ -1,22 +1,41 @@
-defmodule PgFlow.Queries.Base do
+defmodule PgFlow.Queries.Helpers do
   @moduledoc """
-  Common query helpers for RPC-style database calls.
+  Shared utilities for database queries.
 
-  Provides utilities for executing PostgreSQL functions and handling
-  common result patterns in a consistent way.
+  Provides RPC-style PostgreSQL function calls, UUID handling, row-to-map
+  conversion, time range calculations, and status conversions.
+
+  Used by both PgFlow core query modules and the PgFlow Dashboard.
+  """
+
+  # ===================
+  # RPC Helpers
+  # ===================
+
+  @doc """
+  Executes an RPC-style call to a PostgreSQL function.
+
+  ## Parameters
+
+    * `repo` - The Ecto repository
+    * `function_name` - Name of the PostgreSQL function
+    * `params` - List of parameters to pass
+    * `opts` - Options keyword list
 
   ## Options
 
-    * `:schema` - (required) The PostgreSQL schema to call functions in
-    * `:mode` - Result handling mode:
-      * `:single` - Expect single row, return `{:ok, map}` or `{:error, :not_found}`
-      * `:list` - Expect multiple rows, return list of maps (default)
-      * `:count` - Expect single value, return integer
-      * `:raw` - Return the raw `{:ok, result}` or `{:error, reason}`
-      * `:void` - For write functions returning void, return `{:ok, nil}`
+    * `:schema` - (required) The PostgreSQL schema containing the function
+    * `:mode` - Result handling mode: `:list`, `:single`, `:count`, `:void`, `:raw`
 
+  ## Returns
+
+  Depends on mode:
+    * `:list` - Returns list of maps
+    * `:single` - Returns `{:ok, map}` or `{:error, :not_found}`
+    * `:count` - Returns integer count
+    * `:void` - Returns `{:ok, nil}`
+    * `:raw` - Returns `{:ok, list of maps}` or error
   """
-
   @spec execute_rpc(module(), String.t(), list(), keyword()) ::
           {:ok, map()} | {:error, :not_found | term()} | list(map()) | integer()
   def execute_rpc(repo, function_name, params, opts \\ []) do

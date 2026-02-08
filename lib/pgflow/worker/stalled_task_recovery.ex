@@ -16,7 +16,7 @@ defmodule PgFlow.Worker.StalledTaskRecovery do
   use GenServer
   require Logger
 
-  alias PgFlow.Queries
+  alias PgFlow.Queries.Flows
 
   @doc """
   Starts the StalledTaskRecovery GenServer.
@@ -51,7 +51,7 @@ defmodule PgFlow.Worker.StalledTaskRecovery do
 
   @impl true
   def handle_info(:recover, state) do
-    case Queries.recover_stalled_tasks(state.repo, state.stale_threshold) do
+    case Flows.recover_stalled_tasks(state.repo, state.stale_threshold) do
       {:ok, 0} ->
         :ok
 

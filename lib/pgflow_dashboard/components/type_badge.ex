@@ -1,25 +1,24 @@
 defmodule PgFlowDashboard.Components.TypeBadge do
   @moduledoc """
   Type badge component for distinguishing between flows, jobs, and crons.
-
-  Flows are considered the "default" type, so the badge is only shown for jobs and crons.
   """
 
   use Phoenix.Component
 
   @doc """
-  Renders a type badge for jobs and crons.
+  Renders a type badge for flows, jobs, and crons.
 
+  Flows get a small purple "flow" pill badge.
   Jobs get a small blue "job" pill badge.
   Crons get a small amber "cron" pill badge.
-  Flows are the default type and don't need a badge (the absence of a badge implies "flow").
 
   ## Attributes
 
-    * `:type` - The flow type ("flow", "job", or "cron"). Only "job" and "cron" render a badge.
+    * `:type` - The flow type ("flow", "job", or "cron").
 
   ## Examples
 
+      <TypeBadge.type_badge type="flow" />
       <TypeBadge.type_badge type="job" />
       <TypeBadge.type_badge type="cron" />
       <TypeBadge.type_badge type={@flow_type} />
@@ -29,6 +28,12 @@ defmodule PgFlowDashboard.Components.TypeBadge do
 
   def type_badge(assigns) do
     ~H"""
+    <span
+      :if={@type == "flow"}
+      class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+    >
+      flow
+    </span>
     <span
       :if={@type == "job"}
       class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"

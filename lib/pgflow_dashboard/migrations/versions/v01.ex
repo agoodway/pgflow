@@ -28,8 +28,15 @@ defmodule PgFlowDashboard.Migrations.Versions.V01 do
   - `get_worker(uuid)` - Get single worker details
   - `list_worker_tasks(uuid, int)` - List tasks processed by worker
   - `get_adjacent_worker(uuid, text)` - Navigate to next/prev worker
-  - `list_flows()` - List all flows with statistics
+  - `count_flows()` - Count all flows
+  - `list_flows(int, text)` - List all flows with optional pagination
   - `get_flow(text)` - Get single flow details
+  - `count_jobs()` - Count all jobs
+  - `list_jobs(int, text)` - List all jobs with optional pagination
+  - `get_job(text)` - Get single job details
+  - `count_crons()` - Count all crons
+  - `list_crons(int, text)` - List all crons with optional pagination
+  - `get_cron(text)` - Get single cron details
   - `list_flow_steps(text)` - List steps for a flow
   - `get_run_history_grid(text, int)` - Activity grid data for flow
   """

@@ -22,7 +22,7 @@ defmodule PgFlow.Client do
 
   import Ecto.Query
 
-  alias PgFlow.Queries
+  alias PgFlow.Queries.Flows
   alias PgFlow.Schema.Run
 
   @doc """
@@ -49,7 +49,7 @@ defmodule PgFlow.Client do
   def start_flow(flow_module_or_slug, input) when is_map(input) do
     with {:ok, repo} <- get_repo(),
          {:ok, flow_slug} <- resolve_slug(flow_module_or_slug) do
-      Queries.start_flow(repo, flow_slug, input)
+      Flows.start_flow(repo, flow_slug, input)
     end
   end
 

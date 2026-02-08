@@ -19,7 +19,9 @@ defmodule PgflowDemo.Application do
       {PgFlow.Supervisor,
        repo: PgflowDemo.Repo,
        flows: [PgflowDemo.Flows.ArticleFlow],
-       jobs: [PgflowDemo.Jobs.ArticleFlowCleanup]},
+       jobs: [PgflowDemo.Jobs.ArticleFlowCleanup],
+       signal_strategy: :notify,
+       notify_throttle_ms: 50},
       # PgFlowDashboard Supervisor - manages dashboard processes (MetricsCache)
       PgFlowDashboard,
       # Start to serve requests, typically the last entry

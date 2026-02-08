@@ -3,7 +3,7 @@ defmodule PgFlow.ExtensionsMigration do
   Manages database migrations for PgFlow's extension SQL functions.
 
   These functions wrap custom queries (worker registration, stalled task recovery, etc.)
-  as PostgreSQL functions in the `pgflow` schema, called via RPC from `PgFlow.Queries`.
+  as PostgreSQL functions in the `pgflow` schema, called via RPC from `PgFlow.Queries.*` modules.
 
   ## Usage in Ecto Migrations
 

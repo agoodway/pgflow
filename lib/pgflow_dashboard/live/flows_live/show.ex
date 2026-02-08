@@ -7,7 +7,7 @@ defmodule PgFlowDashboard.Live.FlowsLive.Show do
 
   alias PgFlowDashboard.Components.{DependencyGraph, Layouts, RunHistoryGrid}
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries
+  alias PgFlowDashboard.Queries.Flows
 
   @impl true
   def mount(%{"slug" => flow_slug}, session, socket) do
@@ -55,7 +55,7 @@ defmodule PgFlowDashboard.Live.FlowsLive.Show do
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_flow(socket) do
-    case Queries.get_flow_with_graph(socket.assigns.repo, socket.assigns.flow_slug) do
+    case Flows.get_flow_with_graph(socket.assigns.repo, socket.assigns.flow_slug) do
       {:ok, flow} -> assign(socket, :flow, flow)
       {:error, _} -> assign(socket, :flow, nil)
     end
@@ -63,7 +63,7 @@ defmodule PgFlowDashboard.Live.FlowsLive.Show do
 
   defp load_run_history(socket) do
     grid_data =
-      Queries.get_run_history_grid(
+      Flows.get_run_history_grid(
         socket.assigns.repo,
         socket.assigns.flow_slug,
         limit: socket.assigns.config[:max_grid_runs] || 50

@@ -3,7 +3,7 @@ defmodule PgFlowDashboard.Queries.Metrics do
   Database queries for dashboard metrics with caching.
   """
 
-  import PgFlow.Queries.Base
+  import PgFlow.Queries.Helpers
 
   alias PgFlowDashboard.Cache.MetricsCache
 

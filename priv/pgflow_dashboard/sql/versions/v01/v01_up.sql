@@ -555,9 +555,26 @@ $$;
 
 --SPLIT--
 
+-- Function: count_flows()
+-- Counts all flows (excludes jobs)
+CREATE OR REPLACE FUNCTION $SCHEMA$.count_flows()
+RETURNS bigint
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT COUNT(*)
+  FROM $SCHEMA$.flow_stats f
+  WHERE f.flow_type = 'flow'
+$$;
+
+--SPLIT--
+
 -- Function: list_flows()
--- Lists all flows with statistics (excludes jobs)
-CREATE OR REPLACE FUNCTION $SCHEMA$.list_flows()
+-- Lists all flows with statistics (excludes jobs), with optional pagination
+CREATE OR REPLACE FUNCTION $SCHEMA$.list_flows(
+  p_limit integer DEFAULT NULL,
+  p_cursor_slug text DEFAULT NULL
+)
 RETURNS TABLE (
   flow_slug text,
   opt_max_attempts integer,
@@ -580,14 +597,33 @@ AS $$
     f.success_rate_24h, f.avg_duration_ms, f.p95_duration_ms, f.step_count
   FROM $SCHEMA$.flow_stats f
   WHERE f.flow_type = 'flow'
+    AND (p_cursor_slug IS NULL OR f.flow_slug > p_cursor_slug)
   ORDER BY f.flow_slug
+  LIMIT p_limit
+$$;
+
+--SPLIT--
+
+-- Function: count_jobs()
+-- Counts all jobs
+CREATE OR REPLACE FUNCTION $SCHEMA$.count_jobs()
+RETURNS bigint
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT COUNT(*)
+  FROM $SCHEMA$.flow_stats f
+  WHERE f.flow_type = 'job'
 $$;
 
 --SPLIT--
 
 -- Function: list_jobs()
--- Lists all jobs with statistics
-CREATE OR REPLACE FUNCTION $SCHEMA$.list_jobs()
+-- Lists all jobs with statistics, with optional pagination
+CREATE OR REPLACE FUNCTION $SCHEMA$.list_jobs(
+  p_limit integer DEFAULT NULL,
+  p_cursor_slug text DEFAULT NULL
+)
 RETURNS TABLE (
   flow_slug text,
   opt_max_attempts integer,
@@ -609,7 +645,9 @@ AS $$
     f.success_rate_24h, f.avg_duration_ms, f.p95_duration_ms
   FROM $SCHEMA$.flow_stats f
   WHERE f.flow_type = 'job'
+    AND (p_cursor_slug IS NULL OR f.flow_slug > p_cursor_slug)
   ORDER BY f.flow_slug
+  LIMIT p_limit
 $$;
 
 --SPLIT--
@@ -673,9 +711,26 @@ $$;
 
 --SPLIT--
 
+-- Function: count_crons()
+-- Counts all scheduled flows/jobs
+CREATE OR REPLACE FUNCTION $SCHEMA$.count_crons()
+RETURNS bigint
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT COUNT(*)
+  FROM $SCHEMA$.flow_stats f
+  INNER JOIN cron.job cj ON cj.jobname = 'pgflow:' || f.flow_slug
+$$;
+
+--SPLIT--
+
 -- Function: list_crons()
--- Lists all scheduled flows/jobs (detected by presence in cron.job table)
-CREATE OR REPLACE FUNCTION $SCHEMA$.list_crons()
+-- Lists all scheduled flows/jobs (detected by presence in cron.job table), with optional pagination
+CREATE OR REPLACE FUNCTION $SCHEMA$.list_crons(
+  p_limit integer DEFAULT NULL,
+  p_cursor_slug text DEFAULT NULL
+)
 RETURNS TABLE (
   flow_slug text,
   flow_type text,
@@ -721,7 +776,9 @@ AS $$
     ORDER BY r.started_at DESC
     LIMIT 1
   ) lr ON true
+  WHERE (p_cursor_slug IS NULL OR f.flow_slug > p_cursor_slug)
   ORDER BY f.flow_slug
+  LIMIT p_limit
 $$;
 
 --SPLIT--

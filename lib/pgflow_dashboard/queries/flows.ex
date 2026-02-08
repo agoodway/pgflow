@@ -3,14 +3,29 @@ defmodule PgFlowDashboard.Queries.Flows do
   Database queries for flow-related data.
   """
 
-  import PgFlow.Queries.Base
+  import PgFlow.Queries.Helpers
+
+  @doc """
+  Counts all flows.
+  """
+  @spec count_flows(module()) :: integer()
+  def count_flows(repo) do
+    execute_rpc(repo, "count_flows", [], schema: "pgflow_dashboard", mode: :count)
+  end
 
   @doc """
   Lists flows with statistics.
+
+  ## Options
+    * `:limit` - Maximum number of flows to return
+    * `:cursor` - Cursor for pagination (flow_slug to start after)
   """
-  @spec list_flows(module()) :: list(map())
-  def list_flows(repo) do
-    execute_rpc(repo, "list_flows", [], schema: "pgflow_dashboard", mode: :list)
+  @spec list_flows(module(), keyword()) :: list(map())
+  def list_flows(repo, opts \\ []) do
+    limit = Keyword.get(opts, :limit)
+    cursor = Keyword.get(opts, :cursor)
+
+    execute_rpc(repo, "list_flows", [limit, cursor], schema: "pgflow_dashboard", mode: :list)
   end
 
   @doc """

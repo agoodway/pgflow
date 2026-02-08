@@ -49,11 +49,11 @@ defmodule PgFlow.Worker.Executor do
       case PgFlow.Worker.Executor.execute(MyFlow, task, MyApp.Repo) do
         {:ok, output} ->
           # Task succeeded, persist output
-          PgFlow.Queries.complete_task(repo, task.run_id, task.step_slug, task.task_index, output)
+          PgFlow.Queries.Flows.complete_task(repo, task.run_id, task.step_slug, task.task_index, output)
 
         {:error, error_message} ->
           # Task failed, persist error
-          PgFlow.Queries.fail_task(repo, task.run_id, task.step_slug, task.task_index, error_message)
+          PgFlow.Queries.Flows.fail_task(repo, task.run_id, task.step_slug, task.task_index, error_message)
       end
   """
 
