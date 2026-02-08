@@ -5,20 +5,36 @@ defmodule PgFlow.Telemetry do
   PgFlow uses `:telemetry` to emit events at key points in the workflow lifecycle.
   These events can be used for monitoring, logging, and metrics collection.
 
-  ## Event Naming Convention
+  ## Events
 
-  All events are prefixed with `[:pgflow, ...]` and follow this pattern:
-  - `[:pgflow, :worker, :start | :stop]` - Worker lifecycle
-  - `[:pgflow, :poll, :start | :stop]` - Polling cycles
-  - `[:pgflow, :task, :start | :stop | :exception]` - Task execution
-  - `[:pgflow, :run, :started | :completed | :failed]` - Run lifecycle
+  ### Worker Lifecycle
+
+  - `[:pgflow, :worker, :start]` — Worker process started
+  - `[:pgflow, :worker, :stop]` — Worker process stopped
+
+  ### Poll Cycles
+
+  - `[:pgflow, :worker, :poll, :start]` — Poll cycle started
+  - `[:pgflow, :worker, :poll, :stop]` — Poll cycle completed
+
+  ### Task Execution
+
+  - `[:pgflow, :worker, :task, :start]` — Task execution started
+  - `[:pgflow, :worker, :task, :stop]` — Task execution completed successfully
+  - `[:pgflow, :worker, :task, :exception]` — Task execution failed
+
+  ### Run Lifecycle
+
+  - `[:pgflow, :run, :started]` — Flow run created (emitted by `PgFlow.Client`)
+  - `[:pgflow, :run, :completed]` — Flow run completed (emitted by worker after task cascades)
+  - `[:pgflow, :run, :failed]` — Flow run failed (emitted by worker after task cascades)
 
   ## Attaching Handlers
 
       :telemetry.attach_many(
         "my-handler",
         [
-          [:pgflow, :task, :stop],
+          [:pgflow, :worker, :task, :stop],
           [:pgflow, :run, :completed],
           [:pgflow, :run, :failed]
         ],
@@ -36,6 +52,8 @@ defmodule PgFlow.Telemetry do
   logging for specific use cases like metrics collection or external log aggregation.
   """
 
+  require Logger
+
   alias PgFlow.Logger, as: PgLogger
 
   @doc """
@@ -49,11 +67,11 @@ defmodule PgFlow.Telemetry do
     events = [
       [:pgflow, :worker, :start],
       [:pgflow, :worker, :stop],
-      [:pgflow, :poll, :start],
-      [:pgflow, :poll, :stop],
-      [:pgflow, :task, :start],
-      [:pgflow, :task, :stop],
-      [:pgflow, :task, :exception],
+      [:pgflow, :worker, :poll, :start],
+      [:pgflow, :worker, :poll, :stop],
+      [:pgflow, :worker, :task, :start],
+      [:pgflow, :worker, :task, :stop],
+      [:pgflow, :worker, :task, :exception],
       [:pgflow, :run, :started],
       [:pgflow, :run, :completed],
       [:pgflow, :run, :failed]
@@ -78,12 +96,10 @@ defmodule PgFlow.Telemetry do
   @doc false
   # Worker lifecycle events - minimal logging since Worker.Server handles startup banner
   def handle_event([:pgflow, :worker, :start], _measurements, metadata, _config) do
-    require Logger
     Logger.debug("[Telemetry] Worker started for flow #{metadata.flow_slug}")
   end
 
   def handle_event([:pgflow, :worker, :stop], measurements, metadata, _config) do
-    require Logger
     duration_ms = System.convert_time_unit(measurements[:duration] || 0, :native, :millisecond)
 
     Logger.debug(
@@ -91,30 +107,25 @@ defmodule PgFlow.Telemetry do
     )
   end
 
-  # Poll events - minimal logging since Worker.Server handles structured polling logs
-  def handle_event([:pgflow, :poll, :start], _measurements, _metadata, _config) do
-    # No-op: Worker.Server handles polling logs via PgFlow.Logger
+  # Poll events - no-op since Worker.Server handles structured polling logs
+  def handle_event([:pgflow, :worker, :poll, :start], _measurements, _metadata, _config) do
     :ok
   end
 
-  def handle_event([:pgflow, :poll, :stop], _measurements, _metadata, _config) do
-    # No-op: Worker.Server handles polling logs via PgFlow.Logger
+  def handle_event([:pgflow, :worker, :poll, :stop], _measurements, _metadata, _config) do
     :ok
   end
 
   # Task events - no-op since Worker.Server handles structured task logging
-  def handle_event([:pgflow, :task, :start], _measurements, _metadata, _config) do
-    # No-op: Worker.Server handles task_started via PgFlow.Logger
+  def handle_event([:pgflow, :worker, :task, :start], _measurements, _metadata, _config) do
     :ok
   end
 
-  def handle_event([:pgflow, :task, :stop], _measurements, _metadata, _config) do
-    # No-op: Worker.Server handles task_completed via PgFlow.Logger
+  def handle_event([:pgflow, :worker, :task, :stop], _measurements, _metadata, _config) do
     :ok
   end
 
-  def handle_event([:pgflow, :task, :exception], _measurements, _metadata, _config) do
-    # No-op: Worker.Server handles task_failed via PgFlow.Logger
+  def handle_event([:pgflow, :worker, :task, :exception], _measurements, _metadata, _config) do
     :ok
   end
 
@@ -137,134 +148,5 @@ defmodule PgFlow.Telemetry do
   # Catch-all for any unhandled events
   def handle_event(_event, _measurements, _metadata, _config) do
     :ok
-  end
-
-  # Helper functions for emitting events
-
-  @doc """
-  Emits a worker start event.
-  """
-  @spec emit_worker_start(atom(), term()) :: :ok
-  def emit_worker_start(flow_slug, worker_id) do
-    :telemetry.execute(
-      [:pgflow, :worker, :start],
-      %{system_time: System.system_time()},
-      %{flow_slug: flow_slug, worker_id: worker_id}
-    )
-  end
-
-  @doc """
-  Emits a worker stop event.
-  """
-  @spec emit_worker_stop(atom(), term(), integer()) :: :ok
-  def emit_worker_stop(flow_slug, worker_id, start_time) do
-    :telemetry.execute(
-      [:pgflow, :worker, :stop],
-      %{duration: System.monotonic_time() - start_time},
-      %{flow_slug: flow_slug, worker_id: worker_id}
-    )
-  end
-
-  @doc """
-  Emits a poll start event.
-  """
-  @spec emit_poll_start(atom(), term()) :: :ok
-  def emit_poll_start(flow_slug, worker_id) do
-    :telemetry.execute(
-      [:pgflow, :poll, :start],
-      %{system_time: System.system_time()},
-      %{flow_slug: flow_slug, worker_id: worker_id}
-    )
-  end
-
-  @doc """
-  Emits a poll stop event.
-  """
-  @spec emit_poll_stop(atom(), term(), integer(), non_neg_integer()) :: :ok
-  def emit_poll_stop(flow_slug, worker_id, start_time, task_count) do
-    :telemetry.execute(
-      [:pgflow, :poll, :stop],
-      %{duration: System.monotonic_time() - start_time, task_count: task_count},
-      %{flow_slug: flow_slug, worker_id: worker_id}
-    )
-  end
-
-  @doc """
-  Emits a task start event.
-  """
-  @spec emit_task_start(atom(), String.t(), atom(), non_neg_integer()) :: :ok
-  def emit_task_start(flow_slug, run_id, step_slug, task_index) do
-    :telemetry.execute(
-      [:pgflow, :task, :start],
-      %{system_time: System.system_time()},
-      %{flow_slug: flow_slug, run_id: run_id, step_slug: step_slug, task_index: task_index}
-    )
-  end
-
-  @doc """
-  Emits a task stop event.
-  """
-  @spec emit_task_stop(atom(), String.t(), atom(), non_neg_integer(), integer()) :: :ok
-  def emit_task_stop(flow_slug, run_id, step_slug, task_index, start_time) do
-    :telemetry.execute(
-      [:pgflow, :task, :stop],
-      %{duration: System.monotonic_time() - start_time},
-      %{flow_slug: flow_slug, run_id: run_id, step_slug: step_slug, task_index: task_index}
-    )
-  end
-
-  @doc """
-  Emits a task exception event.
-  """
-  @spec emit_task_exception(atom(), String.t(), atom(), non_neg_integer(), integer(), term()) ::
-          :ok
-  def emit_task_exception(flow_slug, run_id, step_slug, task_index, start_time, error) do
-    :telemetry.execute(
-      [:pgflow, :task, :exception],
-      %{duration: System.monotonic_time() - start_time},
-      %{
-        flow_slug: flow_slug,
-        run_id: run_id,
-        step_slug: step_slug,
-        task_index: task_index,
-        error: error
-      }
-    )
-  end
-
-  @doc """
-  Emits a run started event.
-  """
-  @spec emit_run_started(atom(), String.t()) :: :ok
-  def emit_run_started(flow_slug, run_id) do
-    :telemetry.execute(
-      [:pgflow, :run, :started],
-      %{system_time: System.system_time()},
-      %{flow_slug: flow_slug, run_id: run_id}
-    )
-  end
-
-  @doc """
-  Emits a run completed event.
-  """
-  @spec emit_run_completed(atom(), String.t(), integer()) :: :ok
-  def emit_run_completed(flow_slug, run_id, start_time) do
-    :telemetry.execute(
-      [:pgflow, :run, :completed],
-      %{duration: System.monotonic_time() - start_time},
-      %{flow_slug: flow_slug, run_id: run_id}
-    )
-  end
-
-  @doc """
-  Emits a run failed event.
-  """
-  @spec emit_run_failed(atom(), String.t(), integer(), term()) :: :ok
-  def emit_run_failed(flow_slug, run_id, start_time, error) do
-    :telemetry.execute(
-      [:pgflow, :run, :failed],
-      %{duration: System.monotonic_time() - start_time},
-      %{flow_slug: flow_slug, run_id: run_id, error: error}
-    )
   end
 end

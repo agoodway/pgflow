@@ -56,6 +56,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
     {:noreply, socket}
   end
 
+  @impl true
   def handle_params(_params, _uri, socket), do: {:noreply, socket}
 
   @impl true
@@ -72,11 +73,13 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
     end
   end
 
-  def handle_info({:task_started, %{step_slug: _}}, socket) do
+  @impl true
+  def handle_info({:pgflow, _run_id, {:task_started, _}}, socket) do
     {:noreply, load_step_states(socket)}
   end
 
-  def handle_info({:task_completed, _}, socket) do
+  @impl true
+  def handle_info({:pgflow, _run_id, {:task_completed, _}}, socket) do
     socket =
       socket
       |> load_run()
@@ -85,7 +88,8 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
     {:noreply, socket}
   end
 
-  def handle_info({:task_failed, _}, socket) do
+  @impl true
+  def handle_info({:pgflow, _run_id, {:task_failed, _}}, socket) do
     socket =
       socket
       |> load_run()
@@ -94,7 +98,8 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
     {:noreply, socket}
   end
 
-  def handle_info({:run_completed, _}, socket) do
+  @impl true
+  def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket) do
     socket =
       socket
       |> load_run()
@@ -103,7 +108,8 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
     {:noreply, socket}
   end
 
-  def handle_info({:run_failed, _}, socket) do
+  @impl true
+  def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket) do
     socket =
       socket
       |> load_run()
@@ -112,6 +118,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
     {:noreply, socket}
   end
 
+  @impl true
   def handle_info(_, socket), do: {:noreply, socket}
 
   @impl true
@@ -134,6 +141,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
     {:noreply, socket}
   end
 
+  @impl true
   def handle_event("clear_selection", _, socket) do
     socket =
       socket
@@ -143,22 +151,27 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
     {:noreply, socket}
   end
 
+  @impl true
   def handle_event("next_step", _, socket) do
     {:noreply, navigate_step(socket, :next)}
   end
 
+  @impl true
   def handle_event("prev_step", _, socket) do
     {:noreply, navigate_step(socket, :prev)}
   end
 
+  @impl true
   def handle_event("handle_keydown", %{"key" => "j"}, socket) do
     {:noreply, navigate_step(socket, :next)}
   end
 
+  @impl true
   def handle_event("handle_keydown", %{"key" => "k"}, socket) do
     {:noreply, navigate_step(socket, :prev)}
   end
 
+  @impl true
   def handle_event("handle_keydown", %{"key" => "Escape"}, socket) do
     socket =
       socket
@@ -168,14 +181,17 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
     {:noreply, socket}
   end
 
+  @impl true
   def handle_event("handle_keydown", %{"key" => "]"}, socket) do
     {:noreply, navigate_to_adjacent_run(socket, :next)}
   end
 
+  @impl true
   def handle_event("handle_keydown", %{"key" => "["}, socket) do
     {:noreply, navigate_to_adjacent_run(socket, :prev)}
   end
 
+  @impl true
   def handle_event("handle_keydown", _, socket), do: {:noreply, socket}
 
   defp navigate_to_adjacent_run(socket, direction) do

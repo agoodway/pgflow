@@ -75,25 +75,6 @@ defmodule PgFlow.FlowRegistry do
   end
 
   @doc """
-  Gets a flow definition by module or slug, raising if not found.
-
-  ## Examples
-
-      flow_def = PgFlow.FlowRegistry.get!(MyApp.Flows.ProcessOrder)
-
-  """
-  @spec get!(module() | atom()) :: map()
-  def get!(flow_module_or_slug) do
-    case get(flow_module_or_slug) do
-      {:ok, flow_def} ->
-        flow_def
-
-      {:error, :not_found} ->
-        raise ArgumentError, "flow #{inspect(flow_module_or_slug)} not found in registry"
-    end
-  end
-
-  @doc """
   Lists all registered flows.
 
   Returns a list of flow definitions.

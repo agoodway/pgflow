@@ -21,7 +21,7 @@ defmodule PgFlow.Supervisor do
   use Supervisor
   require Logger
 
-  alias PgFlow.{Config, FlowRegistry, WorkerSupervisor}
+  alias PgFlow.{Config, FlowRegistry, Telemetry, WorkerSupervisor}
   alias PgFlow.Queries.Pgmq, as: PgmqQueries
   alias PgFlow.Signal
   alias PgFlow.Worker.StalledTaskRecovery
@@ -55,7 +55,10 @@ defmodule PgFlow.Supervisor do
     jobs = Keyword.get(config, :jobs, [])
     attach_logger = Keyword.get(config, :attach_default_logger, false)
 
-    if attach_logger, do: PgFlow.Telemetry.attach_default_logger()
+    pubsub = Keyword.get(config, :pubsub)
+
+    if attach_logger, do: Telemetry.attach_default_logger()
+    if pubsub, do: Telemetry.PubSub.attach(pubsub: pubsub)
 
     signal_strategy = Keyword.get(config, :signal_strategy, :polling)
     notify_throttle_ms = Keyword.get(config, :notify_throttle_ms, 250)

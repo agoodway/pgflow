@@ -166,45 +166,19 @@ defmodule PgFlow.Worker.LifecycleTest do
   end
 
   describe "state predicates" do
-    test "created?/1 is true only in :created" do
-      lifecycle = Lifecycle.new()
-      assert Lifecycle.created?(lifecycle)
-      refute Lifecycle.starting?(lifecycle)
-      refute Lifecycle.running?(lifecycle)
-      refute Lifecycle.stopping?(lifecycle)
-      refute Lifecycle.stopped?(lifecycle)
-    end
-
-    test "starting?/1 is true only in :starting" do
-      lifecycle = Lifecycle.transition!(Lifecycle.new(), :starting)
-      refute Lifecycle.created?(lifecycle)
-      assert Lifecycle.starting?(lifecycle)
-      refute Lifecycle.running?(lifecycle)
-    end
-
     test "running?/1 is true only in :running" do
       lifecycle =
         Lifecycle.new()
         |> Lifecycle.transition!(:starting)
         |> Lifecycle.transition!(:running)
 
-      refute Lifecycle.created?(lifecycle)
-      refute Lifecycle.starting?(lifecycle)
       assert Lifecycle.running?(lifecycle)
-      refute Lifecycle.stopping?(lifecycle)
       refute Lifecycle.stopped?(lifecycle)
     end
 
-    test "stopping?/1 is true only in :stopping" do
-      lifecycle =
-        Lifecycle.new()
-        |> Lifecycle.transition!(:starting)
-        |> Lifecycle.transition!(:running)
-        |> Lifecycle.transition!(:stopping)
-
-      refute Lifecycle.running?(lifecycle)
-      assert Lifecycle.stopping?(lifecycle)
-      refute Lifecycle.stopped?(lifecycle)
+    test "running?/1 is false in other states" do
+      refute Lifecycle.running?(Lifecycle.new())
+      refute Lifecycle.running?(Lifecycle.transition!(Lifecycle.new(), :starting))
     end
 
     test "stopped?/1 is true only in :stopped" do
@@ -215,8 +189,19 @@ defmodule PgFlow.Worker.LifecycleTest do
         |> Lifecycle.transition!(:stopping)
         |> Lifecycle.transition!(:stopped)
 
-      refute Lifecycle.stopping?(lifecycle)
       assert Lifecycle.stopped?(lifecycle)
+      refute Lifecycle.running?(lifecycle)
+    end
+
+    test "stopped?/1 is false in other states" do
+      refute Lifecycle.stopped?(Lifecycle.new())
+
+      running =
+        Lifecycle.new()
+        |> Lifecycle.transition!(:starting)
+        |> Lifecycle.transition!(:running)
+
+      refute Lifecycle.stopped?(running)
     end
   end
 
@@ -258,42 +243,6 @@ defmodule PgFlow.Worker.LifecycleTest do
         |> Lifecycle.transition!(:stopped)
 
       refute Lifecycle.can_accept_work?(stopped)
-    end
-  end
-
-  describe "terminal?/1" do
-    test "true only in :stopped" do
-      stopped =
-        Lifecycle.new()
-        |> Lifecycle.transition!(:starting)
-        |> Lifecycle.transition!(:running)
-        |> Lifecycle.transition!(:stopping)
-        |> Lifecycle.transition!(:stopped)
-
-      assert Lifecycle.terminal?(stopped)
-    end
-
-    test "false in :created" do
-      refute Lifecycle.terminal?(Lifecycle.new())
-    end
-
-    test "false in :running" do
-      running =
-        Lifecycle.new()
-        |> Lifecycle.transition!(:starting)
-        |> Lifecycle.transition!(:running)
-
-      refute Lifecycle.terminal?(running)
-    end
-
-    test "false in :stopping" do
-      stopping =
-        Lifecycle.new()
-        |> Lifecycle.transition!(:starting)
-        |> Lifecycle.transition!(:running)
-        |> Lifecycle.transition!(:stopping)
-
-      refute Lifecycle.terminal?(stopping)
     end
   end
 end

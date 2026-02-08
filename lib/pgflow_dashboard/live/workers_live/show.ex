@@ -44,10 +44,6 @@ defmodule PgFlowDashboard.Live.WorkersLive.Show do
     {:noreply, socket}
   end
 
-  def handle_info({:worker_heartbeat, _}, socket) do
-    {:noreply, load_worker(socket)}
-  end
-
   def handle_info(_, socket), do: {:noreply, socket}
 
   @impl true

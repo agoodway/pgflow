@@ -58,15 +58,6 @@ defmodule PgFlowDashboard.Live.WorkersLive do
     {:noreply, socket}
   end
 
-  def handle_info({:worker_heartbeat, _}, socket) do
-    socket =
-      socket
-      |> load_all_workers_summary()
-      |> refresh_workers()
-
-    {:noreply, socket}
-  end
-
   def handle_info(_, socket), do: {:noreply, socket}
 
   @impl true

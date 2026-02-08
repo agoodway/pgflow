@@ -48,8 +48,15 @@ defmodule PgFlow.Client do
   @spec start_flow(module() | atom() | String.t(), map()) :: {:ok, String.t()} | {:error, term()}
   def start_flow(flow_module_or_slug, input) when is_map(input) do
     with {:ok, repo} <- get_repo(),
-         {:ok, flow_slug} <- resolve_slug(flow_module_or_slug) do
-      Flows.start_flow(repo, flow_slug, input)
+         {:ok, flow_slug} <- resolve_slug(flow_module_or_slug),
+         {:ok, run_id} <- Flows.start_flow(repo, flow_slug, input) do
+      :telemetry.execute(
+        [:pgflow, :run, :started],
+        %{system_time: System.system_time()},
+        %{flow_slug: flow_slug, run_id: run_id}
+      )
+
+      {:ok, run_id}
     end
   end
 

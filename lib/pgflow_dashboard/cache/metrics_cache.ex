@@ -10,6 +10,7 @@ defmodule PgFlowDashboard.Cache.MetricsCache do
 
   @table_name :pgflow_dashboard_cache
   @default_ttl 5_000
+  @telemetry_handler_id "pgflow-dashboard-cache-invalidation"
 
   # Client API
 
@@ -51,13 +52,7 @@ defmodule PgFlowDashboard.Cache.MetricsCache do
     end
   end
 
-  @doc """
-  Gets a value from the cache.
-
-  Returns `{:ok, value}` if found and not expired, `:miss` otherwise.
-  """
-  @spec get(term()) :: {:ok, term()} | :miss
-  def get(key) do
+  defp get(key) do
     case :ets.lookup(@table_name, key) do
       [{^key, value, expires_at}] ->
         if System.monotonic_time(:millisecond) < expires_at do
@@ -75,11 +70,7 @@ defmodule PgFlowDashboard.Cache.MetricsCache do
     ArgumentError -> :miss
   end
 
-  @doc """
-  Puts a value in the cache with a TTL.
-  """
-  @spec put(term(), term(), pos_integer()) :: :ok
-  def put(key, value, ttl \\ @default_ttl) do
+  defp put(key, value, ttl) do
     expires_at = System.monotonic_time(:millisecond) + ttl
     :ets.insert(@table_name, {key, value, expires_at})
     :ok
@@ -87,11 +78,7 @@ defmodule PgFlowDashboard.Cache.MetricsCache do
     ArgumentError -> :ok
   end
 
-  @doc """
-  Invalidates a specific cache key.
-  """
-  @spec invalidate(term()) :: :ok
-  def invalidate(key) do
+  defp invalidate(key) do
     :ets.delete(@table_name, key)
     :ok
   rescue
@@ -117,22 +104,12 @@ defmodule PgFlowDashboard.Cache.MetricsCache do
     ArgumentError -> :ok
   end
 
-  @doc """
-  Clears all cached entries.
-  """
-  @spec clear() :: :ok
-  def clear do
-    :ets.delete_all_objects(@table_name)
-    :ok
-  rescue
-    ArgumentError -> :ok
-  end
-
   # Server callbacks
 
   @impl true
   def init(_opts) do
     table = :ets.new(@table_name, [:named_table, :public, :set, read_concurrency: true])
+    attach_telemetry()
     schedule_cleanup()
     {:ok, %{table: table}}
   end
@@ -159,6 +136,45 @@ defmodule PgFlowDashboard.Cache.MetricsCache do
     cleanup_expired()
     schedule_cleanup()
     {:noreply, state}
+  end
+
+  @impl true
+  def terminate(_reason, _state) do
+    :telemetry.detach(@telemetry_handler_id)
+    :ok
+  end
+
+  # Telemetry-based cache invalidation
+  # Listens directly to run lifecycle events and invalidates relevant cache entries.
+
+  defp attach_telemetry do
+    events = [
+      [:pgflow, :run, :started],
+      [:pgflow, :run, :completed],
+      [:pgflow, :run, :failed]
+    ]
+
+    :telemetry.attach_many(
+      @telemetry_handler_id,
+      events,
+      &__MODULE__.handle_telemetry_event/4,
+      nil
+    )
+  end
+
+  @doc false
+  def handle_telemetry_event([:pgflow, :run, :started], _measurements, _metadata, _config) do
+    invalidate(:overview_metrics)
+  end
+
+  def handle_telemetry_event([:pgflow, :run, :completed], _measurements, metadata, _config) do
+    invalidate(:overview_metrics)
+    invalidate({:flow_stats, metadata[:flow_slug]})
+  end
+
+  def handle_telemetry_event([:pgflow, :run, :failed], _measurements, metadata, _config) do
+    invalidate(:overview_metrics)
+    invalidate({:flow_stats, metadata[:flow_slug]})
   end
 
   # Private

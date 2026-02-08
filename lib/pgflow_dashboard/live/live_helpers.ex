@@ -40,7 +40,6 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
     if socket.assigns.enable_pubsub && connected?(socket) do
       pubsub = socket.assigns.pubsub
       Phoenix.PubSub.subscribe(pubsub, "pgflow:runs")
-      Phoenix.PubSub.subscribe(pubsub, "pgflow:workers")
       Phoenix.PubSub.subscribe(pubsub, "pgflow:tasks")
     end
 

@@ -112,9 +112,15 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
     {:noreply, socket}
   end
 
-  def handle_info({:run_started, _}, socket), do: {:noreply, load_runs(socket, reset: true)}
-  def handle_info({:run_completed, _}, socket), do: {:noreply, refresh_runs(socket)}
-  def handle_info({:run_failed, _}, socket), do: {:noreply, refresh_runs(socket)}
+  def handle_info({:pgflow, _run_id, {:run_started, _}}, socket),
+    do: {:noreply, load_runs(socket, reset: true)}
+
+  def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket),
+    do: {:noreply, refresh_runs(socket)}
+
+  def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket),
+    do: {:noreply, refresh_runs(socket)}
+
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_flows_and_jobs(socket) do

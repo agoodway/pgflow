@@ -158,46 +158,6 @@ defmodule PgFlow.Queries.Flows do
     end
   end
 
-  @doc deprecated: "Use read/4 instead"
-  @doc """
-  Reads messages from a queue with polling and visibility timeout.
-
-  Uses pgmq.read_with_poll to poll for available messages.
-
-  ## Options (required)
-
-    * `:max_poll_seconds` - Maximum seconds to poll
-    * `:poll_interval_ms` - Milliseconds between poll attempts
-  """
-  @spec read_with_poll(Ecto.Repo.t(), String.t(), pos_integer(), pos_integer(), keyword()) ::
-          {:ok, list(list())} | {:error, term()}
-  def read_with_poll(repo, queue_name, visibility_timeout, batch_size, opts \\ []) do
-    max_poll_seconds = Keyword.fetch!(opts, :max_poll_seconds)
-    poll_interval_ms = Keyword.fetch!(opts, :poll_interval_ms)
-
-    sql = """
-    SELECT msg_id, read_ct, enqueued_at, vt, message
-    FROM pgmq.read_with_poll(
-      queue_name => $1::text,
-      vt => $2::integer,
-      qty => $3::integer,
-      max_poll_seconds => $4::integer,
-      poll_interval_ms => $5::integer
-    )
-    """
-
-    case SQL.query(repo, sql, [
-           queue_name,
-           visibility_timeout,
-           batch_size,
-           max_poll_seconds,
-           poll_interval_ms
-         ]) do
-      {:ok, %{rows: rows}} -> {:ok, rows}
-      {:error, error} -> {:error, error}
-    end
-  end
-
   @doc """
   Starts multiple tasks by marking messages as in-progress.
 

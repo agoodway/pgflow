@@ -7,7 +7,6 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   alias PgFlow.Client
   alias PgflowDemoWeb.Components.{FlowDSL, CronDSL, PoweredBy}
-  alias PgflowDemoWeb.TelemetryBroadcaster
 
   # UI Constants
   @node_radius 10
@@ -98,7 +97,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
           {:ok, run_id} ->
             # Cleanup previous subscription before subscribing to new one
             socket = cleanup_subscription(socket)
-            Phoenix.PubSub.subscribe(PgflowDemo.PubSub, TelemetryBroadcaster.topic(run_id))
+            Phoenix.PubSub.subscribe(PgflowDemo.PubSub, "pgflow:run:#{run_id}")
 
             cancel_timer(socket.assigns.timer_ref)
 
@@ -291,8 +290,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   def handle_info(:tick, socket), do: {:noreply, socket}
 
+  # PgFlow PubSub events — new namespaced tuple format from Telemetry.PubSub bridge
+
   @impl true
-  def handle_info({:task_started, step_slug, task_index}, socket) do
+  def handle_info({:pgflow, _run_id, {:task_started, %{step_slug: step_slug, task_index: task_index}}}, socket) do
     case to_step_atom(step_slug) do
       nil ->
         {:noreply, socket}
@@ -319,7 +320,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   end
 
   @impl true
-  def handle_info({:task_completed, step_slug, _task_index, duration_ms, output}, socket) do
+  def handle_info({:pgflow, _run_id, {:task_completed, %{step_slug: step_slug, duration_ms: duration_ms, output: output}}}, socket) do
     case to_step_atom(step_slug) do
       nil ->
         {:noreply, socket}
@@ -347,15 +348,12 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             step_atom
           )
 
-        # Check if all steps are completed (detect run completion since pgflow doesn't emit run_completed)
-        socket = maybe_complete_run(socket, steps)
-
         {:noreply, socket}
     end
   end
 
   @impl true
-  def handle_info({:task_failed, step_slug, _task_index, error, duration_ms}, socket) do
+  def handle_info({:pgflow, _run_id, {:task_failed, %{step_slug: step_slug, error: error, duration_ms: duration_ms}}}, socket) do
     case to_step_atom(step_slug) do
       nil ->
         {:noreply, socket}
@@ -380,39 +378,41 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   end
 
   @impl true
-  def handle_info({:run_started, _flow_slug}, socket) do
+  def handle_info({:pgflow, _run_id, {:run_started, _payload}}, socket) do
     {:noreply, assign(socket, :run_status, :running)}
   end
 
   @impl true
-  def handle_info({:run_completed, duration_ms}, socket) do
+  def handle_info({:pgflow, _run_id, {:run_completed, _payload}}, socket) do
     cancel_timer(socket.assigns.timer_ref)
+    elapsed_ms = if socket.assigns.start_time, do: System.monotonic_time(:millisecond) - socket.assigns.start_time, else: 0
 
     socket =
       socket
       |> cleanup_subscription()
       |> assign(:run_status, :completed)
-      |> assign(:duration, duration_ms)
+      |> assign(:duration, elapsed_ms)
       |> assign(:active_edges, MapSet.new())
       |> assign(:timer_ref, nil)
-      |> add_log(:success, "Flow Complete", "Total: #{duration_ms}ms")
+      |> add_log(:success, "Flow Complete", "Total: #{elapsed_ms}ms")
 
     {:noreply, socket}
   end
 
   @impl true
-  def handle_info({:run_failed, error, duration_ms}, socket) do
+  def handle_info({:pgflow, _run_id, {:run_failed, %{error: error}}}, socket) do
     cancel_timer(socket.assigns.timer_ref)
+    elapsed_ms = if socket.assigns.start_time, do: System.monotonic_time(:millisecond) - socket.assigns.start_time, else: 0
 
     socket =
       socket
       |> cleanup_subscription()
       |> assign(:run_status, :failed)
-      |> assign(:duration, duration_ms)
-      |> assign(:error, "Flow failed: #{inspect(error)}")
+      |> assign(:duration, elapsed_ms)
+      |> assign(:error, "Flow failed: #{error}")
       |> assign(:active_edges, MapSet.new())
       |> assign(:timer_ref, nil)
-      |> add_log(:error, "Flow Failed", "#{inspect(error)}")
+      |> add_log(:error, "Flow Failed", error)
 
     {:noreply, socket}
   end
@@ -427,7 +427,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp cleanup_subscription(%{assigns: %{run_id: nil}} = socket), do: socket
 
   defp cleanup_subscription(%{assigns: %{run_id: run_id}} = socket) do
-    Phoenix.PubSub.unsubscribe(PgflowDemo.PubSub, TelemetryBroadcaster.topic(run_id))
+    Phoenix.PubSub.unsubscribe(PgflowDemo.PubSub, "pgflow:run:#{run_id}")
     socket
   end
 
@@ -468,28 +468,6 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   end
 
   defp fetch_step_output(_, _), do: nil
-
-  defp maybe_complete_run(%{assigns: %{run_status: :running}} = socket, steps) do
-    if all_steps_completed?(steps) do
-      elapsed_ms = System.monotonic_time(:millisecond) - socket.assigns.start_time
-      cancel_timer(socket.assigns.timer_ref)
-
-      socket
-      |> assign(:run_status, :completed)
-      |> assign(:duration, elapsed_ms)
-      |> assign(:active_edges, MapSet.new())
-      |> assign(:timer_ref, nil)
-      |> add_log(:success, "Flow Complete", "Total: #{elapsed_ms}ms")
-    else
-      socket
-    end
-  end
-
-  defp maybe_complete_run(socket, _steps), do: socket
-
-  defp all_steps_completed?(steps) do
-    Enum.all?(steps, fn {_slug, status} -> status == :completed end)
-  end
 
   # Validation helpers
 

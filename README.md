@@ -17,6 +17,7 @@ A native Elixir implementation of [pgflow](https://pgflow.dev) — a PostgreSQL-
 - [COMPARISON.md](docs/COMPARISON.md) — PgFlow vs Oban, Broadway, Temporal, Inngest, and others
 - [ELIXIR_VS_SUPABASE.md](docs/ELIXIR_VS_SUPABASE.md) — Elixir vs Deno/TypeScript (Supabase) implementation
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — OTP supervision tree, worker model, and internals
+- [LIVE_CLIENT.md](docs/LIVE_CLIENT.md) — LiveView integration for real-time flow/job tracking
 
 ## Prerequisites
 
@@ -216,9 +217,33 @@ The cron schedule SQL is generated automatically when you run `mix pgflow.gen.fl
 
 PgFlow includes an optional Phoenix LiveView dashboard for monitoring workflows, jobs, workers, and cron schedules in real-time.
 
-![PgFlow Dashboard](docs/images/dashboard-overview.png)
-
 See [DASHBOARD.md](docs/DASHBOARD.md) for installation instructions.
+
+## LiveView Integration
+
+`PgFlow.LiveClient` provides a LiveView-native client for tracking flow and job runs in real-time. It manages PubSub subscriptions and applies incremental updates to `%Run{}` structs in your socket assigns:
+
+```elixir
+defmodule MyAppWeb.OrderLive do
+  use MyAppWeb, :live_view
+  alias PgFlow.LiveClient
+
+  def mount(_params, _session, socket) do
+    {:ok, LiveClient.init(socket, pubsub: MyApp.PubSub)}
+  end
+
+  def handle_event("process", params, socket) do
+    {:ok, socket} = LiveClient.start_flow(socket, :process_order, params)
+    {:noreply, socket}
+  end
+
+  def handle_info({:pgflow, _, _} = msg, socket) do
+    {:noreply, LiveClient.handle_info(msg, socket)}
+  end
+end
+```
+
+Requires the `:pubsub` option in your PgFlow config. See [LIVE_CLIENT.md](docs/LIVE_CLIENT.md) for the full API, multiple run tracking, and struct reference.
 
 ## Demo App
 

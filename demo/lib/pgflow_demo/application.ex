@@ -7,21 +7,20 @@ defmodule PgflowDemo.Application do
 
   @impl true
   def start(_type, _args) do
-    # Attach telemetry broadcaster for real-time LiveView updates
-    PgflowDemoWeb.TelemetryBroadcaster.attach()
-
     children = [
       PgflowDemoWeb.Telemetry,
       PgflowDemo.Repo,
       {DNSCluster, query: Application.get_env(:pgflow_demo, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: PgflowDemo.PubSub},
       # PgFlow Supervisor - processes flows and jobs with our repo
+      # pubsub: enables the telemetry-to-PubSub bridge for real-time LiveView updates
       {PgFlow.Supervisor,
        repo: PgflowDemo.Repo,
        flows: [PgflowDemo.Flows.ArticleFlow],
        jobs: [PgflowDemo.Jobs.ArticleFlowCleanup],
        signal_strategy: :notify,
-       notify_throttle_ms: 50},
+       notify_throttle_ms: 50,
+       pubsub: PgflowDemo.PubSub},
       # PgFlowDashboard Supervisor - manages dashboard processes (MetricsCache)
       PgFlowDashboard,
       # Start to serve requests, typically the last entry
@@ -34,10 +33,8 @@ defmodule PgflowDemo.Application do
     Supervisor.start_link(children, opts)
   end
 
-  # Clean up telemetry handlers on application stop
   @impl true
   def stop(_state) do
-    PgflowDemoWeb.TelemetryBroadcaster.detach()
     :ok
   end
 

@@ -123,25 +123,10 @@ defmodule PgFlow.Worker.Lifecycle do
     end
   end
 
-  @doc "Returns true if in `:created` state."
-  @spec created?(t()) :: boolean()
-  def created?(%__MODULE__{state: :created}), do: true
-  def created?(_), do: false
-
-  @doc "Returns true if in `:starting` state."
-  @spec starting?(t()) :: boolean()
-  def starting?(%__MODULE__{state: :starting}), do: true
-  def starting?(_), do: false
-
   @doc "Returns true if in `:running` state."
   @spec running?(t()) :: boolean()
   def running?(%__MODULE__{state: :running}), do: true
   def running?(_), do: false
-
-  @doc "Returns true if in `:stopping` state."
-  @spec stopping?(t()) :: boolean()
-  def stopping?(%__MODULE__{state: :stopping}), do: true
-  def stopping?(_), do: false
 
   @doc "Returns true if in `:stopped` state."
   @spec stopped?(t()) :: boolean()
@@ -156,13 +141,4 @@ defmodule PgFlow.Worker.Lifecycle do
   @spec can_accept_work?(t()) :: boolean()
   def can_accept_work?(%__MODULE__{state: :running}), do: true
   def can_accept_work?(_), do: false
-
-  @doc """
-  Returns true if the worker is in a terminal state.
-
-  A worker is terminal when in the `:stopped` state.
-  """
-  @spec terminal?(t()) :: boolean()
-  def terminal?(%__MODULE__{state: :stopped}), do: true
-  def terminal?(_), do: false
 end

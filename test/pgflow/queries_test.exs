@@ -109,11 +109,7 @@ defmodule PgFlow.QueriesTest do
   end
 
   defp read_and_start_tasks(flow_slug, worker_id) do
-    {:ok, messages} =
-      Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
-        max_poll_seconds: 1,
-        poll_interval_ms: 100
-      )
+    {:ok, messages} = Flows.read(TestRepo, flow_slug, 30, 10)
 
     msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
     {:ok, task_details} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
@@ -204,18 +200,14 @@ defmodule PgFlow.QueriesTest do
     end
   end
 
-  # ── read_with_poll ─────────────────────────────────────────────────
+  # ── read ─────────────────────────────────────────────────────────
 
-  describe "read_with_poll/5" do
+  describe "read/4" do
     test "returns messages after starting a flow" do
       flow_slug = compile_flow(SimpleFlow)
       _run_id = start_flow_run(flow_slug, %{"value" => 42})
 
-      {:ok, messages} =
-        Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
-          max_poll_seconds: 1,
-          poll_interval_ms: 100
-        )
+      {:ok, messages} = Flows.read(TestRepo, flow_slug, 30, 10)
 
       assert messages != []
       [msg_id | _] = hd(messages)
@@ -226,11 +218,7 @@ defmodule PgFlow.QueriesTest do
       flow_slug = compile_flow(SimpleFlow)
       # Don't start a run — queue should be empty
 
-      {:ok, messages} =
-        Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
-          max_poll_seconds: 1,
-          poll_interval_ms: 100
-        )
+      {:ok, messages} = Flows.read(TestRepo, flow_slug, 30, 10)
 
       assert messages == []
     end
@@ -245,11 +233,7 @@ defmodule PgFlow.QueriesTest do
 
       worker_id = register_worker(flow_slug)
 
-      {:ok, messages} =
-        Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
-          max_poll_seconds: 1,
-          poll_interval_ms: 100
-        )
+      {:ok, messages} = Flows.read(TestRepo, flow_slug, 30, 10)
 
       msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
       {:ok, task_details} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
@@ -358,11 +342,7 @@ defmodule PgFlow.QueriesTest do
       flow_slug = compile_flow(SimpleFlow)
       _run_id = start_flow_run(flow_slug, %{"value" => 42})
 
-      {:ok, messages} =
-        Flows.read_with_poll(TestRepo, flow_slug, 30, 10,
-          max_poll_seconds: 1,
-          poll_interval_ms: 100
-        )
+      {:ok, messages} = Flows.read(TestRepo, flow_slug, 30, 10)
 
       [msg_id | _] = hd(messages)
       assert {:ok, true} = Flows.delete_message(TestRepo, flow_slug, msg_id)

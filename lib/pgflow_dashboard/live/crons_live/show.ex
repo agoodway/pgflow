@@ -49,12 +49,12 @@ defmodule PgFlowDashboard.Live.CronsLive.Show do
   end
 
   @impl true
-  def handle_info({:run_completed, _}, socket) do
+  def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket) do
     {:noreply, socket |> load_run_history() |> load_recent_runs()}
   end
 
   @impl true
-  def handle_info({:run_failed, _}, socket) do
+  def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket) do
     {:noreply, socket |> load_run_history() |> load_recent_runs()}
   end
 

@@ -9,7 +9,8 @@ defmodule PgFlow.FlowCase do
   use ExUnit.CaseTemplate
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias PgFlow.{FlowRegistry, Queries}
+  alias PgFlow.FlowRegistry
+  alias PgFlow.Queries.Flows
   alias PgFlow.Schema.{Run, StepState}
 
   using do
@@ -39,7 +40,7 @@ defmodule PgFlow.FlowCase do
   Starts a flow and returns the run_id.
   """
   def start_flow(flow_module, input) do
-    Queries.start_flow(PgFlow.TestRepo, flow_module.__pgflow_slug__(), input)
+    Flows.start_flow(PgFlow.TestRepo, flow_module.__pgflow_slug__(), input)
   end
 
   @doc """

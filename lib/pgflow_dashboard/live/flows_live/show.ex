@@ -44,14 +44,17 @@ defmodule PgFlowDashboard.Live.FlowsLive.Show do
     {:noreply, socket}
   end
 
-  def handle_info({:run_completed, _}, socket) do
+  @impl true
+  def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket) do
     {:noreply, load_run_history(socket)}
   end
 
-  def handle_info({:run_failed, _}, socket) do
+  @impl true
+  def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket) do
     {:noreply, load_run_history(socket)}
   end
 
+  @impl true
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_flow(socket) do

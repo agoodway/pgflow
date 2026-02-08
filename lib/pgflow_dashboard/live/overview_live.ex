@@ -38,11 +38,11 @@ defmodule PgFlowDashboard.Live.OverviewLive do
     {:noreply, socket}
   end
 
-  def handle_info({:run_started, _}, socket) do
+  def handle_info({:pgflow, _run_id, {:run_started, _}}, socket) do
     {:noreply, load_recent_runs(socket)}
   end
 
-  def handle_info({:run_completed, _}, socket) do
+  def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket) do
     socket =
       socket
       |> load_metrics()
@@ -51,17 +51,13 @@ defmodule PgFlowDashboard.Live.OverviewLive do
     {:noreply, socket}
   end
 
-  def handle_info({:run_failed, _}, socket) do
+  def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket) do
     socket =
       socket
       |> load_metrics()
       |> load_recent_runs()
 
     {:noreply, socket}
-  end
-
-  def handle_info({:worker_heartbeat, _}, socket) do
-    {:noreply, load_workers(socket)}
   end
 
   def handle_info(_, socket), do: {:noreply, socket}

@@ -53,21 +53,6 @@ defmodule PgFlow.FlowRegistryTest do
     end
   end
 
-  describe "get!/1" do
-    test "returns flow_def for registered module" do
-      :ok = FlowRegistry.register(SimpleFlow)
-
-      flow_def = FlowRegistry.get!(SimpleFlow)
-      assert flow_def.module == SimpleFlow
-    end
-
-    test "raises ArgumentError for unregistered module" do
-      assert_raise ArgumentError, ~r/not found in registry/, fn ->
-        FlowRegistry.get!(:nonexistent_flow)
-      end
-    end
-  end
-
   describe "list/0" do
     test "returns empty list when nothing registered" do
       assert FlowRegistry.list() == []

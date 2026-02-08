@@ -16,6 +16,9 @@ defmodule PgFlow.Schema.Run do
     field(:input, :map)
     field(:output, :map)
     field(:remaining_steps, :integer)
+    field(:started_at, :utc_datetime_usec)
+    field(:completed_at, :utc_datetime_usec)
+    field(:failed_at, :utc_datetime_usec)
 
     belongs_to(:flow, PgFlow.Schema.Flow,
       foreign_key: :flow_slug,
@@ -24,8 +27,6 @@ defmodule PgFlow.Schema.Run do
     )
 
     has_many(:step_states, PgFlow.Schema.StepState, foreign_key: :run_id, references: :run_id)
-
-    timestamps(type: :utc_datetime_usec)
   end
 
   @doc false

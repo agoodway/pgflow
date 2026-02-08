@@ -793,7 +793,7 @@ defmodule PgFlow.Worker.Server do
            output || %{}
          ) do
       {:ok, _} ->
-        :ok
+        maybe_emit_run_completed(state, task_meta.run_id)
 
       {:error, reason} ->
         Logger.error(
@@ -853,6 +853,7 @@ defmodule PgFlow.Worker.Server do
         # The fail_task function returns step_task record with attempts_count and max_attempts
         retry_info = extract_retry_info(result, state)
         PgLogger.task_failed(log_ctx, error_message, retry_info)
+        maybe_emit_run_failed(state, task_meta.run_id, error_message)
 
       {:error, fail_reason} ->
         Logger.error(
@@ -1015,6 +1016,36 @@ defmodule PgFlow.Worker.Server do
           "Timeout waiting for tasks to complete, #{map_size(state.active_tasks)} tasks still active"
         )
 
+        :ok
+    end
+  end
+
+  # Checks run status after task completion and emits run:completed telemetry if the run finished
+  defp maybe_emit_run_completed(state, run_id) do
+    case Flows.get_run(state.repo, run_id) do
+      {:ok, %{status: "completed", output: output}} ->
+        :telemetry.execute(
+          [:pgflow, :run, :completed],
+          %{system_time: System.system_time()},
+          %{flow_slug: state.flow_slug, run_id: run_id, output: output}
+        )
+
+      _ ->
+        :ok
+    end
+  end
+
+  # Checks run status after task failure and emits run:failed telemetry if the run failed
+  defp maybe_emit_run_failed(state, run_id, error) do
+    case Flows.get_run(state.repo, run_id) do
+      {:ok, %{status: "failed"}} ->
+        :telemetry.execute(
+          [:pgflow, :run, :failed],
+          %{system_time: System.system_time()},
+          %{flow_slug: state.flow_slug, run_id: run_id, error: error}
+        )
+
+      _ ->
         :ok
     end
   end

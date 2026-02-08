@@ -48,11 +48,11 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
     {:noreply, socket}
   end
 
-  def handle_info({:run_completed, _}, socket) do
+  def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket) do
     {:noreply, socket |> load_run_history() |> load_recent_runs()}
   end
 
-  def handle_info({:run_failed, _}, socket) do
+  def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket) do
     {:noreply, socket |> load_run_history() |> load_recent_runs()}
   end
 

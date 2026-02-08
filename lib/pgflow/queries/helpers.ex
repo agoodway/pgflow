@@ -80,19 +80,11 @@ defmodule PgFlow.Queries.Helpers do
   # Row Conversion
   # ===================
 
-  @doc """
-  Converts a list of database rows to a list of maps.
-  """
-  @spec rows_to_maps(list(), list(String.t())) :: list(map())
-  def rows_to_maps(rows, columns) do
+  defp rows_to_maps(rows, columns) do
     Enum.map(rows, &row_to_map(&1, columns))
   end
 
-  @doc """
-  Converts a single database row to a map.
-  """
-  @spec row_to_map(list(), list(String.t())) :: map()
-  def row_to_map(row, columns) do
+  defp row_to_map(row, columns) do
     columns
     |> Enum.zip(row)
     |> Map.new(fn {col, val} -> {String.to_atom(col), maybe_format_uuid(col, val)} end)

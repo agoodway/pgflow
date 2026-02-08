@@ -16,9 +16,14 @@ defmodule PgFlow.Schema.StepState do
     field(:step_slug, :string, primary_key: true)
     field(:status, :string)
     field(:remaining_tasks, :integer)
+    field(:remaining_deps, :integer)
     field(:output, :map)
     field(:error_message, :string)
-    field(:attempts_count, :integer)
+    field(:initial_tasks, :integer)
+    field(:created_at, :utc_datetime_usec)
+    field(:started_at, :utc_datetime_usec)
+    field(:completed_at, :utc_datetime_usec)
+    field(:failed_at, :utc_datetime_usec)
 
     belongs_to(:run, PgFlow.Schema.Run,
       foreign_key: :run_id,
@@ -47,13 +52,13 @@ defmodule PgFlow.Schema.StepState do
       :step_slug,
       :status,
       :remaining_tasks,
+      :remaining_deps,
       :output,
       :error_message,
-      :attempts_count
+      :initial_tasks
     ])
-    |> validate_required([:run_id, :step_slug, :status, :remaining_tasks, :attempts_count])
+    |> validate_required([:run_id, :step_slug, :status, :remaining_tasks])
     |> validate_number(:remaining_tasks, greater_than_or_equal_to: 0)
-    |> validate_number(:attempts_count, greater_than_or_equal_to: 0)
     |> foreign_key_constraint(:run_id)
     |> foreign_key_constraint(:step_slug)
   end

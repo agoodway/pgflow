@@ -20,6 +20,7 @@ defmodule PgFlow.Config do
     * `:recovery_interval` (optional) - Milliseconds between stalled task recovery sweeps. Default: `15_000`.
     * `:stale_threshold` (optional) - Seconds after which a started task is considered stalled. Default: `60`.
     * `:attach_default_logger` (optional) - Whether to attach the default telemetry logger. Default: `false`.
+    * `:pubsub` (optional) - Phoenix.PubSub module for broadcasting telemetry events to LiveViews. Default: `nil` (disabled).
 
   ## Interval Constraints
 
@@ -113,6 +114,12 @@ defmodule PgFlow.Config do
       default: false,
       doc:
         "Whether to attach the default telemetry logger (disabled by default since PgFlow.Logger handles structured logging)"
+    ],
+    pubsub: [
+      type: {:or, [:atom, nil]},
+      default: nil,
+      doc:
+        "Phoenix.PubSub module for broadcasting telemetry events. When set, attaches the telemetry-to-PubSub bridge."
     ]
   ]
 
