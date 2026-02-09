@@ -6,6 +6,8 @@ defmodule PgFlow.DSL.Validation do
   validate module attributes during compilation.
   """
 
+  alias Crontab.CronExpression.Parser, as: CronParser
+
   @doc false
   @spec compile_error!(Macro.Env.t(), String.t()) :: no_return()
   def compile_error!(env, description),
@@ -173,7 +175,7 @@ defmodule PgFlow.DSL.Validation do
   end
 
   defp validate_cron_schedule!(schedule, env) do
-    case Crontab.CronExpression.Parser.parse(schedule) do
+    case CronParser.parse(schedule) do
       {:ok, _} ->
         :ok
 

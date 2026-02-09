@@ -153,16 +153,12 @@ defmodule PgFlow.Flow.Definition do
       |> Enum.filter(fn step -> step.depends_on == [] end)
       |> Enum.map(fn step -> step.slug end)
 
-    case topological_sort(queue, step_map, in_degree, []) do
-      {:ok, sorted} ->
-        if length(sorted) == length(steps) do
-          :ok
-        else
-          {:error, "Circular dependency detected in flow :#{flow_slug}"}
-        end
+    {:ok, sorted} = topological_sort(queue, step_map, in_degree, [])
 
-      {:error, _} = error ->
-        error
+    if length(sorted) == length(steps) do
+      :ok
+    else
+      {:error, "Circular dependency detected in flow :#{flow_slug}"}
     end
   end
 

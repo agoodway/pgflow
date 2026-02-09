@@ -2,9 +2,9 @@ defmodule PgFlow.QueriesTest do
   use ExUnit.Case
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias PgFlow.TestRepo
   alias PgFlow.Queries.Flows
   alias PgFlow.Queries.Workers, as: WorkerQueries
+  alias PgFlow.TestRepo
 
   @moduletag timeout: 30_000
   @moduletag :integration

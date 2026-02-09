@@ -37,7 +37,7 @@ defmodule PgFlow.Queries.Helpers do
     * `:raw` - Returns `{:ok, list of maps}` or error
   """
   @spec execute_rpc(module(), String.t(), list(), keyword()) ::
-          {:ok, map()} | {:error, :not_found | term()} | list(map()) | integer()
+          {:ok, nil | map() | [map()]} | {:error, :not_found | term()} | [map()] | integer()
   def execute_rpc(repo, function_name, params, opts \\ []) do
     schema = Keyword.fetch!(opts, :schema)
     mode = Keyword.get(opts, :mode, :list)

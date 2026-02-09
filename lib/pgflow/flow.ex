@@ -144,6 +144,7 @@ defmodule PgFlow.Flow do
     end
   end
 
+  @doc false
   defmacro __using__(_opts) do
     quote do
       import PgFlow.Flow, only: [step: 2, step: 3, map: 2, map: 3]
@@ -158,6 +159,7 @@ defmodule PgFlow.Flow do
   alias PgFlow.DSL.Validation
   alias PgFlow.Flow.{Definition, Step}
 
+  @doc false
   defmacro __before_compile__(env) do
     flow_attrs = Module.get_attribute(env.module, :flow)
     steps = Module.get_attribute(env.module, :pgflow_steps) |> Enum.reverse()

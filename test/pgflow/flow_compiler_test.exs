@@ -305,7 +305,7 @@ defmodule PgFlow.FlowCompilerTest do
     end
 
     test "has_cron?/1 returns false for module without cron" do
-      refute FlowCompiler.has_cron?(PgFlow.TestFlows.SimpleFlow)
+      refute FlowCompiler.has_cron?(SimpleFlow)
     end
 
     test "compile/1 includes cron SQL for flow with cron option" do
@@ -333,7 +333,7 @@ defmodule PgFlow.FlowCompilerTest do
     end
 
     test "compile/1 does not include cron SQL for flow without cron option" do
-      definition = PgFlow.TestFlows.SimpleFlow.__pgflow_definition__()
+      definition = SimpleFlow.__pgflow_definition__()
       sql_statements = FlowCompiler.compile(definition)
 
       # No cron SQL should be present

@@ -24,6 +24,9 @@ defmodule PgFlow.Test.WaitHelpers do
 
   """
 
+  alias PgFlow.Queries
+  alias PgFlow.Worker
+
   @default_timeout 5_000
   @initial_poll_interval 10
   @max_poll_interval 100
@@ -105,7 +108,7 @@ defmodule PgFlow.Test.WaitHelpers do
   def wait_for_run_completion(repo, run_id, opts \\ []) do
     wait_until(
       fn ->
-        case PgFlow.Queries.Flows.get_run(repo, run_id) do
+        case Queries.Flows.get_run(repo, run_id) do
           {:ok, %{status: status}} -> status in ["completed", "failed"]
           _ -> false
         end
@@ -127,7 +130,7 @@ defmodule PgFlow.Test.WaitHelpers do
   def wait_for_task_count(worker_pid, expected_count, opts \\ []) do
     wait_until(
       fn ->
-        state = PgFlow.Worker.Server.get_state(worker_pid)
+        state = Worker.Server.get_state(worker_pid)
         map_size(state.active_tasks) == expected_count
       end,
       opts
@@ -147,7 +150,7 @@ defmodule PgFlow.Test.WaitHelpers do
   def wait_for_lifecycle_state(worker_pid, expected_state, opts \\ []) do
     wait_until(
       fn ->
-        state = PgFlow.Worker.Server.get_state(worker_pid)
+        state = Worker.Server.get_state(worker_pid)
         state.lifecycle.state == expected_state
       end,
       opts
@@ -166,8 +169,10 @@ defmodule PgFlow.Test.WaitHelpers do
 
   """
   defmacro wait_for_message(pattern, opts \\ []) do
+    wait_helpers = __MODULE__
+
     quote do
-      PgFlow.Test.WaitHelpers.wait_until(
+      unquote(wait_helpers).wait_until(
         fn ->
           {:messages, messages} = Process.info(self(), :messages)
 

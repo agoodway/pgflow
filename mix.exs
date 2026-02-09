@@ -18,6 +18,9 @@ defmodule PgFlow.MixProject do
       description: "Elixir implementation of pgflow workflow engine",
       package: package(),
 
+      # Dialyzer
+      dialyzer: [plt_add_apps: [:mix, :inets]],
+
       # Docs
       name: "PgFlow",
       source_url: @source_url,

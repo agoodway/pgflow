@@ -670,6 +670,22 @@ defmodule PgFlow.Worker.Server do
     step_slug_atom = String.to_atom(step_slug)
     step_def = get_step_definition(state.flow_module, step_slug_atom)
 
+    unless step_def do
+      defined_steps =
+        state.flow_module.__pgflow_definition__().steps
+        |> Enum.map(& &1.slug)
+
+      raise """
+      Step #{inspect(step_slug_atom)} not found in #{inspect(state.flow_module)} definition.
+
+      Steps defined in module: #{inspect(defined_steps)}
+      Step slug (queue) from database: #{inspect(step_slug)}
+
+      This usually means the database schema is out of sync with your Elixir code.
+      Re-run the migration to sync: mix ecto.migrate
+      """
+    end
+
     # Parse inputs - Postgrex returns JSONB as maps/lists/primitives
     input_data = decode_json_if_needed(input)
     flow_input_data = decode_json_if_needed(flow_input)
@@ -764,10 +780,7 @@ defmodule PgFlow.Worker.Server do
     step_def = get_step_definition(state.flow_module, step_slug_atom)
     flow_timeout = Keyword.get(state.flow_def.opts, :timeout, 60)
 
-    cond do
-      step_def && step_def.timeout -> step_def.timeout
-      true -> flow_timeout
-    end
+    if step_def && step_def.timeout, do: step_def.timeout, else: flow_timeout
   end
 
   # Cancels a task's timeout timer if it exists and flushes any already-sent message

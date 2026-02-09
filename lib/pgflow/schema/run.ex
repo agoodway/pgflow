@@ -7,6 +7,8 @@ defmodule PgFlow.Schema.Run do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @type t :: %__MODULE__{}
+
   @schema_prefix "pgflow"
   @primary_key {:run_id, :binary_id, autogenerate: false}
 

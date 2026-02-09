@@ -1,9 +1,9 @@
 defmodule PgFlow.Worker.ExecutorTest do
   use ExUnit.Case, async: true
 
-  alias PgFlow.Worker.Executor
-  alias PgFlow.TestFlows.SimpleFlow
   alias PgFlow.TestFlows.FailingFlow
+  alias PgFlow.TestFlows.SimpleFlow
+  alias PgFlow.Worker.Executor
 
   defp build_task(overrides \\ %{}) do
     Map.merge(

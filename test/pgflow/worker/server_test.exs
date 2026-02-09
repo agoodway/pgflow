@@ -20,6 +20,7 @@ defmodule PgFlow.Worker.ServerTest do
   use ExUnit.Case
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias PgFlow.Queries.Flows, as: FlowQueries
   alias PgFlow.TestRepo
   alias PgFlow.Worker.Server
 
@@ -1258,7 +1259,7 @@ defmodule PgFlow.Worker.ServerTest do
       )
 
       # Run stalled task recovery
-      {:ok, count} = PgFlow.Queries.Flows.recover_stalled_tasks(TestRepo, 60)
+      {:ok, count} = FlowQueries.recover_stalled_tasks(TestRepo, 60)
       assert count >= 1
 
       # Start a new worker to pick up the recovered task

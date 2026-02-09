@@ -3,6 +3,7 @@ defmodule PgFlow.EnqueueTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.TestRepo
+  alias PgFlow.Worker.Server
 
   @moduletag timeout: 30_000
   @moduletag :integration
@@ -116,7 +117,7 @@ defmodule PgFlow.EnqueueTest do
       {:ok, run_id} = PgFlow.enqueue(EnqueueTestJob, %{"value" => 42})
 
       {:ok, worker_pid} =
-        PgFlow.Worker.Server.start_link(%{
+        Server.start_link(%{
           flow_module: EnqueueTestJob,
           repo: TestRepo,
           task_supervisor: task_sup,
@@ -149,7 +150,7 @@ defmodule PgFlow.EnqueueTest do
           end
         end)
 
-      PgFlow.Worker.Server.stop(worker_pid)
+      Server.stop(worker_pid)
       Supervisor.stop(task_sup)
 
       assert result == :completed

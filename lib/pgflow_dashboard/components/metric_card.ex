@@ -115,6 +115,7 @@ end
 defmodule Number.Delimit do
   @moduledoc false
 
+  @doc false
   def number_to_delimited(number, opts \\ []) do
     precision = Keyword.get(opts, :precision, 2)
     delimiter = Keyword.get(opts, :delimiter, ",")

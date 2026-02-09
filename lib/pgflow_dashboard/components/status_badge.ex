@@ -58,7 +58,6 @@ defmodule PgFlowDashboard.Components.StatusBadge do
   defp status_text(:started), do: "Running"
   defp status_text(:created), do: "Pending"
   defp status_text(status) when is_atom(status), do: status |> to_string() |> String.capitalize()
-  defp status_text(_), do: "Unknown"
 
   # WCAG AA compliant colors
   defp status_classes(:completed) do

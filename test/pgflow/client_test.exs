@@ -2,8 +2,8 @@ defmodule PgFlow.ClientTest do
   use ExUnit.Case
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias PgFlow.TestRepo
   alias PgFlow.Client
+  alias PgFlow.TestRepo
 
   @moduletag timeout: 30_000
   @moduletag :integration

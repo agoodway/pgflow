@@ -10,9 +10,9 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
   use ExUnit.Case
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias PgFlow.TestRepo
   alias PgFlow.Queries.Flows
   alias PgFlow.Queries.Workers, as: WorkerQueries
+  alias PgFlow.TestRepo
   alias PgFlow.Worker.StalledTaskRecovery
 
   @moduletag timeout: 30_000

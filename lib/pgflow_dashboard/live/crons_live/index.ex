@@ -104,27 +104,31 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
     if new_view_mode != socket.assigns.view_mode do
       load_crons(socket)
     else
-      case socket.assigns.view_mode do
-        :card ->
-          crons = Crons.list_crons(socket.assigns.repo)
+      update_crons(socket, total_count)
+    end
+  end
 
-          socket
-          |> assign(:total_count, total_count)
-          |> assign(:crons, crons)
+  defp update_crons(socket, total_count) do
+    case socket.assigns.view_mode do
+      :card ->
+        crons = Crons.list_crons(socket.assigns.repo)
 
-        :list ->
-          current_count = max(socket.assigns.crons_count, @page_size)
-          crons = Crons.list_crons(socket.assigns.repo, limit: current_count + 1)
-          {crons, has_more} = LiveHelpers.paginate_results(crons, current_count)
-          cursor = if crons != [], do: List.last(crons).flow_slug, else: nil
+        socket
+        |> assign(:total_count, total_count)
+        |> assign(:crons, crons)
 
-          socket
-          |> assign(:total_count, total_count)
-          |> assign(:crons_count, length(crons))
-          |> assign(:cursor, cursor)
-          |> assign(:has_more, has_more)
-          |> stream(:crons, crons, reset: true)
-      end
+      :list ->
+        current_count = max(socket.assigns.crons_count, @page_size)
+        crons = Crons.list_crons(socket.assigns.repo, limit: current_count + 1)
+        {crons, has_more} = LiveHelpers.paginate_results(crons, current_count)
+        cursor = if crons != [], do: List.last(crons).flow_slug, else: nil
+
+        socket
+        |> assign(:total_count, total_count)
+        |> assign(:crons_count, length(crons))
+        |> assign(:cursor, cursor)
+        |> assign(:has_more, has_more)
+        |> stream(:crons, crons, reset: true)
     end
   end
 

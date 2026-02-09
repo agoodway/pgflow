@@ -2,8 +2,8 @@ defmodule PgFlow.FlowRegistryTest do
   use ExUnit.Case
 
   alias PgFlow.FlowRegistry
-  alias PgFlow.TestFlows.SimpleFlow
   alias PgFlow.TestFlows.LinearFlow
+  alias PgFlow.TestFlows.SimpleFlow
 
   setup do
     # Clear the ETS table between tests (registry is started by the application)

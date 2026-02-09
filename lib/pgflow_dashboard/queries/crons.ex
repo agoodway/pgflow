@@ -92,9 +92,8 @@ defmodule PgFlowDashboard.Queries.Crons do
   defp humanize_schedule(nil), do: nil
 
   defp humanize_schedule(expression) do
-    with {:ok, cron_expr} <- CronParser.parse(expression) do
-      format_human_schedule(cron_expr)
-    else
+    case CronParser.parse(expression) do
+      {:ok, cron_expr} -> format_human_schedule(cron_expr)
       _ -> nil
     end
   end

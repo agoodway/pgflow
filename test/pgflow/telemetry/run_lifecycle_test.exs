@@ -11,8 +11,8 @@ defmodule PgFlow.Telemetry.RunLifecycleTest do
   use ExUnit.Case
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias PgFlow.TestRepo
   alias PgFlow.Client
+  alias PgFlow.TestRepo
   alias PgFlow.Worker.Server
 
   @moduletag timeout: 30_000

@@ -14,8 +14,8 @@ defmodule PgFlow.Signal.NotifyTest do
   use ExUnit.Case
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias PgFlow.TestRepo
   alias PgFlow.Signal.Notify
+  alias PgFlow.TestRepo
 
   @moduletag timeout: 30_000
   @moduletag :integration
@@ -55,10 +55,7 @@ defmodule PgFlow.Signal.NotifyTest do
   describe "init/1" do
     @tag :pgmq_notify
     test "starts successfully with valid repo when pgmq >= 1.8.0" do
-      if not pgmq_notify_available?() do
-        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
-        :ok
-      else
+      if pgmq_notify_available?() do
         {:ok, pid} = Notify.start_link(repo: TestRepo, notify_throttle_ms: 250)
 
         assert Process.alive?(pid)
@@ -75,6 +72,9 @@ defmodule PgFlow.Signal.NotifyTest do
         assert is_pid(state.conn)
 
         GenServer.stop(pid)
+      else
+        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
+        :ok
       end
     end
 
@@ -97,10 +97,7 @@ defmodule PgFlow.Signal.NotifyTest do
   describe "notification dispatch" do
     @tag :pgmq_notify
     test "dispatches :poll_now to registered worker on notification" do
-      if not pgmq_notify_available?() do
-        IO.puts("Skipping: pgmq >= 1.8.0 with enable_notify_insert required")
-        :ok
-      else
+      if pgmq_notify_available?() do
         # Create a queue for testing
         TestRepo.query!("SELECT pgmq.create($1::text)", ["notify_test_flow"])
 
@@ -125,6 +122,9 @@ defmodule PgFlow.Signal.NotifyTest do
         assert_receive :poll_now, 5_000
 
         GenServer.stop(pid)
+      else
+        IO.puts("Skipping: pgmq >= 1.8.0 with enable_notify_insert required")
+        :ok
       end
     end
   end
@@ -132,10 +132,7 @@ defmodule PgFlow.Signal.NotifyTest do
   describe "worker lifecycle" do
     @tag :pgmq_notify
     test "cleans up when registered worker process dies" do
-      if not pgmq_notify_available?() do
-        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
-        :ok
-      else
+      if pgmq_notify_available?() do
         # Create a queue for testing
         TestRepo.query!("SELECT pgmq.create($1::text)", ["cleanup_test_flow"])
 
@@ -173,15 +170,15 @@ defmodule PgFlow.Signal.NotifyTest do
         assert state.channels == %{}
 
         GenServer.stop(pid)
+      else
+        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
+        :ok
       end
     end
 
     @tag :pgmq_notify
     test "register_worker returns :ok and sets up proper state" do
-      if not pgmq_notify_available?() do
-        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
-        :ok
-      else
+      if pgmq_notify_available?() do
         # Create a queue for testing
         TestRepo.query!("SELECT pgmq.create($1::text)", ["register_test_flow"])
 
@@ -200,6 +197,9 @@ defmodule PgFlow.Signal.NotifyTest do
         assert Map.has_key?(state.channels, "pgmq.q_register_test_flow.INSERT")
 
         GenServer.stop(pid)
+      else
+        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
+        :ok
       end
     end
   end
@@ -207,10 +207,7 @@ defmodule PgFlow.Signal.NotifyTest do
   describe "reconnection handling" do
     @tag :pgmq_notify
     test "has active connection after startup" do
-      if not pgmq_notify_available?() do
-        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
-        :ok
-      else
+      if pgmq_notify_available?() do
         {:ok, pid} = Notify.start_link(repo: TestRepo, notify_throttle_ms: 250)
 
         Process.sleep(100)
@@ -220,15 +217,15 @@ defmodule PgFlow.Signal.NotifyTest do
         assert Process.alive?(state.conn)
 
         GenServer.stop(pid)
+      else
+        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
+        :ok
       end
     end
 
     @tag :pgmq_notify
     test "maintains channel subscriptions" do
-      if not pgmq_notify_available?() do
-        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
-        :ok
-      else
+      if pgmq_notify_available?() do
         # Create queues for testing
         TestRepo.query!("SELECT pgmq.create($1::text)", ["reconnect_test_1"])
         TestRepo.query!("SELECT pgmq.create($1::text)", ["reconnect_test_2"])
@@ -248,15 +245,15 @@ defmodule PgFlow.Signal.NotifyTest do
         assert Map.has_key?(state.channels, "pgmq.q_reconnect_test_2.INSERT")
 
         GenServer.stop(pid)
+      else
+        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
+        :ok
       end
     end
 
     @tag :pgmq_notify
     test "stores worker pids for poll_now dispatch" do
-      if not pgmq_notify_available?() do
-        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
-        :ok
-      else
+      if pgmq_notify_available?() do
         TestRepo.query!("SELECT pgmq.create($1::text)", ["reconnect_poll_test"])
 
         {:ok, pid} = Notify.start_link(repo: TestRepo, notify_throttle_ms: 250)
@@ -271,15 +268,15 @@ defmodule PgFlow.Signal.NotifyTest do
         assert state.workers["reconnect_poll_test"].worker_pid == self()
 
         GenServer.stop(pid)
+      else
+        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
+        :ok
       end
     end
 
     @tag :pgmq_notify
     test "registers worker with eventually response when connection pending" do
-      if not pgmq_notify_available?() do
-        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
-        :ok
-      else
+      if pgmq_notify_available?() do
         TestRepo.query!("SELECT pgmq.create($1::text)", ["delayed_connect_test"])
 
         {:ok, pid} =
@@ -296,6 +293,9 @@ defmodule PgFlow.Signal.NotifyTest do
         assert Map.has_key?(state.workers, "delayed_connect_test")
 
         GenServer.stop(pid)
+      else
+        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
+        :ok
       end
     end
   end
@@ -303,10 +303,7 @@ defmodule PgFlow.Signal.NotifyTest do
   describe "notification callback" do
     @tag :pgmq_notify
     test "ignores notifications for unregistered channels" do
-      if not pgmq_notify_available?() do
-        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
-        :ok
-      else
+      if pgmq_notify_available?() do
         {:ok, pid} = Notify.start_link(repo: TestRepo, notify_throttle_ms: 250)
 
         Process.sleep(100)
@@ -315,6 +312,9 @@ defmodule PgFlow.Signal.NotifyTest do
         refute_receive :poll_now, 200
 
         GenServer.stop(pid)
+      else
+        IO.puts("Skipping: pgmq >= 1.8.0 required (found: #{pgmq_version()})")
+        :ok
       end
     end
   end

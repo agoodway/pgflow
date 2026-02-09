@@ -89,6 +89,7 @@ defmodule PgFlow.Job do
     end
   end
 
+  @doc false
   defmacro __using__(_opts) do
     quote do
       import PgFlow.Job, only: [perform: 1, perform: 2]
@@ -105,6 +106,7 @@ defmodule PgFlow.Job do
 
   @valid_keys [:queue, :slug, :max_attempts, :base_delay, :timeout, :cron]
 
+  @doc false
   defmacro __before_compile__(env) do
     job_attrs_list = Module.get_attribute(env.module, :job)
     steps = Module.get_attribute(env.module, :pgflow_steps) |> Enum.reverse()
