@@ -76,6 +76,7 @@ defmodule PgFlow.Worker.Server do
   use GenServer
   require Logger
 
+  alias PgFlow.Context
   alias PgFlow.Logger, as: PgLogger
   alias PgFlow.Queries.Flows
   alias PgFlow.Queries.Workers, as: WorkerQueries
@@ -699,13 +700,14 @@ defmodule PgFlow.Worker.Server do
     # Get handler function from flow module
     handler = state.flow_module.__pgflow_handler__(step_slug_atom)
 
-    # Build context with flow_input available for lazy access
-    context = %{
+    # Build context struct with flow_input available for lazy access
+    context = %Context{
       run_id: run_id,
-      step_slug: step_slug,
+      step_slug: step_slug_atom,
       task_index: task_index,
-      flow_input: flow_input_data,
-      repo: state.repo
+      attempt: 1,
+      repo: state.repo,
+      flow_input: flow_input_data || :not_loaded
     }
 
     # Start task under supervisor
@@ -798,12 +800,14 @@ defmodule PgFlow.Worker.Server do
 
   @spec handle_task_success(task_metadata(), term(), state()) :: :ok
   defp handle_task_success(task_meta, {:ok, output}, state) do
+    serialized = serialize_handler_output(output)
+
     case Flows.complete_task(
            state.repo,
            task_meta.run_id,
            task_meta.step_slug,
            task_meta.task_index,
-           output || %{}
+           serialized
          ) do
       {:ok, _} ->
         maybe_emit_run_completed(state, task_meta.run_id)
@@ -919,6 +923,23 @@ defmodule PgFlow.Worker.Server do
         :ok
     end
   end
+
+  # Validates handler output is JSON-serializable before storing.
+  # Gracefully falls back to inspected output on serialization failure.
+  defp serialize_handler_output(nil), do: %{}
+
+  defp serialize_handler_output(output) when is_map(output) or is_list(output) do
+    case Jason.encode(output) do
+      {:ok, _} ->
+        output
+
+      {:error, reason} ->
+        Logger.warning("Handler output not JSON-serializable: #{inspect(reason)}")
+        %{"_serialization_error" => inspect(reason), "_raw" => inspect(output)}
+    end
+  end
+
+  defp serialize_handler_output(output), do: %{"_raw" => inspect(output)}
 
   # Helper to decode JSON only if needed - Postgrex returns JSONB as native Elixir types
   defp decode_json_if_needed(nil), do: nil

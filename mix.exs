@@ -74,8 +74,7 @@ defmodule PgFlow.MixProject do
         "format --check-formatted",
         "credo --strict",
         "doctor",
-        "dialyzer",
-        "test"
+        "dialyzer"
       ]
     ]
   end

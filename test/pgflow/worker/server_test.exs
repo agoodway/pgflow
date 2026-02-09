@@ -311,6 +311,93 @@ defmodule PgFlow.Worker.ServerTest do
     end
   end
 
+  # ============= Context Access Flow Test Modules =============
+
+  defmodule FlowInputAccessFlow do
+    @moduledoc """
+    A flow where a dependent step accesses the original flow input via
+    PgFlow.Context.get_flow_input(ctx). Tests that dispatch_task builds a
+    proper %PgFlow.Context{} struct (not a plain map).
+    """
+    use PgFlow.Flow
+
+    @flow slug: :flow_input_access_flow, max_attempts: 3
+
+    step :first do
+      fn input, _ctx ->
+        %{from_first: input["value"] * 2}
+      end
+    end
+
+    step :uses_flow_input, depends_on: [:first] do
+      fn deps, ctx ->
+        flow_input = PgFlow.Context.get_flow_input(ctx)
+
+        %{
+          original_value: flow_input["value"],
+          first_result: deps["first"]["from_first"]
+        }
+      end
+    end
+  end
+
+  defmodule ContextAccessFlow do
+    @moduledoc """
+    A flow where the root step accesses Context struct fields (step_slug,
+    attempt, run_id). Tests that dispatch_task populates struct fields correctly.
+    """
+    use PgFlow.Flow
+
+    @flow slug: :context_access_flow, max_attempts: 3
+
+    step :check_context do
+      fn input, ctx ->
+        %{
+          value: input["value"],
+          step_slug: Atom.to_string(ctx.step_slug),
+          attempt: ctx.attempt,
+          has_run_id: is_binary(ctx.run_id)
+        }
+      end
+    end
+  end
+
+  # ============= Serialization Edge Case Flow Test Modules =============
+
+  defmodule BadJsonOutputFlow do
+    @moduledoc """
+    A flow that returns a non-JSON-serializable value (a PID inside a map).
+    Tests that serialize_handler_output gracefully handles this instead of
+    crashing at the Postgrex layer.
+    """
+    use PgFlow.Flow
+
+    @flow slug: :bad_json_output_flow, max_attempts: 1
+
+    step :returns_bad_json do
+      fn _input, _ctx ->
+        # PIDs are not JSON-serializable — this would crash without serialization guard
+        %{pid: self(), data: "hello"}
+      end
+    end
+  end
+
+  defmodule ScalarOutputFlow do
+    @moduledoc """
+    A flow that returns a bare scalar (string) instead of a map/list.
+    Tests that serialize_handler_output wraps it in a map.
+    """
+    use PgFlow.Flow
+
+    @flow slug: :scalar_output_flow, max_attempts: 1
+
+    step :returns_scalar do
+      fn _input, _ctx ->
+        "just a string"
+      end
+    end
+  end
+
   # ============= Edge Case Flow Test Modules =============
 
   defmodule TimeoutTestFlow do
@@ -1792,6 +1879,92 @@ defmodule PgFlow.Worker.ServerTest do
         {:ok, status} = wait_for_run_completion(run_id, 10_000)
         assert status == "completed"
       end
+
+      Server.stop(worker_pid)
+    end
+  end
+
+  # ============= Context Struct Tests =============
+
+  describe "context struct" do
+    test "dependent step can access flow_input via Context.get_flow_input", %{
+      task_supervisor: task_supervisor
+    } do
+      flow_slug = compile_flow(FlowInputAccessFlow)
+      worker_pid = start_worker(FlowInputAccessFlow, task_supervisor)
+      Process.sleep(100)
+
+      run_id = start_flow_run(flow_slug, %{"value" => 7})
+      {:ok, status} = wait_for_run_completion(run_id)
+      assert status == "completed"
+
+      run = get_run(run_id)
+      assert run.output["uses_flow_input"]["original_value"] == 7
+      assert run.output["uses_flow_input"]["first_result"] == 14
+
+      Server.stop(worker_pid)
+    end
+
+    test "root step receives proper Context struct with metadata", %{
+      task_supervisor: task_supervisor
+    } do
+      flow_slug = compile_flow(ContextAccessFlow)
+      worker_pid = start_worker(ContextAccessFlow, task_supervisor)
+      Process.sleep(100)
+
+      run_id = start_flow_run(flow_slug, %{"value" => 42})
+      {:ok, status} = wait_for_run_completion(run_id)
+      assert status == "completed"
+
+      run = get_run(run_id)
+      assert run.output["check_context"]["value"] == 42
+      assert run.output["check_context"]["step_slug"] == "check_context"
+      assert run.output["check_context"]["attempt"] == 1
+      assert run.output["check_context"]["has_run_id"] == true
+
+      Server.stop(worker_pid)
+    end
+  end
+
+  # ============= Output Serialization Tests =============
+
+  describe "output serialization" do
+    test "non-JSON-serializable output (PID in map) completes with fallback", %{
+      task_supervisor: task_supervisor
+    } do
+      flow_slug = compile_flow(BadJsonOutputFlow)
+      worker_pid = start_worker(BadJsonOutputFlow, task_supervisor)
+      Process.sleep(100)
+
+      run_id = start_flow_run(flow_slug, %{})
+      {:ok, status} = wait_for_run_completion(run_id)
+      assert status == "completed"
+
+      run = get_run(run_id)
+      output = run.output["returns_bad_json"]
+      # Should have the serialization error fallback fields
+      assert is_binary(output["_serialization_error"])
+      assert is_binary(output["_raw"])
+      # The raw inspect should contain both the pid and the data
+      assert output["_raw"] =~ "hello"
+
+      Server.stop(worker_pid)
+    end
+
+    test "scalar output is wrapped in a map", %{task_supervisor: task_supervisor} do
+      flow_slug = compile_flow(ScalarOutputFlow)
+      worker_pid = start_worker(ScalarOutputFlow, task_supervisor)
+      Process.sleep(100)
+
+      run_id = start_flow_run(flow_slug, %{})
+      {:ok, status} = wait_for_run_completion(run_id)
+      assert status == "completed"
+
+      run = get_run(run_id)
+      output = run.output["returns_scalar"]
+      # Scalar gets wrapped via inspect into %{"_raw" => ...}
+      assert is_binary(output["_raw"])
+      assert output["_raw"] =~ "just a string"
 
       Server.stop(worker_pid)
     end
