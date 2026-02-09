@@ -283,24 +283,40 @@ defmodule PgFlow.JobTest do
       assert definition.opts[:timeout] == 120
     end
 
-    test "has a single :perform step" do
-      defmodule SingleStepJob do
+    test "step slug defaults to flow slug when perform has no name" do
+      defmodule DefaultStepSlugJob do
         use PgFlow.Job
 
-        @job slug: :single_step_job
+        @job slug: :default_step_slug_job
 
         perform do
           fn input, _ctx -> input end
         end
       end
 
-      definition = SingleStepJob.__pgflow_definition__()
+      definition = DefaultStepSlugJob.__pgflow_definition__()
       assert length(definition.steps) == 1
 
       [step] = definition.steps
-      assert step.slug == :perform
+      assert step.slug == :default_step_slug_job
       assert step.step_type == :single
       assert step.depends_on == []
+    end
+
+    test "step slug uses explicit name from perform" do
+      defmodule ExplicitStepSlugJob do
+        use PgFlow.Job
+
+        @job slug: :explicit_step_slug_job
+
+        perform :custom_step do
+          fn input, _ctx -> input end
+        end
+      end
+
+      definition = ExplicitStepSlugJob.__pgflow_definition__()
+      [step] = definition.steps
+      assert step.slug == :custom_step
     end
 
     test "uses default options when not specified" do
@@ -323,7 +339,7 @@ defmodule PgFlow.JobTest do
   end
 
   describe "__pgflow_handler__/0 and __pgflow_handler__/1" do
-    test "returns handler function" do
+    test "returns handler function by flow slug when perform has no name" do
       defmodule HandlerJob do
         use PgFlow.Job
 
@@ -339,8 +355,28 @@ defmodule PgFlow.JobTest do
       handler = HandlerJob.__pgflow_handler__()
       assert is_function(handler, 2)
 
-      handler_by_slug = HandlerJob.__pgflow_handler__(:perform)
+      handler_by_slug = HandlerJob.__pgflow_handler__(:handler_job)
       assert is_function(handler_by_slug, 2)
+    end
+
+    test "returns handler function by explicit step name" do
+      defmodule ExplicitHandlerJob do
+        use PgFlow.Job
+
+        @job slug: :explicit_handler_job
+
+        perform :do_work do
+          fn input, _ctx ->
+            %{doubled: input["value"] * 2}
+          end
+        end
+      end
+
+      handler_by_name = ExplicitHandlerJob.__pgflow_handler__(:do_work)
+      assert is_function(handler_by_name, 2)
+
+      handler_default = ExplicitHandlerJob.__pgflow_handler__()
+      assert is_function(handler_default, 2)
     end
 
     test "raises for undefined step slugs" do
@@ -376,7 +412,7 @@ defmodule PgFlow.JobTest do
 
       ctx = %PgFlow.Context{
         run_id: "test-run",
-        step_slug: :perform,
+        step_slug: :wrapper_job,
         task_index: 0,
         attempt: 1,
         repo: PgFlow.TestRepo
@@ -401,7 +437,7 @@ defmodule PgFlow.JobTest do
 
       raw_steps = RawStepsJob.__pgflow_steps__()
       assert is_list(raw_steps)
-      assert [{:perform, :step, [], _block}] = raw_steps
+      assert [{nil, :step, [], _block}] = raw_steps
     end
   end
 

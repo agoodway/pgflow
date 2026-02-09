@@ -54,7 +54,8 @@ defmodule PgFlow.MixProject do
       # Dev/Test
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:doctor, "~> 0.22.0", only: :dev, runtime: false}
     ]
   end
 
@@ -66,8 +67,12 @@ defmodule PgFlow.MixProject do
       # Run to check the quality of your code
       quality: [
         "compile --warnings-as-errors",
+        "deps.unlock --unused",
         "format --check-formatted",
-        "credo --only warning"
+        "credo --strict",
+        "doctor",
+        "dialyzer",
+        "test"
       ]
     ]
   end

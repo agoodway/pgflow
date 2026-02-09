@@ -12,12 +12,20 @@ defmodule PgFlow.Job do
 
         @job queue: :send_email, max_attempts: 3, base_delay: 5, timeout: 60
 
-        perform do
+        perform :send do
           fn input, _ctx ->
             Mailer.send(input["to"], input["subject"], input["body"])
             %{sent: true}
           end
         end
+      end
+
+  The optional name in `perform :name do` sets the step slug in the database.
+  When omitted, the step slug defaults to the `@job` queue/slug value:
+
+      @job queue: :cleanup
+      perform do  # step slug will be :cleanup
+        fn _input, _ctx -> :ok end
       end
 
   ## Job Options
@@ -35,21 +43,33 @@ defmodule PgFlow.Job do
 
     * `__pgflow_definition__/0` - returns a `PgFlow.Flow.Definition` struct with `flow_type: :job`
     * `__pgflow_slug__/0` - returns the job queue slug atom
-    * `__pgflow_steps__/0` - returns the raw step definitions (single `:perform` step)
-    * `__pgflow_handler__/0` - returns the perform handler function
-    * `__pgflow_handler__(:perform)` - returns the perform handler function
+    * `__pgflow_steps__/0` - returns the raw step definitions
+    * `__pgflow_handler__/0` - returns the handler function
+    * `__pgflow_handler__(:step_name)` - returns the handler function by step name
     * `perform/2` - convenience wrapper for testing: `perform(input, ctx)`
 
   """
 
   @doc """
-  Defines the job's perform block.
+  Defines the job's perform block with an optional step name.
+
+  When called with a name (`perform :step_name do`), that name becomes
+  the step slug in the database. When called without a name (`perform do`),
+  the step slug defaults to the `@job` queue/slug value.
 
   The block must return a 2-arity function that receives the job input
   and a `PgFlow.Context` struct.
 
   ## Examples
 
+      # Explicit step name
+      perform :send_email do
+        fn input, _ctx ->
+          %{result: process(input["data"])}
+        end
+      end
+
+      # Step name defaults to @job queue/slug
       perform do
         fn input, _ctx ->
           %{result: process(input["data"])}
@@ -57,15 +77,21 @@ defmodule PgFlow.Job do
       end
 
   """
+  defmacro perform(name, do: block) do
+    quote do
+      @pgflow_steps {unquote(name), :step, [], unquote(Macro.escape(block))}
+    end
+  end
+
   defmacro perform(do: block) do
     quote do
-      @pgflow_steps {:perform, :step, [], unquote(Macro.escape(block))}
+      @pgflow_steps {nil, :step, [], unquote(Macro.escape(block))}
     end
   end
 
   defmacro __using__(_opts) do
     quote do
-      import PgFlow.Job, only: [perform: 1]
+      import PgFlow.Job, only: [perform: 1, perform: 2]
 
       Module.register_attribute(__MODULE__, :job, accumulate: true, persist: false)
       Module.register_attribute(__MODULE__, :pgflow_steps, accumulate: true, persist: false)
@@ -85,19 +111,31 @@ defmodule PgFlow.Job do
 
     job_attrs = validate_and_extract_attrs!(job_attrs_list, steps, env)
     {slug, flow_opts, cron_expression, cron_input} = extract_job_config(job_attrs, env)
-    block = extract_perform_block(steps)
-    step_def = build_step_def(flow_opts)
+    {step_name, block} = extract_step(steps, slug)
+    step_def = build_step_def(step_name, flow_opts)
 
-    generate_job_functions(slug, steps, step_def, flow_opts, block, cron_expression, cron_input)
+    generate_job_functions(
+      slug,
+      steps,
+      step_def,
+      flow_opts,
+      step_name,
+      block,
+      cron_expression,
+      cron_input
+    )
   end
 
-  defp extract_perform_block([{:perform, :step, _opts, block}]), do: block
+  # Extract the step name and block; nil name defaults to flow slug
+  defp extract_step([{nil, :step, _opts, block}], slug), do: {slug, block}
+  defp extract_step([{name, :step, _opts, block}], _slug), do: {name, block}
 
   defp generate_job_functions(
          slug,
          steps,
          step_def,
          flow_opts,
+         step_name,
          block,
          cron_expression,
          cron_input
@@ -116,12 +154,12 @@ defmodule PgFlow.Job do
         }
       end
 
-      def __pgflow_handler__(:perform), do: unquote(block)
+      def __pgflow_handler__(unquote(step_name)), do: unquote(block)
       def __pgflow_handler__, do: unquote(block)
       def __pgflow_handler__(slug), do: raise("No handler defined for step: #{inspect(slug)}")
 
       def perform(input, ctx) do
-        handler = __pgflow_handler__(:perform)
+        handler = __pgflow_handler__(unquote(step_name))
         handler.(input, ctx)
       end
 
@@ -197,9 +235,9 @@ defmodule PgFlow.Job do
     end
   end
 
-  defp build_step_def(flow_opts) do
+  defp build_step_def(step_name, flow_opts) do
     %Step{
-      slug: :perform,
+      slug: step_name,
       step_type: :single,
       depends_on: [],
       max_attempts: flow_opts[:max_attempts],

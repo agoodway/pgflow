@@ -65,7 +65,7 @@ defmodule MyApp.Jobs.SendEmail do
 
   @job queue: :send_email, max_attempts: 3, timeout: 60
 
-  perform do
+  perform :deliver do
     fn input, _ctx -> Mailer.send(input["to"], input["body"]) end
   end
 end

@@ -13,7 +13,7 @@ defmodule PgFlow.JobCompiler do
       # Returns:
       # [
       #   "SELECT pgflow.create_flow('send_email', 1, 1, 30)",
-      #   "SELECT pgflow.add_step('send_email', 'perform', ARRAY[]::text[], NULL, NULL, NULL, NULL, 'single')",
+      #   "SELECT pgflow.add_step('send_email', 'send_email', ARRAY[]::text[], NULL, NULL, NULL, NULL, 'single')",
       #   "UPDATE pgflow.flows SET flow_type = 'job' WHERE flow_slug = 'send_email'"
       # ]
 

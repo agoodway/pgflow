@@ -44,7 +44,7 @@ defmodule Mix.Tasks.Pgflow.Gen.JobTest do
       assert migration_content =~ "def up do"
       assert migration_content =~ "def down do"
       assert migration_content =~ "SELECT pgflow.create_flow('simple_job'"
-      assert migration_content =~ "SELECT pgflow.add_step('simple_job', 'perform'"
+      assert migration_content =~ "SELECT pgflow.add_step('simple_job', 'simple_job'"
       assert migration_content =~ "UPDATE pgflow.flows SET flow_type = 'job'"
       assert migration_content =~ "DELETE FROM pgflow.flows WHERE flow_slug = 'simple_job'"
       assert migration_content =~ "SELECT pgmq.drop_queue('simple_job')"
@@ -63,7 +63,7 @@ defmodule Mix.Tasks.Pgflow.Gen.JobTest do
       migration_content = File.read!(Path.join(@test_migrations_path, migration_file))
 
       assert migration_content =~ "create_flow('email_job'"
-      assert migration_content =~ "add_step('email_job', 'perform'"
+      assert migration_content =~ "add_step('email_job', 'email_job'"
       assert migration_content =~ "flow_type = 'job'"
     end
 

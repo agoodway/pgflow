@@ -71,7 +71,7 @@ defmodule PgFlow.JobCompilerTest do
       [flow_sql, step_sql, update_sql] = sql_statements
 
       assert flow_sql =~ "create_flow('compiler_test_job'"
-      assert step_sql =~ "add_step('compiler_test_job', 'perform'"
+      assert step_sql =~ "add_step('compiler_test_job', 'compiler_test_job'"
       assert update_sql =~ "flow_type = 'job'"
       assert update_sql =~ "flow_slug = 'compiler_test_job'"
     end

@@ -163,7 +163,7 @@ defmodule MyApp.Jobs.SendEmail do
 
   @job queue: :send_email, max_attempts: 5, base_delay: 10, timeout: 120
 
-  perform do
+  perform :deliver do
     fn input, _ctx ->
       Mailer.send(input["to"], input["subject"], input["body"])
       %{sent: true}
@@ -171,6 +171,8 @@ defmodule MyApp.Jobs.SendEmail do
   end
 end
 ```
+
+The step name in `perform :deliver do` is optional — when omitted, it defaults to the `@job` queue/slug value.
 
 See `PgFlow.Job` moduledocs for the full options reference.
 
