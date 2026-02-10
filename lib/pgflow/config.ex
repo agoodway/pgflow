@@ -13,7 +13,7 @@ defmodule PgFlow.Config do
     * `:max_concurrency` (optional) - Maximum number of parallel tasks per worker. Default: `10`.
     * `:batch_size` (optional) - Number of messages to fetch per poll cycle. Default: `10`.
     * `:signal_strategy` (optional) - Signal detection strategy. `:polling` (adaptive backoff) or `:notify` (LISTEN/NOTIFY). Default: `:polling`.
-    * `:min_poll_interval` (optional) - Minimum milliseconds between polls (fastest rate). Default: `50`. Max: `300_000` (5 minutes).
+    * `:min_poll_interval` (optional) - Minimum milliseconds between polls (fastest rate). Default: `1000`. Max: `300_000` (5 minutes).
     * `:max_poll_interval` (optional) - Maximum milliseconds between polls (slowest rate during backoff). Default: `5000`. Max: `300_000` (5 minutes).
     * `:notify_fallback_interval` (optional) - Milliseconds between fallback polls when using `:notify` strategy. Default: `30000`. Max: `600_000` (10 minutes).
     * `:notify_throttle_ms` (optional) - Throttle interval for pgmq LISTEN/NOTIFY trigger. Default: `250`.
@@ -81,7 +81,7 @@ defmodule PgFlow.Config do
     ],
     min_poll_interval: [
       type: :pos_integer,
-      default: 50,
+      default: 1_000,
       doc: "Minimum milliseconds between polls (fastest rate when queue is active)"
     ],
     max_poll_interval: [

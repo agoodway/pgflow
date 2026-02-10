@@ -134,8 +134,34 @@ Both use the same two-phase protocol:
 | Aspect       | TypeScript                           | Elixir                              |
 | ------------ | ------------------------------------ | ----------------------------------- |
 | Read call    | `pgflow.read_with_poll()` (blocking) | `pgmq.read()` (non-blocking)        |
-| Idle behavior| Blocks in DB up to `maxPollSeconds`  | Adaptive jittered backoff (50ms-5s) |
+| Idle behavior| Blocks in DB up to `maxPollSeconds`  | Adaptive jittered backoff (1s-5s)   |
 | Wake-up      | pgmq polling only                    | Polling or LISTEN/NOTIFY            |
+
+TypeScript uses blocking `read_with_poll` because stateless edge functions have no event loop to schedule polls — the database must do the waiting. Elixir workers are long-running GenServers where `Process.send_after` provides native scheduling, so `pgmq.read()` returns instantly and the connection goes back to the Ecto pool. This avoids holding DB connections idle and enables adaptive backoff with cancellable timers (NOTIFY or completion events can wake the worker immediately).
+
+Note that `read_with_poll` is not truly push-based — PostgreSQL runs an internal poll loop at `pollIntervalMs` (default 200ms) inside the blocking call:
+
+```
+Deno worker                    PostgreSQL
+   |                              |
+   |---- read_with_poll() ------->|
+   |     (connection held)        |-- SELECT FROM q_* ... nothing
+   |                              |-- wait 200ms
+   |                              |-- SELECT FROM q_* ... nothing
+   |                              |-- wait 200ms
+   |                              |-- SELECT FROM q_* ... MESSAGE!
+   |<--- [message] ---------------|
+```
+
+The real question is where the poll loop lives and what tradeoffs that creates:
+
+|                              | Deno (pgmq)             | Elixir (polling)       | Elixir (notify)             |
+| ---------------------------- | ----------------------- | ---------------------- | --------------------------- |
+| **Poll loop location**       | Inside PostgreSQL       | GenServer process      | N/A (event-driven)          |
+| **Busy latency**             | ~200ms (fixed)          | ~50ms (faster)         | Near-zero                   |
+| **Idle latency**             | ~200ms (fixed)          | Up to 5s (slower)      | Near-zero + 30s fallback    |
+| **DB connection during idle**| Held for up to 5s       | Not held               | Not held                    |
+| **Truly push-based?**        | No                      | No                     | Yes                         |
 
 ## Feature Comparison
 

@@ -13,7 +13,7 @@ defmodule PgFlow.Worker.Server do
 
   The worker supports two signal strategies for detecting new messages:
 
-    * `:polling` - Adaptive jittered exponential backoff (50ms → 5s).
+    * `:polling` - Adaptive jittered exponential backoff (1s → 5s).
       Polls fast when busy, backs off when idle.
     * `:notify` - LISTEN/NOTIFY via pgmq's `enable_notify_insert`.
       Near-instant wake-ups with a 30s fallback poll.
@@ -29,7 +29,7 @@ defmodule PgFlow.Worker.Server do
         max_concurrency: 10,
         batch_size: 10,
         signal_strategy: :polling,
-        min_poll_interval: 50,
+        min_poll_interval: 1_000,
         max_poll_interval: 5_000,
         notify_fallback_interval: 30_000
       }
@@ -131,7 +131,7 @@ defmodule PgFlow.Worker.Server do
     * `:max_concurrency` - (optional) Maximum concurrent tasks (default: 10)
     * `:batch_size` - (optional) Messages to fetch per poll (default: 10)
     * `:signal_strategy` - (optional) Signal strategy, `:polling` or `:notify` (default: `:polling`)
-    * `:min_poll_interval` - (optional) Minimum ms between polls (default: 50)
+    * `:min_poll_interval` - (optional) Minimum ms between polls (default: 1000)
     * `:max_poll_interval` - (optional) Maximum ms between polls (default: 5000)
     * `:notify_fallback_interval` - (optional) Fallback poll interval for `:notify` strategy (default: 30000)
 
@@ -176,7 +176,7 @@ defmodule PgFlow.Worker.Server do
 
     # Signal strategy config
     signal_strategy = Map.get(config, :signal_strategy, :polling)
-    min_poll_interval = Map.get(config, :min_poll_interval, 50)
+    min_poll_interval = Map.get(config, :min_poll_interval, 1_000)
     max_poll_interval = Map.get(config, :max_poll_interval, 5_000)
     notify_fallback_interval = Map.get(config, :notify_fallback_interval, 30_000)
 

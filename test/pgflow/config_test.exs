@@ -93,7 +93,7 @@ defmodule PgFlow.ConfigTest do
     test "applies default for :min_poll_interval" do
       config = Config.validate!(repo: ValidTestRepo)
 
-      assert config[:min_poll_interval] == 50
+      assert config[:min_poll_interval] == 1_000
     end
 
     test "applies default for :max_poll_interval" do
@@ -135,7 +135,7 @@ defmodule PgFlow.ConfigTest do
       assert config[:max_concurrency] == 10
       assert config[:batch_size] == 10
       assert config[:signal_strategy] == :polling
-      assert config[:min_poll_interval] == 50
+      assert config[:min_poll_interval] == 1_000
       assert config[:max_poll_interval] == 5_000
       assert config[:notify_fallback_interval] == 30_000
       assert config[:notify_throttle_ms] == 250
@@ -365,7 +365,7 @@ defmodule PgFlow.ConfigTest do
       schema = Config.schema()
 
       assert Keyword.has_key?(schema, :min_poll_interval)
-      assert schema[:min_poll_interval][:default] == 50
+      assert schema[:min_poll_interval][:default] == 1_000
       assert schema[:min_poll_interval][:type] == :pos_integer
     end
 

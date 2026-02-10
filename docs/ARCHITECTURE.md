@@ -160,7 +160,7 @@ Worker                         PostgreSQL
 ```
 
 Adaptive jittered exponential backoff:
-- Active queue: polls at `min_poll_interval` (default: 50ms)
+- Active queue: polls at `min_poll_interval` (default: 1s)
 - Idle queue: backs off to `max_poll_interval` (default: 5s)
 - Uses decorrelated jitter to prevent thundering herd
 
@@ -260,9 +260,10 @@ PgFlow leverages OTP primitives for fault tolerance:
 - **GenServer lifecycle** - Worker states: created -> starting -> running -> stopping -> stopped
 - **Task.Supervisor** - Crash isolation per task execution
 - **Process monitoring** - Automatic cleanup when workers die
+- **Process scheduling** - `Process.send_after` for adaptive poll timing, replacing Deno's blocking `pgmq.read_with_poll()` with non-blocking `pgmq.read()` — no DB connections held idle, backoff timers are cancellable by NOTIFY or completion events
 - **Postgrex.Notifications** - Native PostgreSQL LISTEN/NOTIFY support
 
-The Deno implementation uses stateless edge functions with external coordination. Elixir workers are stateful GenServers with built-in recovery.
+The Deno implementation uses stateless edge functions with external coordination — `read_with_poll` blocks in the database because there's no event loop to schedule polls. Elixir workers are stateful GenServers where OTP itself is the scheduler, enabling adaptive backoff and instant wake-ups.
 
 ## Configuration
 
@@ -273,7 +274,7 @@ The Deno implementation uses stateless edge functions with external coordination
   jobs: [MyApp.Jobs.SendEmail],
   signal_strategy: :notify,         # :polling or :notify
   notify_throttle_ms: 250,          # pgmq trigger debounce (0 = instant)
-  min_poll_interval: 50,            # ms (polling strategy)
+  min_poll_interval: 1_000,         # ms (polling strategy)
   max_poll_interval: 5_000,         # ms (polling strategy)
   notify_fallback_interval: 30_000, # ms (safety net for notify)
   max_concurrency: 10,              # parallel tasks per worker
