@@ -85,13 +85,27 @@ defmodule PgFlowDashboard.Router do
   end
 
   @doc false
-  def session(_conn, opts, path) do
+  def session(conn, opts, path) do
     config = PgFlowDashboard.Config.validate!(opts)
 
     %{
       "pgflow_dashboard_config" => Enum.into(config, %{}),
-      "base_path" => path
+      "base_path" => compute_base_path(conn.request_path, path)
     }
+  end
+
+  @doc """
+  Derive the full base path by finding where the dashboard path appears
+  in the request URL. This handles outer scopes (e.g., "/admin/pgflow"
+  when `pgflow_dashboard("/pgflow")` is mounted inside `scope "/admin"`).
+  """
+  def compute_base_path(request_path, path) do
+    suffix = String.trim_trailing(path, "/")
+
+    case String.split(request_path, suffix, parts: 2) do
+      [prefix, _rest] -> prefix <> suffix
+      _ -> path
+    end
   end
 
   @doc false
