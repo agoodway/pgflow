@@ -98,6 +98,10 @@ DROP VIEW IF EXISTS $SCHEMA$.workers_with_load;
 
 --SPLIT--
 
+DROP VIEW IF EXISTS $SCHEMA$.runs_view;
+
+--SPLIT--
+
 DROP VIEW IF EXISTS $SCHEMA$.runs_with_progress;
 
 --SPLIT--

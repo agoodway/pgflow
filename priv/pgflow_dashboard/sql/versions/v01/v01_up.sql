@@ -38,6 +38,28 @@ LEFT JOIN LATERAL (
 
 --SPLIT--
 
+-- View: runs_view
+-- Full runs view with flow_type for Ecto/LiveFilter queries
+CREATE OR REPLACE VIEW $SCHEMA$.runs_view AS
+SELECT
+  r.run_id,
+  r.flow_slug,
+  COALESCE(f.flow_type, 'flow') AS flow_type,
+  r.status,
+  r.input,
+  r.output,
+  r.started_at,
+  r.completed_at,
+  r.duration_ms,
+  r.total_steps,
+  r.completed_steps,
+  r.failed_steps,
+  r.progress_percent
+FROM $SCHEMA$.runs_with_progress r
+LEFT JOIN pgflow.flows f ON r.flow_slug = f.flow_slug;
+
+--SPLIT--
+
 -- View: workers_with_load
 -- Shows workers with health status and load metrics
 -- Includes flow_type to distinguish between flow workers and job workers
@@ -300,6 +322,8 @@ $$;
 
 -- Function: get_adjacent_run()
 -- Gets the next or previous run for navigation
+-- Uses base pgflow.runs table (not runs_with_progress) for efficiency
+-- since only run_id and started_at are needed for navigation
 CREATE OR REPLACE FUNCTION $SCHEMA$.get_adjacent_run(
   p_run_id uuid,
   p_direction text  -- 'next' or 'prev'
@@ -313,7 +337,7 @@ DECLARE
   v_result uuid;
 BEGIN
   SELECT started_at INTO v_current_started_at
-  FROM $SCHEMA$.runs_with_progress WHERE run_id = p_run_id;
+  FROM pgflow.runs WHERE run_id = p_run_id;
 
   IF v_current_started_at IS NULL THEN
     RETURN NULL;
@@ -322,14 +346,14 @@ BEGIN
   IF p_direction = 'next' THEN
     -- Next = older (DESC ordering means next is < current)
     SELECT run_id INTO v_result
-    FROM $SCHEMA$.runs_with_progress
+    FROM pgflow.runs
     WHERE started_at < v_current_started_at
     ORDER BY started_at DESC
     LIMIT 1;
   ELSIF p_direction = 'prev' THEN
     -- Prev = newer (ASC ordering means prev is > current)
     SELECT run_id INTO v_result
-    FROM $SCHEMA$.runs_with_progress
+    FROM pgflow.runs
     WHERE started_at > v_current_started_at
     ORDER BY started_at ASC
     LIMIT 1;

@@ -28,5 +28,7 @@ pgflow-reference/
 
 # AI stuff
 .claude
+.codex
+.opencode
 openspec
 .playwright-mcp

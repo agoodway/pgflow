@@ -28,6 +28,9 @@ import topbar from "../vendor/topbar"
 // PgFlow Dashboard hooks
 import { DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu } from "../../../priv/static/pgflow_dashboard/hooks/index.js"
 
+// LiveFilter hooks for filter UI
+import { hooks as liveFilterHooks } from "live_filter/priv/static/live_filter.js"
+
 // Type declarations for Phoenix LiveView events
 interface PhxScrollEvent extends CustomEvent {
   detail: { step: string }
@@ -59,7 +62,7 @@ const csrfToken = document
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: { _csrf_token: csrfToken },
-  hooks: { ...colocatedHooks, DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu },
+  hooks: { ...colocatedHooks, ...liveFilterHooks, DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu },
 })
 
 // Show progress bar on live navigation and form submits

@@ -51,6 +51,7 @@ defmodule PgFlow.MixProject do
       # Dashboard (optional)
       {:phoenix_live_view, "~> 1.0", optional: true},
       {:phoenix, "~> 1.7", optional: true},
+      {:live_filter, github: "agoodway/livefilter", optional: true},
       {:timex, "~> 3.7"},
       {:pg_evolver, github: "agoodway/pg_evolver"},
 

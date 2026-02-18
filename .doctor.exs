@@ -4,7 +4,9 @@
     # via quote blocks — it picks up `def` nodes inside quotes and counts them
     # as belonging to this module rather than the module that uses the macro.
     PgFlow.Flow,
-    PgFlow.Job
+    PgFlow.Job,
+    # Ecto schemas define their own struct types via the schema macro
+    PgFlowDashboard.Schemas.Run
   ],
   ignore_paths: [],
   min_module_doc_coverage: 40,

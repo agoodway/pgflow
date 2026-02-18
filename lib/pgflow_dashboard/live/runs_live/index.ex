@@ -1,17 +1,66 @@
 defmodule PgFlowDashboard.Live.RunsLive.Index do
   @moduledoc """
-  Runs list page with filtering.
+  Runs list page with LiveFilter-based filtering.
 
-  Uses LiveView streams for efficient rendering of large lists.
+  Uses URL-driven filters for shareable links and Ecto queries via QueryBuilder.
   """
 
   use Phoenix.LiveView
 
+  alias LiveFilter.{Pagination, Params.Serializer, QueryBuilder}
   alias PgFlowDashboard.Components.{Layouts, ProgressBar, StatusBadge, TypeBadge}
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries.{Crons, Flows, Jobs, Runs}
+  alias PgFlowDashboard.Queries.{Crons, Flows, Jobs}
+  alias PgFlowDashboard.Schemas.Run
 
-  @page_size 50
+  defp filter_config(socket) do
+    [
+      LiveFilter.select(:flow_type,
+        label: "Type",
+        options: [
+          {"Flow", "flow"},
+          {"Job", "job"}
+        ],
+        icon: "hero-squares-2x2",
+        default_visible: true
+      ),
+      LiveFilter.select(:flow_slug,
+        label: "Queue",
+        options_fn: fn -> queue_options(socket.assigns) end,
+        icon: "hero-queue-list",
+        default_visible: true
+      ),
+      LiveFilter.select(:status,
+        label: "Status",
+        options: [
+          {"Running", "started"},
+          {"Completed", "completed"},
+          {"Failed", "failed"}
+        ],
+        icon: "hero-signal",
+        default_visible: true
+      ),
+      LiveFilter.datetime_range(:started_at,
+        label: "Started",
+        icon: "hero-calendar-days",
+        default_visible: true
+      )
+    ]
+  end
+
+  defp queue_options(assigns) do
+    flows = Map.get(assigns, :flows, [])
+    jobs = Map.get(assigns, :jobs, [])
+    crons = Map.get(assigns, :crons, [])
+
+    flow_opts = Enum.map(flows, fn f -> {f.flow_slug, f.flow_slug} end)
+    job_opts = Enum.map(jobs, fn j -> {j.flow_slug, j.flow_slug} end)
+    cron_opts = Enum.map(crons, fn c -> {c.flow_slug, c.flow_slug} end)
+
+    (flow_opts ++ job_opts ++ cron_opts)
+    |> Enum.uniq_by(fn {_, slug} -> slug end)
+    |> Enum.sort_by(fn {label, _} -> label end)
+  end
 
   @impl true
   def mount(_params, session, socket) do
@@ -21,18 +70,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
       socket
       |> assign(:page_title, "Runs")
       |> assign(:base_path, session["base_path"] || "/pgflow")
-      |> assign(:flow_filter, nil)
-      |> assign(:status_filter, nil)
-      |> assign(:type_filter, nil)
-      |> assign(:time_range, :last_24h)
-      |> assign(:cursor, nil)
-      |> assign(:has_more, false)
-      |> assign(:total_count, 0)
-      |> assign(:runs_count, 0)
-      |> stream_configure(:runs, dom_id: &"run-#{&1.run_id}")
-      |> stream(:runs, [])
       |> load_flows_and_jobs()
-      |> load_runs()
       |> LiveHelpers.subscribe_to_updates()
       |> LiveHelpers.schedule_refresh()
 
@@ -41,86 +79,79 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    socket =
-      socket
-      |> assign(:flow_filter, params["flow"])
-      |> assign(:status_filter, params["status"])
-      |> assign(:type_filter, params["type"])
-      |> assign(:time_range, parse_time_range(params["time_range"]))
-      |> assign(:cursor, nil)
-      |> load_runs(reset: true)
+    config = filter_config(socket)
 
-    {:noreply, socket}
+    # Redirect to default date range if no started_at filter
+    if missing_date_filter?(params) do
+      default_params = default_date_params()
+
+      {:noreply,
+       push_patch(socket,
+         to: LiveFilter.to_path("#{socket.assigns.base_path}/runs", default_params)
+       )}
+    else
+      {filters, remaining} = LiveFilter.from_params(params, config)
+      {pagination, remaining} = LiveFilter.pagination_from_params(remaining, default_limit: 50)
+
+      socket =
+        socket
+        |> LiveFilter.init(config, filters)
+        |> assign(:pagination, pagination)
+        |> assign(:remaining_params, remaining)
+        |> load_runs()
+
+      {:noreply, socket}
+    end
   end
 
   @impl true
-  def handle_event(
-        "filter",
-        %{"flow" => flow, "status" => status, "type" => type, "time_range" => time_range},
-        socket
+  def handle_info(
+        {:live_filter, :updated, params},
+        %{assigns: %{remaining_params: remaining_params, pagination: %{limit: limit}}} = socket
       ) do
-    params = %{}
-    params = if flow != "", do: Map.put(params, "flow", flow), else: params
-    params = if status != "", do: Map.put(params, "status", status), else: params
-    params = if type != "", do: Map.put(params, "type", type), else: params
-
-    params =
-      if time_range != "last_24h", do: Map.put(params, "time_range", time_range), else: params
+    pagination_params = %{"limit" => to_string(limit), "offset" => "0"}
+    all_params = Map.merge(remaining_params, params) |> Map.merge(pagination_params)
 
     {:noreply,
-     push_patch(socket, to: "#{socket.assigns.base_path}/runs?#{URI.encode_query(params)}")}
+     push_patch(socket, to: LiveFilter.to_path("#{socket.assigns.base_path}/runs", all_params))}
   end
 
-  def handle_event("load_more", _, socket) do
-    runs =
-      Runs.list_runs(socket.assigns.repo,
-        flow_slug: socket.assigns.flow_filter,
-        status: socket.assigns.status_filter,
-        flow_type: socket.assigns.type_filter,
-        time_range: socket.assigns.time_range,
-        cursor: socket.assigns.cursor,
-        limit: @page_size + 1
-      )
+  @impl true
+  def handle_info(
+        {:live_filter, :page_changed, pagination_params},
+        %{assigns: %{remaining_params: remaining_params, live_filter: %{filters: filters}}} =
+          socket
+      ) do
+    filter_params = Serializer.to_params(filters)
+    all_params = Map.merge(remaining_params, filter_params) |> Map.merge(pagination_params)
 
-    {runs, has_more} =
-      if length(runs) > @page_size do
-        {Enum.take(runs, @page_size), true}
-      else
-        {runs, false}
-      end
-
-    new_cursor = if runs != [], do: List.last(runs).run_id, else: nil
-    new_count = socket.assigns.runs_count + length(runs)
-
-    socket =
-      socket
-      |> stream(:runs, runs)
-      |> assign(:cursor, new_cursor)
-      |> assign(:has_more, has_more)
-      |> assign(:runs_count, new_count)
-
-    {:noreply, socket}
+    {:noreply,
+     push_patch(socket, to: LiveFilter.to_path("#{socket.assigns.base_path}/runs", all_params))}
   end
 
   @impl true
   def handle_info(:refresh, socket) do
     socket =
       socket
-      |> refresh_runs()
+      |> load_runs()
       |> LiveHelpers.schedule_refresh()
 
     {:noreply, socket}
   end
 
+  @impl true
   def handle_info({:pgflow, _run_id, {:run_started, _}}, socket),
-    do: {:noreply, load_runs(socket, reset: true)}
+    do: {:noreply, load_runs(socket)}
 
+  @impl true
   def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket),
-    do: {:noreply, refresh_runs(socket)}
+    do: {:noreply, load_runs(socket)}
 
+  @impl true
   def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket),
-    do: {:noreply, refresh_runs(socket)}
+    do: {:noreply, load_runs(socket)}
 
+  @impl true
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_flows_and_jobs(socket) do
@@ -134,75 +165,63 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
     |> assign(:crons, crons)
   end
 
-  defp load_runs(socket, opts \\ []) do
-    reset = Keyword.get(opts, :reset, false)
+  defp load_runs(%{assigns: %{pagination: pagination, live_filter: %{filters: filters}}} = socket) do
+    import Ecto.Query
+
+    base_query =
+      Run
+      |> QueryBuilder.apply(filters,
+        schema: Run,
+        allowed_fields: [:flow_type, :flow_slug, :status, :started_at]
+      )
+      |> order_by([r], desc: r.started_at)
+
+    total_count = QueryBuilder.count(base_query, socket.assigns.repo)
 
     runs =
-      Runs.list_runs(socket.assigns.repo,
-        flow_slug: socket.assigns.flow_filter,
-        status: socket.assigns.status_filter,
-        flow_type: socket.assigns.type_filter,
-        time_range: socket.assigns.time_range,
-        limit: @page_size + 1
-      )
+      base_query
+      |> QueryBuilder.apply_pagination(pagination)
+      |> socket.assigns.repo.all()
 
-    {runs, has_more} =
-      if length(runs) > @page_size do
-        {Enum.take(runs, @page_size), true}
-      else
-        {runs, false}
-      end
-
-    cursor = if runs != [], do: List.last(runs).run_id, else: nil
-
-    total_count =
-      Runs.count_runs(socket.assigns.repo,
-        flow_slug: socket.assigns.flow_filter,
-        status: socket.assigns.status_filter,
-        flow_type: socket.assigns.type_filter,
-        time_range: socket.assigns.time_range
-      )
+    pagination = Pagination.with_total(pagination, total_count)
 
     socket
-    |> stream(:runs, runs, reset: reset)
-    |> assign(:cursor, cursor)
-    |> assign(:has_more, has_more)
-    |> assign(:total_count, total_count)
-    |> assign(:runs_count, length(runs))
+    |> assign(:runs, runs)
+    |> assign(:pagination, pagination)
   end
 
-  defp refresh_runs(socket) do
-    current_count = max(socket.assigns.runs_count, @page_size)
+  # Fallback when socket not yet initialized (PubSub messages before handle_params)
+  defp load_runs(socket), do: socket
 
-    runs =
-      Runs.list_runs(socket.assigns.repo,
-        flow_slug: socket.assigns.flow_filter,
-        status: socket.assigns.status_filter,
-        flow_type: socket.assigns.type_filter,
-        time_range: socket.assigns.time_range,
-        limit: current_count + 1
-      )
+  defp missing_date_filter?(params) do
+    has_legacy_range =
+      Map.has_key?(params, "started_at.gte") || Map.has_key?(params, "started_at.lte")
 
-    {runs, has_more} =
-      if length(runs) > current_count do
-        {Enum.take(runs, current_count), true}
-      else
-        {runs, false}
+    has_and_range =
+      case Map.get(params, "and") do
+        and_param when is_binary(and_param) ->
+          String.contains?(and_param, "started_at.gte.") ||
+            String.contains?(and_param, "started_at.lte.")
+
+        _ ->
+          false
       end
 
-    cursor = if runs != [], do: List.last(runs).run_id, else: nil
-
-    socket
-    |> stream(:runs, runs, reset: true)
-    |> assign(:cursor, cursor)
-    |> assign(:has_more, has_more)
-    |> assign(:runs_count, length(runs))
+    !(has_legacy_range || has_and_range)
   end
 
-  defp parse_time_range("last_hour"), do: :last_hour
-  defp parse_time_range("last_7d"), do: :last_7d
-  defp parse_time_range("last_30d"), do: :last_30d
-  defp parse_time_range(_), do: :last_24h
+  defp default_date_params do
+    today = Date.utc_today()
+    start_of_day = DateTime.new!(today, ~T[00:00:00], "Etc/UTC")
+    end_of_day = DateTime.new!(today, ~T[23:59:59], "Etc/UTC")
+
+    %{
+      "and" =>
+        "(started_at.gte.#{DateTime.to_iso8601(start_of_day)},started_at.lte.#{DateTime.to_iso8601(end_of_day)})",
+      "limit" => "50",
+      "offset" => "0"
+    }
+  end
 
   @impl true
   def render(assigns) do
@@ -210,100 +229,14 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
     <Layouts.dashboard_layout current_page={:runs} base_path={@base_path}>
       <Layouts.page_header title="Runs" subtitle="All workflow executions" />
 
-      <!-- Filters -->
       <div class="mb-6 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-        <form phx-change="filter" class="flex flex-wrap gap-4">
-          <div>
-            <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
-              Type
-            </label>
-            <select
-              name="type"
-              class="block w-28 rounded-md border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
-            >
-              <option value="">All</option>
-              <option value="flow" selected={@type_filter == "flow"}>Flows</option>
-              <option value="job" selected={@type_filter == "job"}>Jobs</option>
-              <option value="cron" selected={@type_filter == "cron"}>Crons</option>
-            </select>
-          </div>
-
-          <div>
-            <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
-              Queue
-            </label>
-            <select
-              name="flow"
-              class="block w-40 rounded-md border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
-            >
-              <option value="">All</option>
-              <%= if @flows != [] do %>
-                <optgroup label="Flows">
-                  <%= for flow <- @flows do %>
-                    <option value={flow.flow_slug} selected={@flow_filter == flow.flow_slug}>
-                      {flow.flow_slug}
-                    </option>
-                  <% end %>
-                </optgroup>
-              <% end %>
-              <%= if @jobs != [] do %>
-                <optgroup label="Jobs">
-                  <%= for job <- @jobs do %>
-                    <option value={job.flow_slug} selected={@flow_filter == job.flow_slug}>
-                      {job.flow_slug}
-                    </option>
-                  <% end %>
-                </optgroup>
-              <% end %>
-              <%= if @crons != [] do %>
-                <optgroup label="Crons">
-                  <%= for cron <- @crons do %>
-                    <option value={cron.flow_slug} selected={@flow_filter == cron.flow_slug}>
-                      {cron.flow_slug}
-                    </option>
-                  <% end %>
-                </optgroup>
-              <% end %>
-            </select>
-          </div>
-
-          <div>
-            <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
-              Status
-            </label>
-            <select
-              name="status"
-              class="block w-32 rounded-md border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
-            >
-              <option value="">All statuses</option>
-              <option value="started" selected={@status_filter == "started"}>Running</option>
-              <option value="completed" selected={@status_filter == "completed"}>Completed</option>
-              <option value="failed" selected={@status_filter == "failed"}>Failed</option>
-            </select>
-          </div>
-
-          <div>
-            <label class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
-              Time Range
-            </label>
-            <select
-              name="time_range"
-              class="block w-32 rounded-md border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 text-sm"
-            >
-              <option value="last_hour" selected={@time_range == :last_hour}>Last hour</option>
-              <option value="last_24h" selected={@time_range == :last_24h}>Last 24h</option>
-              <option value="last_7d" selected={@time_range == :last_7d}>Last 7 days</option>
-              <option value="last_30d" selected={@time_range == :last_30d}>Last 30 days</option>
-            </select>
-          </div>
-        </form>
+        <LiveFilter.bar filter={@live_filter} />
       </div>
 
-      <!-- Runs Table -->
       <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
         <div class="px-4 py-2 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 flex items-center justify-between">
           <span class="text-sm text-slate-500 dark:text-slate-400">
-            Showing {@runs_count} of {@total_count} runs
+            Showing {length(@runs)} of {@pagination.total_count} runs
           </span>
         </div>
         <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
@@ -317,15 +250,15 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
               <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Started</th>
             </tr>
           </thead>
-          <tbody id="runs-list" phx-update="stream" class="divide-y divide-slate-200 dark:divide-slate-700">
-            <tr :if={@runs_count == 0} id="runs-empty">
+          <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
+            <tr :if={@runs == []} id="runs-empty">
               <td colspan="6" class="px-4 py-8 text-center text-slate-500 dark:text-slate-400">
                 No runs found
               </td>
             </tr>
             <tr
-              :for={{dom_id, run} <- @streams.runs}
-              id={dom_id}
+              :for={run <- @runs}
+              id={"run-#{run.run_id}"}
               class="hover:bg-slate-50 dark:hover:bg-slate-700/50"
             >
               <td class="px-4 py-3">
@@ -339,7 +272,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
               <td class="px-4 py-3">
                 <div class="flex items-center gap-2">
                   <span class="text-sm text-slate-700 dark:text-slate-300">{run.flow_slug}</span>
-                  <TypeBadge.type_badge type={Map.get(run, :flow_type, "flow")} />
+                  <TypeBadge.type_badge type={run.flow_type} />
                 </div>
               </td>
               <td class="px-4 py-3">
@@ -350,7 +283,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
                 />
               </td>
               <td class="px-4 py-3 w-32">
-                <%= if Map.get(run, :flow_type) in ["job", "cron"] do %>
+                <%= if run.flow_type in ["job", "cron"] do %>
                   <span class="text-sm text-slate-400 dark:text-slate-500">—</span>
                 <% else %>
                   <ProgressBar.progress_bar
@@ -372,14 +305,8 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
           </tbody>
         </table>
 
-        <!-- Load More Button -->
-        <div :if={@has_more} class="px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
-          <button
-            phx-click="load_more"
-            class="w-full py-2 px-4 text-sm font-medium text-purple-600 hover:text-purple-700 dark:text-purple-400 dark:hover:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition-colors"
-          >
-            Load more runs
-          </button>
+        <div class="px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
+          <LiveFilter.paginator pagination={@pagination} />
         </div>
       </div>
     </Layouts.dashboard_layout>

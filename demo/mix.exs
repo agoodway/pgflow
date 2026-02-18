@@ -44,6 +44,9 @@ defmodule PgflowDemo.MixProject do
       # PgFlow - path dependency to parent library
       {:pgflow, path: ".."},
 
+      # LiveFilter - for dashboard runs filtering
+      {:live_filter, github: "agoodway/livefilter", override: true},
+
       # Phoenix
       {:phoenix, "~> 1.8.3"},
       {:phoenix_ecto, "~> 4.5"},
