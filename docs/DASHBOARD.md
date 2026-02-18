@@ -41,19 +41,73 @@ scope "/" do
 end
 ```
 
-### 4. Install JavaScript Hooks
+### 4. Add LiveFilter Dependency
 
-In `assets/js/app.js`:
+The dashboard's Runs page uses [LiveFilter](https://github.com/agoodway/livefilter) for filtering and pagination. Since it's an optional dependency of pgflow, you must add it explicitly:
+
+```elixir
+# mix.exs
+def deps do
+  [
+    {:pgflow, "~> 0.1.0"},
+    {:live_filter, github: "agoodway/livefilter"}
+  ]
+end
+```
+
+Then fetch:
+
+```bash
+mix deps.get
+```
+
+### 5. Configure Assets
+
+**JavaScript hooks** — Add both PgFlow Dashboard and LiveFilter hooks to your LiveSocket in `assets/js/app.js`:
 
 ```javascript
 import { DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu } from "../../deps/pgflow/priv/static/pgflow_dashboard/hooks"
+import { hooks as liveFilterHooks } from "live_filter"
 
 let liveSocket = new LiveSocket("/live", Socket, {
-  hooks: { DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu, ...yourOtherHooks }
+  hooks: { ...liveFilterHooks, DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu, ...yourOtherHooks }
 })
 ```
 
-### 5. Visit the Dashboard
+**esbuild** — LiveFilter's JS import requires `NODE_PATH` to resolve `deps/`. In `config/config.exs`:
+
+```elixir
+config :esbuild,
+  version: "0.25.4",
+  my_app: [
+    args: ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js),
+    cd: Path.expand("../assets", __DIR__),
+    env: %{
+      "NODE_PATH" => Path.expand("../deps", __DIR__)
+    }
+  ]
+```
+
+**Tailwind** — Add LiveFilter and DaisyUI component paths so Tailwind generates their classes. In your CSS file (e.g. `assets/css/app.css`):
+
+```css
+@source "../../deps/daisy_ui_components";
+@source "../../deps/live_filter";
+```
+
+Or if using `tailwind.config.js`:
+
+```javascript
+module.exports = {
+  content: [
+    // ... existing paths ...
+    "../deps/daisy_ui_components/**/*.*ex",
+    "../deps/live_filter/**/*.*ex",
+  ],
+}
+```
+
+### 6. Visit the Dashboard
 
 Start your server and navigate to `/pgflow`.
 
@@ -160,4 +214,6 @@ mix ecto.migrate
 
 **Real-time updates not working** -- Check that PubSub is configured and the `PgFlowDashboard` supervisor is running.
 
-**Hooks not working** -- Verify all four hooks (`DarkMode`, `KeyboardShortcuts`, `ShortcutsModal`, `MobileMenu`) are registered with your LiveSocket.
+**Hooks not working** -- Verify all four hooks (`DarkMode`, `KeyboardShortcuts`, `ShortcutsModal`, `MobileMenu`) and `liveFilterHooks` are registered with your LiveSocket.
+
+**Runs page filters not rendering** -- Ensure `live_filter` is in your deps, esbuild `NODE_PATH` includes `deps/`, and Tailwind scans `daisy_ui_components` and `live_filter` paths.
