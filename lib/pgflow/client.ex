@@ -142,7 +142,135 @@ defmodule PgFlow.Client do
     end
   end
 
+  @doc """
+  Creates, verifies, or recompiles a flow definition at runtime.
+
+  This is the primary API for runtime flow management. Unlike the compile-time
+  DSL (`use PgFlow.Flow`), this function creates flow definitions from plain
+  data — ideal for per-tenant automations where flows are defined dynamically.
+
+  ## Options
+
+    * `:max_attempts` - Maximum retry attempts (default: 3)
+    * `:base_delay` - Base delay between retries in seconds (default: 1)
+    * `:timeout` - Step timeout in seconds (default: 60)
+    * `:steps` - **Required.** List of step definition maps, each with:
+      * `:slug` - Step identifier (required)
+      * `:deps` - List of dependency step slugs (default: [])
+      * `:step_type` - Step type, e.g. `"single"` (default: `"single"`)
+      * `:max_attempts` - Step-level retry override (optional)
+      * `:base_delay` - Step-level delay override (optional)
+      * `:timeout` - Step-level timeout override (optional)
+      * `:start_delay` - Delay before step starts in seconds (optional)
+
+  ## Examples
+
+      PgFlow.Client.ensure_flow("acct_123_hubspot_sync_v1",
+        max_attempts: 3,
+        steps: [
+          %{slug: "reshape", deps: []},
+          %{slug: "create_contact", deps: ["reshape"]}
+        ]
+      )
+      # => {:ok, %{"status" => "compiled", "differences" => []}}
+
+  """
+  @spec ensure_flow(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def ensure_flow(slug, opts) when is_binary(slug) and is_list(opts) do
+    with {:ok, repo} <- get_repo(),
+         {:ok, {flow_opts, steps}} <- build_shape(opts) do
+      result = Flows.ensure_flow(repo, slug, flow_opts, steps)
+
+      case result do
+        {:ok, status_map} ->
+          :telemetry.execute(
+            [:pgflow, :flow, :ensured],
+            %{system_time: System.system_time()},
+            %{flow_slug: slug, status: status_map["status"]}
+          )
+
+          {:ok, status_map}
+
+        error ->
+          error
+      end
+    end
+  end
+
+  @doc """
+  Deletes a flow and all associated data (runs, tasks, queue).
+
+  This permanently removes the flow definition and all historical run data.
+  Intended for cleaning up retired flow versions.
+
+  ## Examples
+
+      PgFlow.Client.delete_flow("acct_123_hubspot_sync_v1")
+      # => :ok
+
+  """
+  @spec delete_flow(String.t()) :: :ok | {:error, term()}
+  def delete_flow(slug) when is_binary(slug) do
+    with {:ok, repo} <- get_repo() do
+      result = Flows.delete_flow(repo, slug)
+
+      case result do
+        :ok ->
+          :telemetry.execute(
+            [:pgflow, :flow, :deleted],
+            %{system_time: System.system_time()},
+            %{flow_slug: slug}
+          )
+
+          :ok
+
+        error ->
+          error
+      end
+    end
+  end
+
+  @doc """
+  Checks if a flow exists in the database.
+
+  ## Examples
+
+      PgFlow.Client.flow_exists?("acct_123_hubspot_sync_v1")
+      # => {:ok, true}
+
+  """
+  @spec flow_exists?(String.t()) :: {:ok, boolean()} | {:error, term()}
+  def flow_exists?(slug) when is_binary(slug) do
+    with {:ok, repo} <- get_repo() do
+      Flows.flow_exists?(repo, slug)
+    end
+  end
+
   # Private Functions
+
+  defp build_shape(opts) do
+    steps = Keyword.get(opts, :steps)
+
+    unless steps do
+      {:error, ":steps option is required"}
+    else
+      flow_opts = %{
+        "max_attempts" => Keyword.get(opts, :max_attempts, 3),
+        "base_delay" => Keyword.get(opts, :base_delay, 1),
+        "timeout" => Keyword.get(opts, :timeout, 60)
+      }
+
+      step_maps =
+        Enum.map(steps, fn step ->
+          step
+          |> Map.new(fn {k, v} -> {to_string(k), v} end)
+          |> Map.put_new("deps", [])
+          |> Map.put_new("step_type", "single")
+        end)
+
+      {:ok, {flow_opts, step_maps}}
+    end
+  end
 
   defp get_repo do
     # Try persistent_term first (set by supervisor), then application env

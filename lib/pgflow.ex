@@ -155,6 +155,49 @@ defmodule PgFlow do
   defdelegate get_run_with_states(run_id), to: Client
 
   @doc """
+  Creates, verifies, or recompiles a flow definition at runtime.
+
+  Unlike the compile-time DSL (`use PgFlow.Flow`), this creates flow
+  definitions from plain data — for per-tenant automations and dynamic workflows.
+
+  ## Examples
+
+      PgFlow.ensure_flow("acct_123_hubspot_sync_v1",
+        max_attempts: 3,
+        steps: [
+          %{slug: "reshape", deps: []},
+          %{slug: "create_contact", deps: ["reshape"]}
+        ]
+      )
+
+  """
+  @spec ensure_flow(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  defdelegate ensure_flow(slug, opts), to: Client
+
+  @doc """
+  Deletes a flow and all associated data (runs, tasks, queue).
+
+  ## Examples
+
+      PgFlow.delete_flow("acct_123_hubspot_sync_v1")
+
+  """
+  @spec delete_flow(String.t()) :: :ok | {:error, term()}
+  defdelegate delete_flow(slug), to: Client
+
+  @doc """
+  Checks if a flow exists in the database.
+
+  ## Examples
+
+      PgFlow.flow_exists?("my_flow")
+      # => {:ok, true}
+
+  """
+  @spec flow_exists?(String.t()) :: {:ok, boolean()} | {:error, term()}
+  defdelegate flow_exists?(slug), to: Client
+
+  @doc """
   Enqueues a background job with the given input.
 
   This is the primary API for dispatching jobs. Under the hood, jobs are
