@@ -155,24 +155,27 @@ defmodule PgFlow do
   defdelegate get_run_with_states(run_id), to: Client
 
   @doc """
-  Creates, verifies, or recompiles a flow definition at runtime.
+  Recompiles a flow definition at runtime.
 
   Unlike the compile-time DSL (`use PgFlow.Flow`), this creates flow
-  definitions from plain data — for per-tenant automations and dynamic workflows.
+  definitions from plain data - for per-tenant automations and dynamic workflows.
+
+  If the flow already exists, this operation is destructive: existing
+  definition and historical run/task data for the slug are deleted first.
 
   ## Examples
 
-      PgFlow.ensure_flow("acct_123_hubspot_sync_v1",
-        max_attempts: 3,
-        steps: [
-          %{slug: "reshape", deps: []},
-          %{slug: "create_contact", deps: ["reshape"]}
-        ]
-      )
+       PgFlow.upsert_flow("acct_123_hubspot_sync_v1",
+         max_attempts: 3,
+         steps: [
+           %{slug: "reshape", deps: []},
+           %{slug: "create_contact", deps: ["reshape"]}
+         ]
+       )
 
   """
-  @spec ensure_flow(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  defdelegate ensure_flow(slug, opts), to: Client
+  @spec upsert_flow(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  defdelegate upsert_flow(slug, opts), to: Client
 
   @doc """
   Deletes a flow and all associated data (runs, tasks, queue).

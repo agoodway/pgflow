@@ -207,11 +207,14 @@ defmodule PgFlow.Queries.Flows do
   end
 
   @doc """
-  Creates or re-creates a flow definition from runtime options.
+  Recompiles a flow definition from runtime options.
 
   Uses `create_flow` + `add_step` (the proven low-level SQL functions) to
   register a flow. If the flow already exists, it is dropped and re-created
   to ensure the definition matches.
+
+  This operation is destructive for existing flows: all historical run and
+  task data for the slug is deleted before recompiling.
 
   ## Parameters
 
@@ -226,65 +229,31 @@ defmodule PgFlow.Queries.Flows do
     * `{:ok, %{"status" => status}}` where status is `"compiled"` or `"recompiled"`
     * `{:error, term()}` on failure
   """
-  @spec ensure_flow(Ecto.Repo.t(), String.t(), map(), list(map())) ::
+  @spec upsert_flow(Ecto.Repo.t(), String.t(), map(), list(map())) ::
           {:ok, map()} | {:error, term()}
-  def ensure_flow(repo, slug, opts, steps) do
+  def upsert_flow(repo, slug, opts, steps) do
     max_attempts = Map.get(opts, "max_attempts", 3)
     base_delay = Map.get(opts, "base_delay", 1)
     timeout = Map.get(opts, "timeout", 60)
 
-    # Check if flow already exists to determine status
-    {:ok, exists} = flow_exists?(repo, slug)
+    tx_result =
+      repo.transaction(fn ->
+        with {:ok, _} <- advisory_lock_slug(repo, slug),
+             {:ok, exists} <- flow_exists?(repo, slug),
+             :ok <- maybe_delete_existing_flow(repo, slug, exists),
+             :ok <- create_flow_definition(repo, slug, max_attempts, base_delay, timeout),
+             :ok <- add_flow_steps(repo, slug, steps) do
+          status = if exists, do: "recompiled", else: "compiled"
+          %{"status" => status, "differences" => []}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
 
-    if exists do
-      # Drop and re-create for idempotent upsert
-      case delete_flow(repo, slug) do
-        :ok -> :ok
-        {:error, reason} -> throw({:delete_failed, reason})
-      end
+    case tx_result do
+      {:ok, status_map} -> {:ok, status_map}
+      {:error, reason} -> {:error, reason}
     end
-
-    # Create the flow
-    create_sql = "SELECT pgflow.create_flow($1, $2, $3, $4)"
-
-    case SQL.query(repo, create_sql, [slug, max_attempts, base_delay, timeout]) do
-      {:ok, _} -> :ok
-      {:error, error} -> throw({:create_failed, error})
-    end
-
-    # Add each step
-    for step <- steps do
-      step_slug = Map.fetch!(step, "slug")
-      deps = Map.get(step, "deps", [])
-      step_type = Map.get(step, "step_type", "single")
-      step_max = Map.get(step, "max_attempts")
-      step_delay = Map.get(step, "base_delay")
-      step_timeout = Map.get(step, "timeout")
-      start_delay = Map.get(step, "start_delay")
-
-      add_sql = "SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8)"
-
-      case SQL.query(repo, add_sql, [
-             slug,
-             step_slug,
-             deps,
-             step_max,
-             step_delay,
-             step_timeout,
-             start_delay,
-             step_type
-           ]) do
-        {:ok, _} -> :ok
-        {:error, error} -> throw({:add_step_failed, step_slug, error})
-      end
-    end
-
-    status = if exists, do: "recompiled", else: "compiled"
-    {:ok, %{"status" => status, "differences" => []}}
-  catch
-    {:delete_failed, reason} -> {:error, {:delete_failed, reason}}
-    {:create_failed, reason} -> {:error, {:create_failed, reason}}
-    {:add_step_failed, step_slug, reason} -> {:error, {:add_step_failed, step_slug, reason}}
   end
 
   @doc """
@@ -302,6 +271,23 @@ defmodule PgFlow.Queries.Flows do
   """
   @spec delete_flow(Ecto.Repo.t(), String.t()) :: :ok | {:error, term()}
   def delete_flow(repo, slug) do
+    tx_result =
+      repo.transaction(fn ->
+        with {:ok, _} <- advisory_lock_slug(repo, slug),
+             :ok <- delete_flow_rows(repo, slug) do
+          :ok
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+
+    case tx_result do
+      {:ok, :ok} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_flow_rows(repo, slug) do
     # Delete in dependency order: tasks -> states -> runs -> deps -> steps -> flow -> queue
     delete_tasks_sql = "DELETE FROM pgflow.step_tasks WHERE flow_slug = $1"
 
@@ -325,7 +311,59 @@ defmodule PgFlow.Queries.Flows do
       # Try to drop the pgmq queue, ignore errors
       _ = SQL.query(repo, "SELECT pgmq.drop_queue($1::text)", [slug])
       :ok
+    else
+      {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp advisory_lock_slug(repo, slug) do
+    SQL.query(repo, "SELECT pg_advisory_xact_lock(hashtext($1))", [slug])
+  end
+
+  defp maybe_delete_existing_flow(_repo, _slug, false), do: :ok
+
+  defp maybe_delete_existing_flow(repo, slug, true) do
+    case delete_flow_rows(repo, slug) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:delete_failed, reason}}
+    end
+  end
+
+  defp create_flow_definition(repo, slug, max_attempts, base_delay, timeout) do
+    create_sql = "SELECT pgflow.create_flow($1, $2, $3, $4)"
+
+    case SQL.query(repo, create_sql, [slug, max_attempts, base_delay, timeout]) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, {:create_failed, reason}}
+    end
+  end
+
+  defp add_flow_steps(repo, slug, steps) do
+    Enum.reduce_while(steps, :ok, fn step, :ok ->
+      step_slug = Map.fetch!(step, "slug")
+      deps = Map.get(step, "deps", [])
+      step_type = Map.get(step, "step_type", "single")
+      step_max = Map.get(step, "max_attempts")
+      step_delay = Map.get(step, "base_delay")
+      step_timeout = Map.get(step, "timeout")
+      start_delay = Map.get(step, "start_delay")
+
+      add_sql = "SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8)"
+
+      case SQL.query(repo, add_sql, [
+             slug,
+             step_slug,
+             deps,
+             step_max,
+             step_delay,
+             step_timeout,
+             start_delay,
+             step_type
+           ]) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:add_step_failed, step_slug, reason}}}
+      end
+    end)
   end
 
   @doc """

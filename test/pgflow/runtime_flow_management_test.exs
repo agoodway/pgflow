@@ -3,6 +3,7 @@ defmodule PgFlow.RuntimeFlowManagementTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.Client
+  alias PgFlow.Queries.Flows
   alias PgFlow.TestRepo
 
   @moduletag timeout: 30_000
@@ -22,12 +23,12 @@ defmodule PgFlow.RuntimeFlowManagementTest do
     :ok
   end
 
-  # ── ensure_flow ──────────────────────────────────────────────────
+  # ── upsert_flow ──────────────────────────────────────────────────
 
-  describe "ensure_flow/2" do
+  describe "upsert_flow/2" do
     test "creates a new flow (status: compiled)" do
       {:ok, result} =
-        Client.ensure_flow("test_runtime_flow",
+        Client.upsert_flow("test_runtime_flow",
           max_attempts: 3,
           steps: [
             %{slug: "step_a", deps: []},
@@ -45,21 +46,21 @@ defmodule PgFlow.RuntimeFlowManagementTest do
         steps: [%{slug: "only_step", deps: []}]
       ]
 
-      {:ok, first} = Client.ensure_flow("test_idempotent", opts)
+      {:ok, first} = Client.upsert_flow("test_idempotent", opts)
       assert first["status"] == "compiled"
 
-      {:ok, second} = Client.ensure_flow("test_idempotent", opts)
+      {:ok, second} = Client.upsert_flow("test_idempotent", opts)
       assert second["status"] == "recompiled"
     end
 
     test "changed shape returns recompiled" do
       {:ok, _} =
-        Client.ensure_flow("test_changed",
+        Client.upsert_flow("test_changed",
           steps: [%{slug: "old_step", deps: []}]
         )
 
       {:ok, result} =
-        Client.ensure_flow("test_changed",
+        Client.upsert_flow("test_changed",
           steps: [
             %{slug: "new_step_a", deps: []},
             %{slug: "new_step_b", deps: ["new_step_a"]}
@@ -71,7 +72,7 @@ defmodule PgFlow.RuntimeFlowManagementTest do
 
     test "created flow can be started with start_flow" do
       {:ok, _} =
-        Client.ensure_flow("test_startable",
+        Client.upsert_flow("test_startable",
           steps: [%{slug: "process", deps: []}]
         )
 
@@ -82,7 +83,7 @@ defmodule PgFlow.RuntimeFlowManagementTest do
 
     test "defaults applied when opts omitted" do
       {:ok, result} =
-        Client.ensure_flow("test_defaults",
+        Client.upsert_flow("test_defaults",
           steps: [%{slug: "step_one", deps: []}]
         )
 
@@ -94,7 +95,7 @@ defmodule PgFlow.RuntimeFlowManagementTest do
 
     test "complex multi-dep DAG" do
       {:ok, result} =
-        Client.ensure_flow("test_complex_dag",
+        Client.upsert_flow("test_complex_dag",
           max_attempts: 5,
           base_delay: 2,
           timeout: 120,
@@ -114,8 +115,64 @@ defmodule PgFlow.RuntimeFlowManagementTest do
       assert is_binary(run_id)
     end
 
+    test "applies step-level option overrides" do
+      {:ok, _} =
+        Client.upsert_flow("test_step_overrides",
+          steps: [
+            %{slug: "parent", deps: []},
+            %{
+              slug: "child",
+              deps: ["parent"],
+              max_attempts: 7,
+              timeout: 123,
+              start_delay: 4
+            }
+          ]
+        )
+
+      %{rows: [[max_attempts, timeout, start_delay]]} =
+        TestRepo.query!(
+          "SELECT max_attempts, timeout, start_delay FROM pgflow.steps WHERE flow_slug = $1 AND step_slug = $2",
+          ["test_step_overrides", "child"]
+        )
+
+      assert max_attempts == 7
+      assert timeout == 123
+      assert start_delay == 4
+    end
+
     test "returns error when steps not provided" do
-      assert {:error, ":steps option is required"} = Client.ensure_flow("no_steps", [])
+      assert {:error, :steps_required} = Client.upsert_flow("no_steps", [])
+    end
+
+    test "validates step dependencies refer to declared slugs" do
+      assert {:error, {:unknown_dependency, "step_b", "missing"}} =
+               Client.upsert_flow("test_invalid_deps",
+                 steps: [%{slug: "step_b", deps: ["missing"]}]
+               )
+    end
+
+    test "validates step type allowlist" do
+      assert {:error, {:invalid_step_type, "fanout"}} =
+               Client.upsert_flow("test_invalid_step_type",
+                 steps: [%{slug: "step_a", step_type: "fanout"}]
+               )
+    end
+
+    test "validates slug format" do
+      assert {:error, {:invalid_slug, "Bad Slug"}} =
+               Client.upsert_flow("Bad Slug", steps: [%{slug: "step_a"}])
+    end
+
+    test "emits [:pgflow, :flow, :ensured] telemetry" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:pgflow, :flow, :ensured]])
+
+      {:ok, _result} = Client.upsert_flow("test_telemetry_ensured", steps: [%{slug: "step_a"}])
+
+      assert_received {[:pgflow, :flow, :ensured], ^ref, measurements, metadata}
+      assert is_integer(measurements.system_time)
+      assert metadata.flow_slug == "test_telemetry_ensured"
+      assert metadata.status == "compiled"
     end
   end
 
@@ -124,7 +181,7 @@ defmodule PgFlow.RuntimeFlowManagementTest do
   describe "delete_flow/1" do
     test "deletes existing flow, confirmed via flow_exists?" do
       {:ok, _} =
-        Client.ensure_flow("test_delete_me",
+        Client.upsert_flow("test_delete_me",
           steps: [%{slug: "doomed", deps: []}]
         )
 
@@ -141,7 +198,7 @@ defmodule PgFlow.RuntimeFlowManagementTest do
 
     test "deletes flow that has existing runs" do
       {:ok, _} =
-        Client.ensure_flow("test_delete_with_runs",
+        Client.upsert_flow("test_delete_with_runs",
           steps: [%{slug: "work", deps: []}]
         )
 
@@ -153,6 +210,18 @@ defmodule PgFlow.RuntimeFlowManagementTest do
 
       {:ok, false} = Client.flow_exists?("test_delete_with_runs")
     end
+
+    test "emits [:pgflow, :flow, :deleted] telemetry" do
+      {:ok, _} = Client.upsert_flow("test_telemetry_deleted", steps: [%{slug: "cleanup"}])
+
+      ref = :telemetry_test.attach_event_handlers(self(), [[:pgflow, :flow, :deleted]])
+
+      assert :ok = Client.delete_flow("test_telemetry_deleted")
+
+      assert_received {[:pgflow, :flow, :deleted], ^ref, measurements, metadata}
+      assert is_integer(measurements.system_time)
+      assert metadata.flow_slug == "test_telemetry_deleted"
+    end
   end
 
   # ── flow_exists? ─────────────────────────────────────────────────
@@ -160,7 +229,7 @@ defmodule PgFlow.RuntimeFlowManagementTest do
   describe "flow_exists?/1" do
     test "returns true for existing flow" do
       {:ok, _} =
-        Client.ensure_flow("test_exists",
+        Client.upsert_flow("test_exists",
           steps: [%{slug: "a", deps: []}]
         )
 
@@ -175,9 +244,9 @@ defmodule PgFlow.RuntimeFlowManagementTest do
   # ── facade delegations ──────────────────────────────────────────
 
   describe "PgFlow facade" do
-    test "ensure_flow delegates to Client" do
+    test "upsert_flow delegates to Client" do
       {:ok, result} =
-        PgFlow.ensure_flow("test_facade_ensure",
+        PgFlow.upsert_flow("test_facade_ensure",
           steps: [%{slug: "facade_step", deps: []}]
         )
 
@@ -186,7 +255,7 @@ defmodule PgFlow.RuntimeFlowManagementTest do
 
     test "delete_flow delegates to Client" do
       {:ok, _} =
-        PgFlow.ensure_flow("test_facade_delete",
+        PgFlow.upsert_flow("test_facade_delete",
           steps: [%{slug: "temp", deps: []}]
         )
 
@@ -195,6 +264,23 @@ defmodule PgFlow.RuntimeFlowManagementTest do
 
     test "flow_exists? delegates to Client" do
       assert {:ok, false} = PgFlow.flow_exists?("facade_nonexistent")
+    end
+  end
+
+  describe "query-layer rollback safety" do
+    test "upsert_flow rolls back on add_step failure" do
+      assert {:error, {:add_step_failed, "bad_step", _reason}} =
+               Flows.upsert_flow(
+                 TestRepo,
+                 "test_rollback_on_step_error",
+                 %{},
+                 [
+                   %{"slug" => "ok_step"},
+                   %{"slug" => "bad_step", "step_type" => "invalid"}
+                 ]
+               )
+
+      assert {:ok, false} = Flows.flow_exists?(TestRepo, "test_rollback_on_step_error")
     end
   end
 end
