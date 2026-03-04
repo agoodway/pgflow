@@ -287,33 +287,57 @@ defmodule PgFlow.Queries.Flows do
     end
   end
 
+  # Deletes all flow data in dependency order:
+  # tasks -> states -> runs -> deps -> steps -> flow -> queue
   defp delete_flow_rows(repo, slug) do
-    # Delete in dependency order: tasks -> states -> runs -> deps -> steps -> flow -> queue
-    delete_tasks_sql = "DELETE FROM pgflow.step_tasks WHERE flow_slug = $1"
-
-    delete_states_sql = """
-    DELETE FROM pgflow.step_states WHERE run_id IN (
-      SELECT run_id FROM pgflow.runs WHERE flow_slug = $1
-    )
-    """
-
-    delete_runs_sql = "DELETE FROM pgflow.runs WHERE flow_slug = $1"
-    delete_deps_sql = "DELETE FROM pgflow.deps WHERE flow_slug = $1"
-    delete_steps_sql = "DELETE FROM pgflow.steps WHERE flow_slug = $1"
-    delete_flow_sql = "DELETE FROM pgflow.flows WHERE flow_slug = $1"
-
-    with {:ok, _} <- SQL.query(repo, delete_tasks_sql, [slug]),
-         {:ok, _} <- SQL.query(repo, delete_states_sql, [slug]),
-         {:ok, _} <- SQL.query(repo, delete_runs_sql, [slug]),
-         {:ok, _} <- SQL.query(repo, delete_deps_sql, [slug]),
-         {:ok, _} <- SQL.query(repo, delete_steps_sql, [slug]),
-         {:ok, _} <- SQL.query(repo, delete_flow_sql, [slug]) do
-      # Try to drop the pgmq queue, ignore errors
-      _ = SQL.query(repo, "SELECT pgmq.drop_queue($1::text)", [slug])
+    with {:ok, _} <- delete_step_tasks(repo, slug),
+         {:ok, _} <- delete_step_states(repo, slug),
+         {:ok, _} <- delete_runs(repo, slug),
+         {:ok, _} <- delete_deps(repo, slug),
+         {:ok, _} <- delete_steps(repo, slug),
+         {:ok, _} <- delete_flow_record(repo, slug) do
+      drop_queue(repo, slug)
       :ok
     else
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp delete_step_tasks(repo, slug) do
+    SQL.query(repo, "DELETE FROM pgflow.step_tasks WHERE flow_slug = $1", [slug])
+  end
+
+  defp delete_step_states(repo, slug) do
+    SQL.query(
+      repo,
+      """
+      DELETE FROM pgflow.step_states WHERE run_id IN (
+        SELECT run_id FROM pgflow.runs WHERE flow_slug = $1
+      )
+      """,
+      [slug]
+    )
+  end
+
+  defp delete_runs(repo, slug) do
+    SQL.query(repo, "DELETE FROM pgflow.runs WHERE flow_slug = $1", [slug])
+  end
+
+  defp delete_deps(repo, slug) do
+    SQL.query(repo, "DELETE FROM pgflow.deps WHERE flow_slug = $1", [slug])
+  end
+
+  defp delete_steps(repo, slug) do
+    SQL.query(repo, "DELETE FROM pgflow.steps WHERE flow_slug = $1", [slug])
+  end
+
+  defp delete_flow_record(repo, slug) do
+    SQL.query(repo, "DELETE FROM pgflow.flows WHERE flow_slug = $1", [slug])
+  end
+
+  defp drop_queue(repo, slug) do
+    _ = SQL.query(repo, "SELECT pgmq.drop_queue($1::text)", [slug])
+    :ok
   end
 
   defp advisory_lock_slug(repo, slug) do
