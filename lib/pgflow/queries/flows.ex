@@ -207,6 +207,190 @@ defmodule PgFlow.Queries.Flows do
   end
 
   @doc """
+  Recompiles a flow definition from runtime options.
+
+  Uses `create_flow` + `add_step` (the proven low-level SQL functions) to
+  register a flow. If the flow already exists, it is dropped and re-created
+  to ensure the definition matches.
+
+  This operation is destructive for existing flows: all historical run and
+  task data for the slug is deleted before recompiling.
+
+  ## Parameters
+
+    * `repo` - The Ecto repository
+    * `slug` - The flow identifier slug
+    * `opts` - Flow-level options map with keys: `"max_attempts"`, `"base_delay"`, `"timeout"`
+    * `steps` - List of step definition maps with keys: `"slug"`, `"deps"`, `"step_type"`,
+      and optional `"max_attempts"`, `"base_delay"`, `"timeout"`, `"start_delay"`
+
+  ## Returns
+
+    * `{:ok, %{"status" => status}}` where status is `"compiled"` or `"recompiled"`
+    * `{:error, term()}` on failure
+  """
+  @spec upsert_flow(Ecto.Repo.t(), String.t(), map(), list(map())) ::
+          {:ok, map()} | {:error, term()}
+  def upsert_flow(repo, slug, opts, steps) do
+    max_attempts = Map.get(opts, "max_attempts", 3)
+    base_delay = Map.get(opts, "base_delay", 1)
+    timeout = Map.get(opts, "timeout", 60)
+
+    tx_result =
+      repo.transaction(fn ->
+        with {:ok, _} <- advisory_lock_slug(repo, slug),
+             {:ok, exists} <- flow_exists?(repo, slug),
+             :ok <- maybe_delete_existing_flow(repo, slug, exists),
+             :ok <- create_flow_definition(repo, slug, max_attempts, base_delay, timeout),
+             :ok <- add_flow_steps(repo, slug, steps) do
+          status = if exists, do: "recompiled", else: "compiled"
+          %{"status" => status, "differences" => []}
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+
+    case tx_result do
+      {:ok, status_map} -> {:ok, status_map}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Deletes a flow and all associated data (runs, step states, step tasks, queue).
+
+  ## Parameters
+
+    * `repo` - The Ecto repository
+    * `slug` - The flow identifier slug
+
+  ## Returns
+
+    * `:ok` on success (including when flow doesn't exist)
+    * `{:error, term()}` on failure
+  """
+  @spec delete_flow(Ecto.Repo.t(), String.t()) :: :ok | {:error, term()}
+  def delete_flow(repo, slug) do
+    tx_result =
+      repo.transaction(fn ->
+        with {:ok, _} <- advisory_lock_slug(repo, slug),
+             :ok <- delete_flow_rows(repo, slug) do
+          :ok
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+
+    case tx_result do
+      {:ok, :ok} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Deletes all flow data in dependency order:
+  # tasks -> states -> runs -> deps -> steps -> flow -> queue
+  defp delete_flow_rows(repo, slug) do
+    with {:ok, _} <- delete_step_tasks(repo, slug),
+         {:ok, _} <- delete_step_states(repo, slug),
+         {:ok, _} <- delete_runs(repo, slug),
+         {:ok, _} <- delete_deps(repo, slug),
+         {:ok, _} <- delete_steps(repo, slug),
+         {:ok, _} <- delete_flow_record(repo, slug) do
+      drop_queue(repo, slug)
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_step_tasks(repo, slug) do
+    SQL.query(repo, "DELETE FROM pgflow.step_tasks WHERE flow_slug = $1", [slug])
+  end
+
+  defp delete_step_states(repo, slug) do
+    SQL.query(
+      repo,
+      """
+      DELETE FROM pgflow.step_states WHERE run_id IN (
+        SELECT run_id FROM pgflow.runs WHERE flow_slug = $1
+      )
+      """,
+      [slug]
+    )
+  end
+
+  defp delete_runs(repo, slug) do
+    SQL.query(repo, "DELETE FROM pgflow.runs WHERE flow_slug = $1", [slug])
+  end
+
+  defp delete_deps(repo, slug) do
+    SQL.query(repo, "DELETE FROM pgflow.deps WHERE flow_slug = $1", [slug])
+  end
+
+  defp delete_steps(repo, slug) do
+    SQL.query(repo, "DELETE FROM pgflow.steps WHERE flow_slug = $1", [slug])
+  end
+
+  defp delete_flow_record(repo, slug) do
+    SQL.query(repo, "DELETE FROM pgflow.flows WHERE flow_slug = $1", [slug])
+  end
+
+  defp drop_queue(repo, slug) do
+    _ = SQL.query(repo, "SELECT pgmq.drop_queue($1::text)", [slug])
+    :ok
+  end
+
+  defp advisory_lock_slug(repo, slug) do
+    SQL.query(repo, "SELECT pg_advisory_xact_lock(hashtext($1))", [slug])
+  end
+
+  defp maybe_delete_existing_flow(_repo, _slug, false), do: :ok
+
+  defp maybe_delete_existing_flow(repo, slug, true) do
+    case delete_flow_rows(repo, slug) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:delete_failed, reason}}
+    end
+  end
+
+  defp create_flow_definition(repo, slug, max_attempts, base_delay, timeout) do
+    create_sql = "SELECT pgflow.create_flow($1, $2, $3, $4)"
+
+    case SQL.query(repo, create_sql, [slug, max_attempts, base_delay, timeout]) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, {:create_failed, reason}}
+    end
+  end
+
+  defp add_flow_steps(repo, slug, steps) do
+    Enum.reduce_while(steps, :ok, fn step, :ok ->
+      step_slug = Map.fetch!(step, "slug")
+      deps = Map.get(step, "deps", [])
+      step_type = Map.get(step, "step_type", "single")
+      step_max = Map.get(step, "max_attempts")
+      step_delay = Map.get(step, "base_delay")
+      step_timeout = Map.get(step, "timeout")
+      start_delay = Map.get(step, "start_delay")
+
+      add_sql = "SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8)"
+
+      case SQL.query(repo, add_sql, [
+             slug,
+             step_slug,
+             deps,
+             step_max,
+             step_delay,
+             step_timeout,
+             start_delay,
+             step_type
+           ]) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:add_step_failed, step_slug, reason}}}
+      end
+    end)
+  end
+
+  @doc """
   Retrieves the input data for a flow run.
   """
   @spec get_flow_input(Ecto.Repo.t(), String.t()) ::
@@ -232,6 +416,20 @@ defmodule PgFlow.Queries.Flows do
     case execute_rpc(repo, "flow_exists", [flow_slug], schema: @pgflow_schema, mode: :raw) do
       {:ok, [%{flow_exists: result}]} -> {:ok, result}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Checks if a slug is valid according to core pgflow rules.
+  """
+  @spec valid_slug?(Ecto.Repo.t(), String.t()) :: {:ok, boolean()} | {:error, term()}
+  def valid_slug?(repo, slug) do
+    sql = "SELECT pgflow.is_valid_slug($1)"
+
+    case SQL.query(repo, sql, [slug]) do
+      {:ok, %{rows: [[result]]}} -> {:ok, result}
+      {:ok, %{rows: []}} -> {:ok, false}
+      {:error, error} -> {:error, error}
     end
   end
 
