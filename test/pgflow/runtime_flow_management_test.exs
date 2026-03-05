@@ -164,6 +164,21 @@ defmodule PgFlow.RuntimeFlowManagementTest do
                Client.upsert_flow("Bad Slug", steps: [%{slug: "step_a"}])
     end
 
+    test "rejects dashes to match core slug validation" do
+      assert {:error, {:invalid_slug, "invalid-flow"}} =
+               Client.upsert_flow("invalid-flow", steps: [%{slug: "step_a"}])
+    end
+
+    test "rejects reserved slug run" do
+      assert {:error, {:invalid_slug, "run"}} =
+               Client.upsert_flow("run", steps: [%{slug: "step_a"}])
+    end
+
+    test "accepts uppercase slug per core validation" do
+      assert {:ok, %{"status" => "compiled"}} =
+               Client.upsert_flow("RuntimeFlowV2", steps: [%{slug: "step_a"}])
+    end
+
     test "emits [:pgflow, :flow, :ensured] telemetry" do
       ref = :telemetry_test.attach_event_handlers(self(), [[:pgflow, :flow, :ensured]])
 

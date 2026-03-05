@@ -420,6 +420,20 @@ defmodule PgFlow.Queries.Flows do
   end
 
   @doc """
+  Checks if a slug is valid according to core pgflow rules.
+  """
+  @spec valid_slug?(Ecto.Repo.t(), String.t()) :: {:ok, boolean()} | {:error, term()}
+  def valid_slug?(repo, slug) do
+    sql = "SELECT pgflow.is_valid_slug($1)"
+
+    case SQL.query(repo, sql, [slug]) do
+      {:ok, %{rows: [[result]]}} -> {:ok, result}
+      {:ok, %{rows: []}} -> {:ok, false}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  @doc """
   Deletes a message from a PGMQ queue.
   """
   @spec delete_message(Ecto.Repo.t(), String.t(), pos_integer()) ::

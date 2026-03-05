@@ -96,6 +96,13 @@ defmodule PgFlow.ClientTest do
       result = Client.start_flow("nonexistent_flow", %{"value" => 1})
       assert {:error, _} = result
     end
+
+    test "does not pre-validate legacy atom slugs" do
+      result = Client.start_flow(:"my.flow", %{"value" => 1})
+
+      assert {:error, _} = result
+      refute match?({:error, {:invalid_slug, _}}, result)
+    end
   end
 
   # ── repo resolution ────────────────────────────────────────────────

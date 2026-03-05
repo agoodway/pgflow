@@ -25,7 +25,6 @@ defmodule PgFlow.Client do
   alias PgFlow.Queries.Flows
   alias PgFlow.Schema.Run
 
-  @slug_regex ~r/\A[a-z0-9_\-]{1,63}\z/
   @allowed_step_types ["single", "map"]
 
   @doc """
@@ -185,8 +184,8 @@ defmodule PgFlow.Client do
   @spec upsert_flow(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def upsert_flow(slug, opts) when is_binary(slug) and is_list(opts) do
     with {:ok, repo} <- get_repo(),
-         :ok <- validate_slug(slug),
-         {:ok, {flow_opts, steps}} <- build_shape(opts) do
+         :ok <- validate_runtime_slug(repo, slug),
+         {:ok, {flow_opts, steps}} <- build_shape(repo, opts) do
       result = Flows.upsert_flow(repo, slug, flow_opts, steps)
 
       case result do
@@ -220,7 +219,7 @@ defmodule PgFlow.Client do
   @spec delete_flow(String.t()) :: :ok | {:error, term()}
   def delete_flow(slug) when is_binary(slug) do
     with {:ok, repo} <- get_repo(),
-         :ok <- validate_slug(slug) do
+         :ok <- validate_runtime_slug(repo, slug) do
       result = Flows.delete_flow(repo, slug)
 
       case result do
@@ -251,14 +250,14 @@ defmodule PgFlow.Client do
   @spec flow_exists?(String.t()) :: {:ok, boolean()} | {:error, term()}
   def flow_exists?(slug) when is_binary(slug) do
     with {:ok, repo} <- get_repo(),
-         :ok <- validate_slug(slug) do
+         :ok <- validate_runtime_slug(repo, slug) do
       Flows.flow_exists?(repo, slug)
     end
   end
 
   # Private Functions
 
-  defp build_shape(opts) do
+  defp build_shape(repo, opts) do
     case Keyword.fetch(opts, :steps) do
       :error ->
         {:error, :steps_required}
@@ -270,7 +269,7 @@ defmodule PgFlow.Client do
           "timeout" => Keyword.get(opts, :timeout, 60)
         }
 
-        with {:ok, step_maps} <- normalize_steps(steps),
+        with {:ok, step_maps} <- normalize_steps(repo, steps),
              :ok <- validate_step_dependencies(step_maps) do
           {:ok, {flow_opts, step_maps}}
         end
@@ -295,35 +294,28 @@ defmodule PgFlow.Client do
   end
 
   defp resolve_slug(module) when is_atom(module) do
-    slug =
-      if function_exported?(module, :__pgflow_slug__, 0) do
-        Atom.to_string(module.__pgflow_slug__())
-      else
-        Atom.to_string(module)
-      end
-
-    with :ok <- validate_slug(slug) do
-      {:ok, slug}
+    if function_exported?(module, :__pgflow_slug__, 0) do
+      {:ok, Atom.to_string(module.__pgflow_slug__())}
+    else
+      {:ok, Atom.to_string(module)}
     end
   end
 
   defp resolve_slug(slug) when is_binary(slug) do
-    with :ok <- validate_slug(slug) do
-      {:ok, slug}
+    {:ok, slug}
+  end
+
+  defp validate_runtime_slug(repo, slug) do
+    case Flows.valid_slug?(repo, slug) do
+      {:ok, true} -> :ok
+      {:ok, false} -> {:error, {:invalid_slug, slug}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp validate_slug(slug) do
-    if slug =~ @slug_regex do
-      :ok
-    else
-      {:error, {:invalid_slug, slug}}
-    end
-  end
-
-  defp normalize_steps(steps) do
+  defp normalize_steps(repo, steps) do
     Enum.reduce_while(steps, {:ok, []}, fn step, {:ok, acc} ->
-      case normalize_step(step) do
+      case normalize_step(repo, step) do
         {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -334,12 +326,12 @@ defmodule PgFlow.Client do
     end
   end
 
-  defp normalize_step(step) when is_map(step) do
+  defp normalize_step(repo, step) when is_map(step) do
     with {:ok, slug} <- fetch_required_step_slug(step),
-         :ok <- validate_slug(slug),
+         :ok <- validate_runtime_slug(repo, slug),
          {:ok, deps} <- normalize_step_deps(step),
          {:ok, step_type} <- normalize_step_type(step),
-         :ok <- validate_optional_deps(deps) do
+         :ok <- validate_optional_deps(repo, deps) do
       {:ok,
        %{
          "slug" => slug,
@@ -353,7 +345,7 @@ defmodule PgFlow.Client do
     end
   end
 
-  defp normalize_step(_invalid), do: {:error, :invalid_step}
+  defp normalize_step(_repo, _invalid), do: {:error, :invalid_step}
 
   defp fetch_required_step_slug(step) do
     case get_step_value(step, :slug) do
@@ -380,15 +372,21 @@ defmodule PgFlow.Client do
     end
   end
 
-  defp validate_optional_deps(deps) do
+  defp validate_optional_deps(repo, deps) do
     invalid_dep = Enum.find(deps, fn dep -> not is_binary(dep) or dep == "" end)
 
     if invalid_dep do
       {:error, {:invalid_step_dep, invalid_dep}}
     else
-      case Enum.find(deps, fn dep -> not String.match?(dep, @slug_regex) end) do
+      case Enum.find_value(deps, fn dep ->
+             case Flows.valid_slug?(repo, dep) do
+               {:ok, true} -> nil
+               {:ok, false} -> {:invalid_step_dep_slug, dep}
+               {:error, reason} -> {:slug_validation_failed, dep, reason}
+             end
+           end) do
         nil -> :ok
-        dep -> {:error, {:invalid_step_dep_slug, dep}}
+        reason -> {:error, reason}
       end
     end
   end
