@@ -42,15 +42,46 @@ defmodule PgFlow.Queries.Pgmq do
   end
 
   @doc """
-  Gets the installed pgmq extension version.
+  Gets the installed pgmq version.
 
-  Returns `{:ok, version}` if pgmq is installed, or `{:error, :not_installed}` if not.
+  Checks two sources in order:
+  1. `pg_extension` catalog — works when pgmq is installed via `CREATE EXTENSION pgmq`
+  2. Feature detection — checks for the `enable_notify_insert` function in the `pgmq` schema,
+     which indicates pgmq >= 1.8.0 installed from a SQL dump (e.g., on Neon or other managed Postgres)
+
+  Returns `{:ok, version}` if pgmq is detected, or `{:error, :not_installed}` if not.
   """
   @spec get_pgmq_version(module()) :: {:ok, String.t()} | {:error, :not_installed | term()}
   def get_pgmq_version(repo) do
+    case get_extension_version(repo) do
+      {:ok, version} -> {:ok, version}
+      {:error, :not_installed} -> detect_version_by_features(repo)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp get_extension_version(repo) do
     case SQL.query(repo, "SELECT extversion FROM pg_extension WHERE extname = 'pgmq'", []) do
       {:ok, %{rows: [[version]]}} -> {:ok, version}
       {:ok, %{rows: []}} -> {:error, :not_installed}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp detect_version_by_features(repo) do
+    case SQL.query(
+           repo,
+           """
+           SELECT EXISTS(
+             SELECT 1 FROM pg_proc
+             WHERE proname = 'enable_notify_insert'
+             AND pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'pgmq')
+           )
+           """,
+           []
+         ) do
+      {:ok, %{rows: [[true]]}} -> {:ok, "1.8.0"}
+      {:ok, %{rows: [[false]]}} -> {:error, :not_installed}
       {:error, reason} -> {:error, reason}
     end
   end

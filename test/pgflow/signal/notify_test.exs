@@ -14,6 +14,7 @@ defmodule PgFlow.Signal.NotifyTest do
   use ExUnit.Case
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias PgFlow.Queries.Pgmq
   alias PgFlow.Signal.Notify
   alias PgFlow.TestRepo
 
@@ -41,8 +42,8 @@ defmodule PgFlow.Signal.NotifyTest do
   end
 
   defp pgmq_version do
-    case TestRepo.query("SELECT extversion FROM pg_extension WHERE extname = 'pgmq'") do
-      {:ok, %{rows: [[version]]}} -> version
+    case Pgmq.get_pgmq_version(TestRepo) do
+      {:ok, version} -> version
       _ -> nil
     end
   end
