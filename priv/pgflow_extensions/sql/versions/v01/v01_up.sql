@@ -1,4 +1,4 @@
--- Tracking view for pg_evolver version management
+-- Tracking view for ecto_evolver version management
 CREATE OR REPLACE VIEW $SCHEMA$.extensions_version AS SELECT 1 AS placeholder;
 
 --SPLIT--

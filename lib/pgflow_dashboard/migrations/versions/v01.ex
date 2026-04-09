@@ -41,7 +41,7 @@ defmodule PgFlowDashboard.Migrations.Versions.V01 do
   - `get_run_history_grid(text, int)` - Activity grid data for flow
   """
 
-  use PgEvolver.Version,
+  use EctoEvolver.Version,
     otp_app: :pgflow,
     version: "01",
     sql_path: "pgflow_dashboard/sql/versions"

@@ -9,7 +9,7 @@ if db_available? do
   {:ok, _} = Application.ensure_all_started(:ecto_sql)
   {:ok, _} = PgFlow.TestRepo.start_link()
 
-  # Install PostgreSQL extension functions via PgEvolver's real migration path
+  # Install PostgreSQL extension functions via EctoEvolver's real migration path
   defmodule PgFlow.Test.ExtensionsMigration do
     use Ecto.Migration
     def up, do: PgFlow.ExtensionsMigration.up()

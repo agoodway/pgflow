@@ -7,7 +7,7 @@ Both implementations share the same base PostgreSQL schema and SQL orchestration
 | Layer         | TypeScript/Deno                                   | Elixir                                               |
 | ------------- | ------------------------------------------------- | ---------------------------------------------------- |
 | DSL           | Fluent builder with full generic type inference   | Macros (`use PgFlow.Flow`, `use PgFlow.Job`)         |
-| SQL Core      | 30+ PL/pgSQL functions                            | Same SQL, shared via pg_evolver migrations           |
+| SQL Core      | 30+ PL/pgSQL functions                            | Same SQL, shared via ecto_evolver migrations           |
 | Worker        | Stateless Deno edge functions (HTTP-triggered)    | Long-running OTP GenServer per flow/job              |
 | Polling       | `pgflow.read_with_poll()` (blocking)              | `pgmq.read()` (non-blocking) + adaptive backoff      |
 | Signal        | pgmq polling only                                 | Polling (default) or LISTEN/NOTIFY                   |

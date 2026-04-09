@@ -27,11 +27,11 @@ defmodule PgFlowDashboard.Migration do
 
   """
 
-  # PgEvolver generates pattern matches for :materialized_view and :table,
+  # EctoEvolver generates pattern matches for :materialized_view and :table,
   # but our tracking_object is {:view, ...} so only :view is reachable.
   @dialyzer :no_match
 
-  use PgEvolver,
+  use EctoEvolver,
     otp_app: :pgflow,
     default_prefix: "pgflow_dashboard",
     versions: [PgFlowDashboard.Migrations.Versions.V01],

@@ -15,7 +15,7 @@ defmodule PgFlow.Migrations.Versions.V01 do
   - `recover_stalled_tasks(double precision)` - Recover stalled tasks and reset visibility
   """
 
-  use PgEvolver.Version,
+  use EctoEvolver.Version,
     otp_app: :pgflow,
     version: "01",
     sql_path: "pgflow_extensions/sql/versions"
