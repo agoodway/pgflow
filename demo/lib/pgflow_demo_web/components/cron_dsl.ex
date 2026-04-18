@@ -51,7 +51,7 @@ defmodule PgflowDemoWeb.Components.CronDSL do
 
     %{
       next_run_at: next_run_at,
-      relative_time: Timex.from_now(next_run_at),
+      relative_time: PgFlowDashboard.Live.LiveHelpers.format_relative_time(next_run_at),
       expression: "@hourly",
       human_schedule: "Hourly"
     }

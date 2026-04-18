@@ -137,14 +137,14 @@ defmodule PgFlow.Queries.Helpers do
   # ===================
 
   @doc """
-  Converts a time range atom to a DateTime using Timex.shift.
+  Converts a time range atom to a start DateTime.
   """
   @spec time_range_start(atom()) :: DateTime.t()
-  def time_range_start(:last_hour), do: Timex.shift(DateTime.utc_now(), hours: -1)
-  def time_range_start(:last_24h), do: Timex.shift(DateTime.utc_now(), hours: -24)
-  def time_range_start(:last_7d), do: Timex.shift(DateTime.utc_now(), days: -7)
-  def time_range_start(:last_30d), do: Timex.shift(DateTime.utc_now(), days: -30)
-  def time_range_start(_), do: Timex.shift(DateTime.utc_now(), hours: -24)
+  def time_range_start(:last_hour), do: DateTime.add(DateTime.utc_now(), -1, :hour)
+  def time_range_start(:last_24h), do: DateTime.add(DateTime.utc_now(), -24, :hour)
+  def time_range_start(:last_7d), do: DateTime.add(DateTime.utc_now(), -7, :day)
+  def time_range_start(:last_30d), do: DateTime.add(DateTime.utc_now(), -30, :day)
+  def time_range_start(_), do: DateTime.add(DateTime.utc_now(), -24, :hour)
 
   # ===================
   # Status Helpers

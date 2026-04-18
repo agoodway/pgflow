@@ -5,6 +5,8 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
   Provides common functionality for configuration access and real-time subscriptions.
   """
 
+  require Logger
+
   import Phoenix.Component
   import Phoenix.LiveView
 
@@ -83,21 +85,21 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
 
   @doc """
   Formats a timestamp for display in the configured time zone.
-
-  Uses Timex for timezone conversion and formatting.
   """
   def format_timestamp(nil, _time_zone), do: "-"
 
   def format_timestamp(%DateTime{} = dt, time_zone) when time_zone in ["UTC", "Etc/UTC"] do
-    Timex.format!(dt, "%Y-%m-%d %H:%M:%S", :strftime)
+    Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S")
   end
 
   def format_timestamp(%DateTime{} = dt, time_zone) do
-    dt
-    |> Timex.Timezone.convert(time_zone)
-    |> Timex.format!("%Y-%m-%d %H:%M:%S", :strftime)
-  rescue
-    _ -> Timex.format!(dt, "%Y-%m-%d %H:%M:%S", :strftime)
+    case DateTime.shift_zone(dt, time_zone, Tz.TimeZoneDatabase) do
+      {:ok, shifted} -> Calendar.strftime(shifted, "%Y-%m-%d %H:%M:%S")
+
+      {:error, reason} ->
+        Logger.warning("format_timestamp: invalid time_zone #{inspect(time_zone)}: #{inspect(reason)}")
+        Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S")
+    end
   end
 
   def format_timestamp(%NaiveDateTime{} = ndt, time_zone) do
@@ -107,27 +109,24 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
   end
 
   @doc """
-  Formats a datetime relative to now using Timex.
+  Formats a datetime relative to now.
 
   Returns strings like "in 5 minutes", "in 2 hours", "3 minutes ago".
   """
-  def format_relative_time(nil), do: "—"
+  def format_relative_time(nil), do: "-"
 
-  def format_relative_time(%DateTime{} = dt) do
-    Timex.from_now(dt)
-  end
+  def format_relative_time(%DateTime{} = dt), do: relative_from_now(dt)
 
   def format_relative_time(%NaiveDateTime{} = ndt) do
     ndt
     |> DateTime.from_naive!("Etc/UTC")
-    |> Timex.from_now()
+    |> relative_from_now()
   end
 
   @doc """
-  Formats a duration in milliseconds for display using Timex.Duration.
+  Formats a duration in milliseconds for display.
 
-  Uses Timex to convert milliseconds and formats in a compact style suitable
-  for dashboards: "50ms", "1.5s", "2.3m", "1.2h".
+  Formats in a compact style suitable for dashboards: "50ms", "1.5s", "2.3m", "1.2h".
   """
   def format_duration(nil), do: "-"
 
@@ -137,14 +136,35 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
   def format_duration(ms) when is_float(ms), do: format_duration(round(ms))
 
   def format_duration(ms) when is_integer(ms) do
-    duration = Timex.Duration.from_milliseconds(ms)
-    total_seconds = Timex.Duration.to_seconds(duration)
+    total_seconds = ms / 1000
 
     cond do
       total_seconds < 1 -> "#{ms}ms"
       total_seconds < 60 -> "#{Float.round(total_seconds, 1)}s"
       total_seconds < 3600 -> "#{Float.round(total_seconds / 60, 1)}m"
       true -> "#{Float.round(total_seconds / 3600, 1)}h"
+    end
+  end
+
+  defp relative_from_now(dt) do
+    diff = DateTime.diff(dt, DateTime.utc_now(), :second)
+
+    {abs_diff, suffix, prefix} =
+      if diff >= 0, do: {diff, "", "in "}, else: {abs(diff), " ago", ""}
+
+    cond do
+      abs_diff < 5 -> "just now"
+      abs_diff < 60 -> "#{prefix}#{abs_diff} seconds#{suffix}"
+      abs_diff < 120 -> "#{prefix}1 minute#{suffix}"
+      abs_diff < 3600 -> "#{prefix}#{div(abs_diff, 60)} minutes#{suffix}"
+      abs_diff < 7200 -> "#{prefix}1 hour#{suffix}"
+      abs_diff < 86_400 -> "#{prefix}#{div(abs_diff, 3600)} hours#{suffix}"
+      abs_diff < 172_800 -> "#{prefix}1 day#{suffix}"
+      abs_diff < 2_592_000 -> "#{prefix}#{div(abs_diff, 86_400)} days#{suffix}"
+      abs_diff < 5_184_000 -> "#{prefix}1 month#{suffix}"
+      abs_diff < 31_536_000 -> "#{prefix}#{div(abs_diff, 2_592_000)} months#{suffix}"
+      abs_diff < 63_072_000 -> "#{prefix}1 year#{suffix}"
+      true -> "#{prefix}#{div(abs_diff, 31_536_000)} years#{suffix}"
     end
   end
 
