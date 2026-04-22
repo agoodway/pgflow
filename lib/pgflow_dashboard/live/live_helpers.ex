@@ -94,10 +94,14 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
 
   def format_timestamp(%DateTime{} = dt, time_zone) do
     case DateTime.shift_zone(dt, time_zone, Tz.TimeZoneDatabase) do
-      {:ok, shifted} -> Calendar.strftime(shifted, "%Y-%m-%d %H:%M:%S")
+      {:ok, shifted} ->
+        Calendar.strftime(shifted, "%Y-%m-%d %H:%M:%S")
 
       {:error, reason} ->
-        Logger.warning("format_timestamp: invalid time_zone #{inspect(time_zone)}: #{inspect(reason)}")
+        Logger.warning(
+          "format_timestamp: invalid time_zone #{inspect(time_zone)}: #{inspect(reason)}"
+        )
+
         Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S")
     end
   end

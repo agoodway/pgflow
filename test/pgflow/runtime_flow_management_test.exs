@@ -132,7 +132,7 @@ defmodule PgFlow.RuntimeFlowManagementTest do
 
       %{rows: [[max_attempts, timeout, start_delay]]} =
         TestRepo.query!(
-          "SELECT max_attempts, timeout, start_delay FROM pgflow.steps WHERE flow_slug = $1 AND step_slug = $2",
+          "SELECT opt_max_attempts, opt_timeout, opt_start_delay FROM pgflow.steps WHERE flow_slug = $1 AND step_slug = $2",
           ["test_step_overrides", "child"]
         )
 
