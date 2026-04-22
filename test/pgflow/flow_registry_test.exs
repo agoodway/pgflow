@@ -16,9 +16,19 @@ defmodule PgFlow.FlowRegistryTest do
       assert :ok = FlowRegistry.register(SimpleFlow)
     end
 
+    test "returns error tuple for module without __pgflow_definition__" do
+      assert {:error, {:invalid_flow_module, Enum}} = FlowRegistry.register(Enum)
+    end
+  end
+
+  describe "register!/1" do
+    test "registers a valid flow module" do
+      assert :ok = FlowRegistry.register!(SimpleFlow)
+    end
+
     test "raises for module without __pgflow_definition__" do
       assert_raise ArgumentError, ~r/does not implement PgFlow.Flow behaviour/, fn ->
-        FlowRegistry.register(Enum)
+        FlowRegistry.register!(Enum)
       end
     end
   end

@@ -113,8 +113,13 @@ defmodule PgFlow.Signal.Notify do
     channel = pgmq_channel(flow_slug)
     monitor_ref = Process.monitor(worker_pid)
 
+    # Issue the new LISTEN first, then tear down the prior binding on success.
+    # If listen/2 fails, the old binding remains intact — callers just see
+    # :error and the pre-existing worker keeps receiving notifications.
     case Postgrex.Notifications.listen(state.conn, channel) do
       {status, listen_ref} when status in [:ok, :eventually] ->
+        state = cleanup_existing_worker(state, flow_slug)
+
         state = %{
           state
           | workers:
@@ -189,6 +194,28 @@ defmodule PgFlow.Signal.Notify do
 
   defp find_worker_by_pid(workers, pid) do
     Enum.find(workers, fn {_slug, entry} -> entry.worker_pid == pid end)
+  end
+
+  # Clear any prior monitor + LISTEN for this flow_slug before re-registering.
+  # Repeated registration (worker restart, FlowStarter retry) must not leak
+  # monitor refs or LISTEN bindings on the Postgrex.Notifications connection.
+  # pgmq notify remains enabled — this is a worker re-bind, not a full teardown.
+  defp cleanup_existing_worker(state, flow_slug) do
+    case Map.get(state.workers, flow_slug) do
+      nil ->
+        state
+
+      %{monitor_ref: monitor_ref, listen_ref: listen_ref} ->
+        Process.demonitor(monitor_ref, [:flush])
+        maybe_unlisten(state.conn, listen_ref)
+        channel = pgmq_channel(flow_slug)
+
+        %{
+          state
+          | workers: Map.delete(state.workers, flow_slug),
+            channels: Map.delete(state.channels, channel)
+        }
+    end
   end
 
   defp pgmq_channel(flow_slug), do: "pgmq.q_#{flow_slug}.INSERT"

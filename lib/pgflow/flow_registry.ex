@@ -43,17 +43,43 @@ defmodule PgFlow.FlowRegistry do
   The flow module must implement the PgFlow.Flow behaviour (via `use PgFlow.Flow`)
   and expose flow metadata via the `__pgflow_definition__/0` callback.
 
+  Returns `:ok` on success, `{:error, reason}` otherwise. Reasons:
+
+    * `{:not_loaded, module}` — the module could not be loaded
+    * `{:invalid_flow_module, module}` — the module is loaded but does not
+      implement the `PgFlow.Flow` behaviour
+
   ## Examples
 
       :ok = PgFlow.FlowRegistry.register(MyApp.Flows.ProcessOrder)
-
-  Returns `:ok` on success, or raises if the flow module is invalid.
+      {:error, {:invalid_flow_module, Enum}} = PgFlow.FlowRegistry.register(Enum)
   """
-  @spec register(module()) :: :ok
+  @spec register(module()) ::
+          :ok
+          | {:error, {:not_loaded, module()} | {:invalid_flow_module, module()}}
   def register(flow_module) when is_atom(flow_module) do
-    validate_flow_module!(flow_module)
-    flow_def = extract_flow_definition(flow_module)
-    GenServer.call(__MODULE__, {:register, flow_module, flow_def})
+    with :ok <- validate_flow_module(flow_module) do
+      flow_def = extract_flow_definition(flow_module)
+      GenServer.call(__MODULE__, {:register, flow_module, flow_def})
+    end
+  end
+
+  @doc """
+  Like `register/1`, but raises `ArgumentError` on invalid modules.
+  """
+  @spec register!(module()) :: :ok
+  def register!(flow_module) when is_atom(flow_module) do
+    case register(flow_module) do
+      :ok ->
+        :ok
+
+      {:error, {:not_loaded, module}} ->
+        raise ArgumentError, "flow module #{inspect(module)} is not loaded"
+
+      {:error, {:invalid_flow_module, module}} ->
+        raise ArgumentError,
+              "flow module #{inspect(module)} does not implement PgFlow.Flow behaviour"
+    end
   end
 
   @doc """
@@ -144,14 +170,16 @@ defmodule PgFlow.FlowRegistry do
 
   # Private Functions
 
-  defp validate_flow_module!(flow_module) do
-    unless Code.ensure_loaded?(flow_module) do
-      raise ArgumentError, "flow module #{inspect(flow_module)} is not loaded"
-    end
+  defp validate_flow_module(flow_module) do
+    cond do
+      not Code.ensure_loaded?(flow_module) ->
+        {:error, {:not_loaded, flow_module}}
 
-    unless function_exported?(flow_module, :__pgflow_definition__, 0) do
-      raise ArgumentError,
-            "flow module #{inspect(flow_module)} does not implement PgFlow.Flow behaviour"
+      not function_exported?(flow_module, :__pgflow_definition__, 0) ->
+        {:error, {:invalid_flow_module, flow_module}}
+
+      true ->
+        :ok
     end
   end
 

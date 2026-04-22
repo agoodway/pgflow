@@ -29,7 +29,7 @@ defmodule PgFlow.FlowCase do
 
     # Register test flows
     if flows = tags[:flows] do
-      Enum.each(flows, &FlowRegistry.register/1)
+      Enum.each(flows, &FlowRegistry.register!/1)
       on_exit(fn -> Enum.each(flows, &FlowRegistry.unregister/1) end)
     end
 
