@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - '54322:5432'
+      - '54323:5432'
     volumes:
       - ./test/support/db/pgflow.sql:/docker-entrypoint-initdb.d/950_pgflow.sql
     environment:

@@ -5,7 +5,7 @@ config :pgflow, PgFlow.TestRepo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  port: 54322,
+  port: 54323,
   database: "pgflow_test",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: 10

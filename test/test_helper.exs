@@ -1,6 +1,6 @@
 # Only start the test repository if we can connect
 db_available? =
-  case System.cmd("pg_isready", ["-h", "localhost", "-p", "54322"], stderr_to_stdout: true) do
+  case System.cmd("pg_isready", ["-h", "localhost", "-p", "54323"], stderr_to_stdout: true) do
     {_, 0} -> true
     _ -> false
   end
