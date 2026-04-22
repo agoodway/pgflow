@@ -294,15 +294,40 @@ defmodule PgFlow.Client do
   end
 
   defp resolve_slug(module) when is_atom(module) do
-    if function_exported?(module, :__pgflow_slug__, 0) do
-      {:ok, Atom.to_string(module.__pgflow_slug__())}
-    else
-      {:ok, Atom.to_string(module)}
+    # `function_exported?/3` does not trigger code loading, so an unloaded
+    # flow module would silently fall through to `Atom.to_string(module)` and
+    # produce an invalid slug like "Elixir.MyApp.Flows.Foo", violating the
+    # pgflow.flows FK at runtime. Force-load first.
+    loaded? = Code.ensure_loaded?(module)
+
+    cond do
+      loaded? and function_exported?(module, :__pgflow_slug__, 0) ->
+        {:ok, Atom.to_string(module.__pgflow_slug__())}
+
+      loaded? ->
+        # Loaded module without __pgflow_slug__/0 — preserve legacy behaviour
+        # that stringifies the module name as the slug.
+        {:ok, Atom.to_string(module)}
+
+      elixir_module_alias?(module) ->
+        # Unloaded Elixir module alias (typo, uncompiled, missing from code
+        # path). Refuse to fall through to module-name stringification.
+        {:error, {:unknown_flow, module}}
+
+      true ->
+        # Bare atom slug like :my_flow, not a module alias.
+        {:ok, Atom.to_string(module)}
     end
   end
 
   defp resolve_slug(slug) when is_binary(slug) do
     {:ok, slug}
+  end
+
+  defp elixir_module_alias?(atom) do
+    atom
+    |> Atom.to_string()
+    |> String.starts_with?("Elixir.")
   end
 
   defp validate_runtime_slug(repo, slug) do

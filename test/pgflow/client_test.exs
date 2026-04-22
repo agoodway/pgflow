@@ -82,6 +82,23 @@ defmodule PgFlow.ClientTest do
       assert {:ok, _} = Ecto.UUID.cast(run_id)
     end
 
+    test "resolves slug when flow module is not yet loaded" do
+      # Regression: boot-race where the flow module exists on disk but has not
+      # been loaded into the VM yet. `function_exported?/3` does not trigger
+      # loading, so resolve_slug/1 used to silently stringify the atom to
+      # "Elixir.PgFlow.TestFlows.UnloadableFlow" and blow up with an FK
+      # violation on pgflow.flows.flow_slug.
+      compile_flow(PgFlow.TestFlows.UnloadableFlow)
+      true = :code.delete(PgFlow.TestFlows.UnloadableFlow)
+      :code.purge(PgFlow.TestFlows.UnloadableFlow)
+      refute function_exported?(PgFlow.TestFlows.UnloadableFlow, :__pgflow_slug__, 0)
+
+      assert {:ok, run_id} =
+               Client.start_flow(PgFlow.TestFlows.UnloadableFlow, %{"value" => 1})
+
+      assert is_binary(run_id)
+    end
+
     test "starts flow with string slug", %{flow_slug: flow_slug} do
       {:ok, run_id} = Client.start_flow(flow_slug, %{"value" => 42})
       assert is_binary(run_id)

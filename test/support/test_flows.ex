@@ -221,6 +221,22 @@ defmodule PgFlow.TestFlows do
       end
     end
   end
+
+  defmodule UnloadableFlow do
+    @moduledoc """
+    Regression target for `PgFlow.Client.resolve_slug/1`. The test purges and
+    deletes this module at runtime to simulate the boot-race where a flow
+    module exists on disk but has not been loaded into the VM yet. No other
+    test should reference it.
+    """
+    use PgFlow.Flow
+
+    @flow slug: :unloadable_flow, max_attempts: 1
+
+    step :noop do
+      fn _input, _ctx -> %{} end
+    end
+  end
 end
 
 defmodule PgFlow.TestJobs do
