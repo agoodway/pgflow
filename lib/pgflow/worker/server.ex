@@ -811,15 +811,25 @@ defmodule PgFlow.Worker.Server do
          ) do
       {:ok, _} ->
         maybe_emit_run_completed(state, task_meta.run_id)
+        # Delete message from queue ONLY after DB state is confirmed updated.
+        # If we delete unconditionally (including on the :error branch below),
+        # a transient complete_task failure (deadlock, conn hiccup, serializable
+        # rollback) orphans the task: step_tasks row stays un-updated but pgmq
+        # message is gone, so no worker can re-pick it up and stalled_recovery
+        # can't resurrect it. The step hangs forever waiting on a task that
+        # will never run.
+        delete_message(state, task_meta.msg_id)
 
       {:error, reason} ->
         Logger.error(
           "Failed to mark task as completed: #{task_meta.step_slug}[#{task_meta.task_index}] - #{inspect(reason)}"
         )
-    end
 
-    # Delete message from queue
-    delete_message(state, task_meta.msg_id)
+        # Intentionally DO NOT delete the message. pgmq visibility timeout
+        # will expire and the task will be re-delivered. Handlers must be
+        # idempotent (the same contract required for pgflow retries on
+        # genuine task crashes).
+    end
   end
 
   defp handle_task_success(task_meta, {:error, error_message}, state) do
