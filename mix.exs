@@ -56,7 +56,7 @@ defmodule PgFlow.MixProject do
       {:ecto_evolver, github: "agoodway/ecto_evolver"},
 
       # Dev/Test
-      {:ex_doc, "~> 0.31", only: :dev, runtime: false},
+      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:doctor, "~> 0.22.0", only: :dev, runtime: false}
