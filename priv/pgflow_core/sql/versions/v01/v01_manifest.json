@@ -1,0 +1,29 @@
+{
+  "files": [
+    "20250429164909_pgflow_initial.sql",
+    "20250517072017_pgflow_fix_poll_for_tasks_to_use_separate_statement_for_polling.sql",
+    "20250609105135_pgflow_add_start_tasks_and_started_status.sql",
+    "20250610180554_pgflow_add_set_vt_batch_and_use_it_in_start_tasks.sql",
+    "20250614124241_pgflow_add_realtime.sql",
+    "20250619195327_pgflow_fix_fail_task_missing_realtime_event.sql",
+    "20250627090700_pgflow_fix_function_search_paths.sql",
+    "20250707210212_pgflow_add_opt_start_delay.sql",
+    "20250719205006_pgflow_worker_deprecation.sql",
+    "20251006073122_pgflow_add_map_step_type.sql",
+    "20251103222045_pgflow_fix_broadcast_order_and_timestamp_handling.sql",
+    "20251104080523_pgflow_upgrade_pgmq_1_5_1.sql",
+    "20251130000000_pgflow_auto_compilation.sql",
+    "20251209074533_pgflow_worker_management.sql",
+    "20251212100113_pgflow_allow_data_loss_parameter.sql",
+    "20251225163110_pgflow_add_flow_input_column.sql",
+    "20260103145141_pgflow_step_output_storage.sql",
+    "20260120205547_pgflow_requeue_stalled_tasks.sql",
+    "20260124113408_pgflow_auth_secret_support.sql",
+    "20260214181656_pgflow_step_conditions.sql"
+  ],
+  "upstream_path": "pkgs/core/supabase/migrations",
+  "upstream_repo": "pgflow-dev/pgflow",
+  "upstream_sha": "5c132f3cd0c220cb4213fe12ef6ac1799f219a77",
+  "generated_at": "2026-04-23T16:29:27.934506Z",
+  "statement_count": 139
+}

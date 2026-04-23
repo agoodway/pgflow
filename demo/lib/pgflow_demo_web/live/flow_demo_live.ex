@@ -601,7 +601,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp get_migration_content do
     case find_migration_file() do
       nil ->
-        "# Migration file not found\n# Run: mix pgflow.gen.flow PgflowDemo.Flows.ArticleFlow"
+        "# Migration file not found\n# Run: mix pgflow.gen.flow_migration PgflowDemo.Flows.ArticleFlow"
 
       path ->
         case File.read(path) do

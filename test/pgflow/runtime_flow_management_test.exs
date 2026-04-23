@@ -211,6 +211,32 @@ defmodule PgFlow.RuntimeFlowManagementTest do
       assert :ok = Client.delete_flow("nonexistent_flow_xyz")
     end
 
+    test "cleans up orphan queue when pgflow.flows rows are missing" do
+      # Simulate an out-of-band cleanup that removed flow metadata but left the
+      # pgmq queue behind. `delete_flow/1` should still succeed and drop it.
+      {:ok, _} = Client.upsert_flow("test_orphan_queue", steps: [%{slug: "s", deps: []}])
+
+      TestRepo.query!("DELETE FROM pgflow.deps WHERE flow_slug = $1", ["test_orphan_queue"])
+      TestRepo.query!("DELETE FROM pgflow.steps WHERE flow_slug = $1", ["test_orphan_queue"])
+      TestRepo.query!("DELETE FROM pgflow.flows WHERE flow_slug = $1", ["test_orphan_queue"])
+      assert queue_exists?("test_orphan_queue")
+
+      assert :ok = Client.delete_flow("test_orphan_queue")
+      refute queue_exists?("test_orphan_queue")
+    end
+
+    test "handles missing queue when flow row exists" do
+      # Inverse case: somebody drops the queue externally. delete_flow/1
+      # should still clear the flow row without erroring on the missing queue.
+      {:ok, _} = Client.upsert_flow("test_missing_queue", steps: [%{slug: "s", deps: []}])
+
+      TestRepo.query!("SELECT pgmq.drop_queue($1::text)", ["test_missing_queue"])
+      refute queue_exists?("test_missing_queue")
+
+      assert :ok = Client.delete_flow("test_missing_queue")
+      assert {:ok, false} = Client.flow_exists?("test_missing_queue")
+    end
+
     test "deletes flow that has existing runs" do
       {:ok, _} =
         Client.upsert_flow("test_delete_with_runs",
@@ -297,5 +323,12 @@ defmodule PgFlow.RuntimeFlowManagementTest do
 
       assert {:ok, false} = Flows.flow_exists?(TestRepo, "test_rollback_on_step_error")
     end
+  end
+
+  defp queue_exists?(slug) do
+    {:ok, %{rows: [[exists?]]}} =
+      TestRepo.query("SELECT to_regclass($1::text) IS NOT NULL", ["pgmq.q_" <> slug])
+
+    exists?
   end
 end

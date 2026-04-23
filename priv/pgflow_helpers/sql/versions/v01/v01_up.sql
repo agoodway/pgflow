@@ -3,6 +3,27 @@ CREATE OR REPLACE VIEW $SCHEMA$.extensions_version AS SELECT 1 AS placeholder;
 
 --SPLIT--
 
+-- Compatibility shim: pgflow core's plpgsql functions call `realtime.send(...)`
+-- at runtime (Supabase Realtime broadcast). On plain Postgres that schema
+-- doesn't exist, causing `start_flow` / `complete_task` to raise. Install a
+-- no-op shim so those paths succeed — the Elixir binding publishes via
+-- Phoenix.PubSub instead. On Supabase where `realtime.send` is already
+-- defined, we skip installation and leave the real implementation alone.
+DO $$
+BEGIN
+  IF to_regprocedure('realtime.send(jsonb,text,text,boolean)') IS NULL THEN
+    IF to_regnamespace('realtime') IS NULL THEN
+      CREATE SCHEMA realtime;
+    END IF;
+
+    CREATE FUNCTION realtime.send(
+      payload jsonb, event text, topic text, private boolean DEFAULT false
+    ) RETURNS void AS $body$ SELECT NULL::void; $body$ LANGUAGE sql;
+  END IF;
+END $$;
+
+--SPLIT--
+
 -- Drop any pre-existing functions that may have different param names
 DROP FUNCTION IF EXISTS $SCHEMA$.get_flow_input(uuid);
 

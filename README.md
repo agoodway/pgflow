@@ -22,9 +22,15 @@ A native Elixir implementation of [pgflow](https://pgflow.dev) — a PostgreSQL-
 ## Prerequisites
 
 - Elixir 1.17+
-- PostgreSQL with [pgmq](https://github.com/pgmq/pgmq) extension
+- PostgreSQL 17+ with:
+  - **pgmq** — pgflow's queue backbone. The `mix pgflow.gen.pgmq_migration` task installs it via SQL (works on Neon, self-hosted, and any plain Postgres). Skip this step if your environment already ships pgmq (e.g. Supabase projects or managed services where pgmq is pre-enabled).
+  - **pg_cron** (only for cron-scheduled flows/jobs) — requires two server-level settings before `CREATE EXTENSION pg_cron` will succeed:
+    - `shared_preload_libraries = 'pg_cron'` (requires a Postgres restart)
+    - `cron.database_name = '<your_app_db>'` — pg_cron's metadata lives in exactly one DB; defaults to `postgres`
+
+    Supported on Neon, AWS RDS (PG 12.5+), Aurora (PG 12.6+), and Supabase — each with its own setup path (parameter groups, API calls, etc. — check your host's docs). If your host doesn't support pg_cron, generate extensions with `mix pgflow.gen.postgres_extensions_migration --no-cron` — cron-scheduled flows/jobs become unavailable but the rest of pgflow works.
+  - Standard extensions: `citext`, `pg_trgm`, `pgcrypto`.
 - An Ecto repository
-- Optional: [pg_cron](https://github.com/citusdata/pg_cron) for cron-scheduled flows and jobs
 
 The provided Docker setup (Postgres 17) includes all extensions pre-configured.
 
@@ -65,13 +71,30 @@ This builds a Postgres 17 image with pgmq, pg_cron, and the pgflow schema pre-lo
 docker compose down -v && docker compose up -d
 ```
 
-**For production**, copy migrations to your project:
+**For your application**, generate consumer migrations using the setup tasks. Each writes one wrapper migration into your app's `priv/repo/migrations/`:
 
 ```bash
-mix pgflow.copy_migrations
-mix pgflow.gen.extensions_migration
+# 1. Install required Postgres extensions (citext, pg_trgm, pgcrypto, pg_cron).
+#    Pass `--no-cron` if pg_cron isn't available on your host.
+mix pgflow.gen.postgres_extensions_migration
+
+# 2. Install pgmq (unless your Postgres already provides it as an extension —
+#    e.g. Supabase. On most hosts pgmq isn't native; use this task).
+mix pgflow.gen.pgmq_migration
+
+# 3. Install the pgflow schema + Elixir helper functions. Add `--dashboard`
+#    to also install the LiveView dashboard schema. `--no-helpers` skips
+#    the Elixir-binding SQL helpers (only useful if you're using a
+#    different client).
+mix pgflow.setup
+
+# 4. Apply everything.
 mix ecto.migrate
 ```
+
+The generated `setup_pgflow.exs` migration just calls `PgFlow.Migration.up/0`
+and `PgFlow.HelpersMigration.up/0` — new pgflow releases bump the vendored
+SQL, not your migration list.
 
 ### 2. Define a Flow
 
@@ -108,7 +131,7 @@ See `PgFlow.Flow` moduledocs for the full DSL reference (step options, map macro
 Before workers can process a flow, it must be "compiled" into the database. This creates the flow record, PGMQ queue, and step definitions:
 
 ```bash
-mix pgflow.gen.flow MyApp.Flows.ProcessOrder
+mix pgflow.gen.flow_migration MyApp.Flows.ProcessOrder
 mix ecto.migrate
 ```
 
@@ -178,7 +201,7 @@ See `PgFlow.Job` moduledocs for the full options reference.
 
 ```bash
 # Compile to database
-mix pgflow.gen.job MyApp.Jobs.SendEmail
+mix pgflow.gen.job_migration MyApp.Jobs.SendEmail
 mix ecto.migrate
 ```
 
@@ -199,21 +222,39 @@ Both flows and jobs support cron scheduling via [pg_cron](https://github.com/cit
 @job queue: :cleanup, cron: [schedule: "@hourly"]
 ```
 
-The cron schedule SQL is generated automatically when you run `mix pgflow.gen.flow` or `mix pgflow.gen.job` and migrate.
+The cron schedule SQL is generated automatically when you run `mix pgflow.gen.flow_migration` or `mix pgflow.gen.job_migration` and migrate.
 
 ## Mix Tasks
 
-| Task                                    | Description                                       |
-|-----------------------------------------|---------------------------------------------------|
-| `mix pgflow.gen.flow MyApp.Flow`        | Generate migration to compile flow to database    |
-| `mix pgflow.gen.job MyApp.Job`          | Generate migration to compile job to database     |
-| `mix pgflow.gen.extensions_migration`   | Generate migration for PgFlow worker SQL functions|
-| `mix pgflow.copy_migrations`            | Copy pgflow schema migrations to your project     |
-| `mix pgflow.check_schema`               | Verify pgflow database schema compatibility       |
-| `mix pgflow.sync_test_sql`              | Download latest pgflow SQL for testing            |
-| `mix pgflow.test.setup`                 | Set up test database                              |
-| `mix pgflow.test.reset`                 | Reset test database (teardown + setup)            |
-| `mix pgflow.test.teardown`              | Tear down test database                           |
+### One-time setup
+
+Run these once when adding pgflow to a project. Migrations are applied via `mix ecto.migrate`.
+
+| Task                                             | Description                                                 |
+|--------------------------------------------------|-------------------------------------------------------------|
+| `mix pgflow.gen.postgres_extensions_migration`   | Migration: citext, pg_trgm, pgcrypto, pg_cron               |
+| `mix pgflow.gen.pgmq_migration`                  | Migration: pgmq via SQL-only install                        |
+| `mix pgflow.setup`                               | Wrapper migration: core schema + helpers                    |
+| `mix pgflow.gen.helpers_migration`               | Migration: Elixir helpers standalone (setup bundles these)  |
+| `mix pgflow.stamp`                               | Adopt an existing pgflow schema into EctoEvolver tracking   |
+
+### Per-flow / per-job
+
+Run once per flow or job module. Each generates a migration that compiles the flow/job definition into the database.
+
+| Task                                             | Description                                                 |
+|--------------------------------------------------|-------------------------------------------------------------|
+| `mix pgflow.gen.flow_migration MyApp.Flow`       | Generate migration to compile flow to database              |
+| `mix pgflow.gen.job_migration MyApp.Job`         | Generate migration to compile job to database               |
+
+### Verification & test DB
+
+| Task                                             | Description                                                 |
+|--------------------------------------------------|-------------------------------------------------------------|
+| `mix pgflow.check_schema`                        | Verify pgflow database schema compatibility                 |
+| `mix pgflow.test.setup`                          | Set up test database                                        |
+| `mix pgflow.test.reset`                          | Reset test database (teardown + setup)                      |
+| `mix pgflow.test.teardown`                       | Tear down test database                                     |
 
 ## Dashboard
 

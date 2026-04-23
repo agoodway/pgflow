@@ -295,8 +295,8 @@ defmodule PgFlow.Queries.Flows do
          {:ok, _} <- delete_runs(repo, slug),
          {:ok, _} <- delete_deps(repo, slug),
          {:ok, _} <- delete_steps(repo, slug),
-         {:ok, _} <- delete_flow_record(repo, slug) do
-      drop_queue(repo, slug)
+         {:ok, _} <- delete_flow_record(repo, slug),
+         :ok <- drop_queue(repo, slug) do
       :ok
     else
       {:error, reason} -> {:error, reason}
@@ -335,9 +335,26 @@ defmodule PgFlow.Queries.Flows do
     SQL.query(repo, "DELETE FROM pgflow.flows WHERE flow_slug = $1", [slug])
   end
 
+  # pgmq.drop_queue raises if the queue doesn't exist, which poisons the
+  # enclosing transaction. Check existence first via to_regclass so a
+  # missing queue (flow had rows but queue was already dropped or was
+  # never created) resolves cleanly.
   defp drop_queue(repo, slug) do
-    _ = SQL.query(repo, "SELECT pgmq.drop_queue($1::text)", [slug])
-    :ok
+    queue_table = "pgmq.q_" <> slug
+
+    case SQL.query(repo, "SELECT to_regclass($1::text) IS NOT NULL", [queue_table]) do
+      {:ok, %{rows: [[true]]}} ->
+        case SQL.query(repo, "SELECT pgmq.drop_queue($1::text)", [slug]) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp advisory_lock_slug(repo, slug) do

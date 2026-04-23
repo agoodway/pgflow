@@ -1,18 +1,13 @@
 services:
   db:
-    # Build from local Dockerfile with pgmq 1.8.0 (supports enable_notify_insert)
-    # Previously: jumski/atlas-postgres-pgflow:17.6.1.054 (pgmq 1.5.1)
     build:
       context: .
       dockerfile: Dockerfile
     ports:
       - '54323:5432'
-    volumes:
-      - ./test/support/db/pgflow.sql:/docker-entrypoint-initdb.d/950_pgflow.sql
     environment:
       POSTGRES_DB: pgflow_test
       POSTGRES_PASSWORD: postgres
       POSTGRES_HOST: /var/run/postgresql
       POSTGRES_PORT: 5432
-    # Configure pg_cron to use pgflow_test database instead of default postgres
     command: postgres -c cron.database_name=pgflow_test

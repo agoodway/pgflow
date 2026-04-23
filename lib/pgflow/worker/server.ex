@@ -463,7 +463,7 @@ defmodule PgFlow.Worker.Server do
 
         The PGMQ queue for this flow does not exist. Run the migration to compile it:
 
-            mix pgflow.gen.flow #{inspect(flow_module)}
+            mix pgflow.gen.flow_migration #{inspect(flow_module)}
             mix ecto.migrate
 
         Or if you haven't created the migration yet, generate it first.

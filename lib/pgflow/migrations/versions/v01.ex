@@ -18,5 +18,5 @@ defmodule PgFlow.Migrations.Versions.V01 do
   use EctoEvolver.Version,
     otp_app: :pgflow,
     version: "01",
-    sql_path: "pgflow_extensions/sql/versions"
+    sql_path: "pgflow_helpers/sql/versions"
 end

@@ -84,13 +84,14 @@ defmodule PgFlow.Signal.NotifyTest do
         IO.puts("Skipping: test requires pgmq < 1.8.0 (found: #{pgmq_version()})")
         :ok
       else
-        # This should fail to start because pgmq is < 1.8.0
-        # The raise happens inside start_link, so we get an exception
+        # `init/1` raises but GenServer.start_link converts the raise into an
+        # EXIT tuple instead of re-raising at the call site — match on it.
         Process.flag(:trap_exit, true)
 
-        assert_raise RuntimeError, ~r/requires pgmq >= 1.8.0/, fn ->
-          Notify.start_link(repo: TestRepo, notify_throttle_ms: 250)
-        end
+        assert {:error, {%RuntimeError{message: message}, _stacktrace}} =
+                 Notify.start_link(repo: TestRepo, notify_throttle_ms: 250)
+
+        assert message =~ "requires pgmq >= 1.8.0"
       end
     end
   end

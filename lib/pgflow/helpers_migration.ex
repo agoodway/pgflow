@@ -1,4 +1,4 @@
-defmodule PgFlow.ExtensionsMigration do
+defmodule PgFlow.HelpersMigration do
   @moduledoc """
   Manages database migrations for PgFlow's extension SQL functions.
 
@@ -10,8 +10,8 @@ defmodule PgFlow.ExtensionsMigration do
       defmodule MyApp.Repo.Migrations.AddPgflowExtensions do
         use Ecto.Migration
 
-        def up, do: PgFlow.ExtensionsMigration.up()
-        def down, do: PgFlow.ExtensionsMigration.down()
+        def up, do: PgFlow.HelpersMigration.up()
+        def down, do: PgFlow.HelpersMigration.down()
       end
 
   """

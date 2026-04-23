@@ -12,7 +12,7 @@ Both implementations share the same base PostgreSQL schema and SQL orchestration
 | Polling       | `pgflow.read_with_poll()` (blocking)              | `pgmq.read()` (non-blocking) + adaptive backoff      |
 | Signal        | pgmq polling only                                 | Polling (default) or LISTEN/NOTIFY                   |
 | Client        | TS SDK with Supabase Realtime subscriptions       | `PgFlow.Client` with sync polling                    |
-| CLI           | `pgflow compile` via control plane HTTP           | `mix pgflow.gen.flow` generates migrations directly  |
+| CLI           | `pgflow compile` via control plane HTTP           | `mix pgflow.gen.flow_migration` generates migrations directly  |
 | Dashboard     | None (relies on Supabase dashboard)               | Built-in Phoenix LiveView dashboard                  |
 | Realtime      | Supabase Realtime broadcast via `realtime.send()` | Telemetry events + structured logging                |
 | Recovery      | pgmq visibility timeout + worker restart          | Explicit `StalledTaskRecovery` GenServer             |
@@ -188,7 +188,7 @@ The real question is where the poll loop lives and what tradeoffs that creates:
 | Sync flow execution        | Via client | Yes    | `PgFlow.Client.start_flow_sync/3`              |
 | Telemetry events           | No         | Yes    | 12 events across flow/step/task/worker         |
 | Structured logging         | No         | Yes    | Fancy (dev) and simple (prod) formats          |
-| Mix tasks                  | N/A        | Yes    | gen.flow, check_schema, copy_migrations, etc.  |
+| Mix tasks                  | N/A        | Yes    | gen.flow, setup, stamp, check_schema, etc.     |
 
 ## Shared SQL Core
 
@@ -215,7 +215,7 @@ The Elixir implementation adds the following extensions that are **not present**
 | Change                  | Table          | Description                                                                        |
 |-------------------------|----------------|------------------------------------------------------------------------------------|
 | `flow_type` column      | `pgflow.flows` | Distinguishes background jobs from multi-step DAG workflows in the dashboard.     |
-| Extension SQL functions | `pgflow`       | `register_worker`, `mark_worker_stopped`, `recover_stalled_tasks`, `flow_exists`, `get_flow_input`, `get_step_output` — installed via `mix pgflow.gen.extensions_migration`. |
+| Extension SQL functions | `pgflow`       | `register_worker`, `mark_worker_stopped`, `recover_stalled_tasks`, `flow_exists`, `get_flow_input`, `get_step_output` — installed via `mix pgflow.gen.helpers_migration`. |
 
 These additions are backward-compatible: existing flow records default to `flow_type = 'flow'`, and extension functions don't modify core pgflow tables. TypeScript workers can safely ignore them.
 
@@ -223,4 +223,4 @@ These additions are backward-compatible: existing flow records default to `flow_
 
 **TypeScript:** CLI sends HTTP request to ControlPlane edge function, which extracts the flow shape and generates SQL. Written to `supabase/migrations/`.
 
-**Elixir:** `mix pgflow.gen.flow MyFlow` reads `__pgflow_definition__/0` at compile time and generates an Ecto migration with the same SQL calls. Also compiles flows at worker startup via `FlowCompiler`.
+**Elixir:** `mix pgflow.gen.flow_migration MyFlow` reads `__pgflow_definition__/0` at compile time and generates an Ecto migration with the same SQL calls. Also compiles flows at worker startup via `FlowCompiler`.

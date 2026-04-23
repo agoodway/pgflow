@@ -3,8 +3,6 @@ services:
     image: jumski/atlas-postgres-pgflow:17.6.1.054
     ports:
       - '54323:5432'
-    volumes:
-      - ./migrations/pgflow.sql:/docker-entrypoint-initdb.d/950_pgflow.sql
     environment:
       POSTGRES_DB: pgflow_test
       POSTGRES_USER: postgres
@@ -14,3 +12,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+# Note: the pgflow schema is no longer pre-loaded via a SQL init script.
+# `test/test_helper.exs` bootstraps it via `PgFlow.Migration.up/0` +
+# `PgFlow.HelpersMigration.up/0`, which is the same path consumers
+# take in production.

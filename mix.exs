@@ -53,7 +53,7 @@ defmodule PgFlow.MixProject do
       {:phoenix, "~> 1.7", optional: true},
       {:live_filter, github: "agoodway/livefilter", optional: true},
       {:tz, "~> 0.28", optional: true},
-      {:ecto_evolver, github: "agoodway/ecto_evolver"},
+      {:ecto_evolver, "~> 0.1.0"},
 
       # Dev/Test
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
