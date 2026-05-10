@@ -52,12 +52,15 @@ if config_env() == :prod do
 
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
 
+  database_host = URI.parse(database_url).host
+
   config :pgflow_demo, PgflowDemo.Repo,
-    # ssl: true,
     url: database_url,
+    ssl: [
+      verify: :verify_none,
+      server_name_indication: to_charlist(database_host)
+    ],
     pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
-    # For machines with several cores, consider starting multiple pools of `pool_size`
-    # pool_count: 4,
     socket_options: maybe_ipv6
 
   # The secret key base is used to sign/encrypt cookies and other secrets.

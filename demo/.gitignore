@@ -42,5 +42,3 @@ npm-debug.log
 !.env.sample
 
 .playwright-mcp
-
-priv/repo/migrations/*.exs
