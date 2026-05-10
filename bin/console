@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+set -euo pipefail
+iex --sname "debug_$$" --cookie pgflow_demo_dev --remsh "pgflow_demo@$(hostname -s)"

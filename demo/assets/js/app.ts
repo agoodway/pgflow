@@ -29,7 +29,7 @@ import topbar from "../vendor/topbar"
 import { DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu } from "../../../priv/static/pgflow_dashboard/hooks/index.js"
 
 // LiveFilter hooks for filter UI
-import { hooks as liveFilterHooks } from "live_filter/priv/static/live_filter.js"
+import { hooks as liveFilterHooks } from "livefilter/priv/static/live_filter.js"
 
 // Type declarations for Phoenix LiveView events
 interface PhxScrollEvent extends CustomEvent {

@@ -63,6 +63,100 @@ defmodule PgFlow.Client do
   end
 
   @doc """
+  Enqueues a background job immediately.
+
+  Jobs are single-step flows, so this delegates to `start_flow/2`.
+  """
+  @spec enqueue(module(), map()) :: {:ok, String.t()} | {:error, term()}
+  def enqueue(job_module, input) when is_atom(job_module) and is_map(input) do
+    start_flow(job_module, input)
+  end
+
+  @doc """
+  Enqueues a background job with options.
+
+  Supported options:
+
+    * `:delay_seconds` - non-negative integer seconds before the job is visible
+    * `:scheduled_at` - `DateTime` when the job should become visible
+
+  """
+  @spec enqueue(module(), map(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def enqueue(job_module, input, opts)
+      when is_atom(job_module) and is_map(input) and is_list(opts) do
+    cond do
+      scheduled_at = Keyword.get(opts, :scheduled_at) ->
+        enqueue_at(job_module, input, scheduled_at)
+
+      delay_seconds = Keyword.get(opts, :delay_seconds) ->
+        enqueue_in(job_module, input, delay_seconds)
+
+      true ->
+        enqueue(job_module, input)
+    end
+  end
+
+  @doc """
+  Enqueues a background job that becomes visible after `delay_seconds`.
+  """
+  @spec enqueue_in(module(), map(), non_neg_integer()) :: {:ok, String.t()} | {:error, term()}
+  def enqueue_in(job_module, input, delay_seconds)
+      when is_atom(job_module) and is_map(input) and is_integer(delay_seconds) and
+             delay_seconds >= 0 do
+    with {:ok, repo} <- get_repo(),
+         {:ok, flow_slug} <- resolve_slug(job_module) do
+      repo.transaction(fn -> start_delayed_run(repo, flow_slug, input, delay_seconds) end)
+    end
+  end
+
+  def enqueue_in(_job_module, _input, _delay_seconds), do: {:error, :invalid_delay_seconds}
+
+  @doc """
+  Enqueues a background job that becomes visible at `scheduled_at`.
+
+  Timestamps in the past are enqueued for immediate execution.
+  """
+  @spec enqueue_at(module(), map(), DateTime.t()) :: {:ok, String.t()} | {:error, term()}
+  def enqueue_at(job_module, input, %DateTime{} = scheduled_at)
+      when is_atom(job_module) and is_map(input) do
+    enqueue_in(job_module, input, seconds_until(scheduled_at))
+  end
+
+  def enqueue_at(_job_module, _input, _scheduled_at), do: {:error, :invalid_scheduled_at}
+
+  defp seconds_until(%DateTime{} = scheduled_at) do
+    scheduled_at
+    |> DateTime.diff(DateTime.utc_now(), :second)
+    |> max(0)
+  end
+
+  defp start_delayed_run(repo, flow_slug, input, delay_seconds) do
+    case start_and_delay_run(repo, flow_slug, input, delay_seconds) do
+      {:ok, run_id} ->
+        emit_run_started(flow_slug, run_id)
+        run_id
+
+      {:error, reason} ->
+        repo.rollback(reason)
+    end
+  end
+
+  defp start_and_delay_run(repo, flow_slug, input, delay_seconds) do
+    with {:ok, run_id} <- Flows.start_flow(repo, flow_slug, input),
+         :ok <- Flows.delay_run(repo, flow_slug, run_id, delay_seconds) do
+      {:ok, run_id}
+    end
+  end
+
+  defp emit_run_started(flow_slug, run_id) do
+    :telemetry.execute(
+      [:pgflow, :run, :started],
+      %{system_time: System.system_time()},
+      %{flow_slug: flow_slug, run_id: run_id}
+    )
+  end
+
+  @doc """
   Starts a flow and waits for completion.
 
   Blocks until the flow completes or the timeout is reached. Returns the
@@ -400,19 +494,24 @@ defmodule PgFlow.Client do
   defp validate_optional_deps(repo, deps) do
     invalid_dep = Enum.find(deps, fn dep -> not is_binary(dep) or dep == "" end)
 
-    if invalid_dep do
-      {:error, {:invalid_step_dep, invalid_dep}}
-    else
-      case Enum.find_value(deps, fn dep ->
-             case Flows.valid_slug?(repo, dep) do
-               {:ok, true} -> nil
-               {:ok, false} -> {:invalid_step_dep_slug, dep}
-               {:error, reason} -> {:slug_validation_failed, dep, reason}
-             end
-           end) do
-        nil -> :ok
-        reason -> {:error, reason}
-      end
+    case invalid_dep do
+      nil -> validate_known_deps(repo, deps)
+      invalid_dep -> {:error, {:invalid_step_dep, invalid_dep}}
+    end
+  end
+
+  defp validate_known_deps(repo, deps) do
+    case Enum.find_value(deps, &invalid_known_dep(repo, &1)) do
+      nil -> :ok
+      reason -> {:error, reason}
+    end
+  end
+
+  defp invalid_known_dep(repo, dep) do
+    case Flows.valid_slug?(repo, dep) do
+      {:ok, true} -> nil
+      {:ok, false} -> {:invalid_step_dep_slug, dep}
+      {:error, reason} -> {:slug_validation_failed, dep, reason}
     end
   end
 
@@ -435,18 +534,20 @@ defmodule PgFlow.Client do
   defp validate_step_dependencies(step_maps) do
     slugs = MapSet.new(step_maps, fn step -> step["slug"] end)
 
-    case Enum.find_value(step_maps, fn step ->
-           step_slug = step["slug"]
-
-           Enum.find_value(step["deps"], fn dep_slug ->
-             if MapSet.member?(slugs, dep_slug),
-               do: nil,
-               else: {:unknown_dependency, step_slug, dep_slug}
-           end)
-         end) do
+    case Enum.find_value(step_maps, &unknown_dependency(&1, slugs)) do
       nil -> :ok
       reason -> {:error, reason}
     end
+  end
+
+  defp unknown_dependency(step, slugs) do
+    step_slug = step["slug"]
+
+    Enum.find_value(step["deps"], fn dep_slug ->
+      if MapSet.member?(slugs, dep_slug),
+        do: nil,
+        else: {:unknown_dependency, step_slug, dep_slug}
+    end)
   end
 
   defp get_step_value(step, key, default \\ nil) do

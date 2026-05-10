@@ -7,7 +7,7 @@
 @source "../../lib/pgflow_demo_web";
 @source "../../../lib/pgflow_dashboard";
 @source "../../deps/daisy_ui_components";
-@source "../../deps/live_filter";
+@source "../../deps/livefilter";
 
 /* A Tailwind plugin that makes "hero-#{ICON}" classes available.
    The heroicons installation itself is managed by your mix.exs */

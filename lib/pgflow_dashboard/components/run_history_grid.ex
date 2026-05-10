@@ -5,6 +5,8 @@ defmodule PgFlowDashboard.Components.RunHistoryGrid do
 
   use Phoenix.Component
 
+  alias PgFlowDashboard.Components.RunHistoryHelpers
+
   @cell_size 16
   @cell_gap 3
 
@@ -119,7 +121,7 @@ defmodule PgFlowDashboard.Components.RunHistoryGrid do
     assigns =
       assigns
       |> assign(:status, status)
-      |> assign(:cell_color, cell_color(status))
+      |> assign(:cell_color, RunHistoryHelpers.cell_color(status))
       |> assign(:run_url, run_url)
 
     ~H"""
@@ -142,15 +144,6 @@ defmodule PgFlowDashboard.Components.RunHistoryGrid do
     |> Enum.find(fn cell -> cell.run_id == run_id end)
   end
 
-  defp cell_color(status) do
-    case status do
-      s when s in [:completed, "completed"] -> "#10b981"
-      s when s in [:failed, "failed"] -> "#ef4444"
-      s when s in [:started, "started"] -> "#0ea5e9"
-      _ -> "#cbd5e1"
-    end
-  end
-
   defp cell_label(step_slug, status, run) do
     status_text = if status, do: to_string(status), else: "pending"
     "#{format_step_label(step_slug)}: #{status_text} (run #{String.slice(run.run_id, 0..7)})"
@@ -162,14 +155,9 @@ defmodule PgFlowDashboard.Components.RunHistoryGrid do
 
   defp cell_tooltip(cell_data, run) do
     status = cell_data.status || "pending"
-    duration = format_duration_ms(cell_data.duration_ms)
+    duration = RunHistoryHelpers.format_duration_ms(cell_data.duration_ms)
     "Run #{String.slice(run.run_id, 0..7)}\nStatus: #{status}\nDuration: #{duration}"
   end
-
-  defp format_duration_ms(nil), do: "-"
-  defp format_duration_ms(%Decimal{} = d), do: "#{round(Decimal.to_float(d))}ms"
-  defp format_duration_ms(ms) when is_float(ms), do: "#{round(ms)}ms"
-  defp format_duration_ms(ms) when is_integer(ms), do: "#{ms}ms"
 
   defp format_step_label(slug) when is_binary(slug) do
     label =

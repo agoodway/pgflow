@@ -3,8 +3,8 @@ defmodule PgflowDemo.Flows do
   Context for querying PgFlow run and step data.
   """
 
-  alias PgflowDemo.Repo
   alias PgFlow.Queries.Flows, as: FlowQueries
+  alias PgflowDemo.Repo
 
   @doc """
   Fetches the output for a specific step in a flow run.

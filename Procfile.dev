@@ -1,0 +1,2 @@
+docker: docker compose up
+server: cd demo && PORT=4022 elixir --sname pgflow_demo --cookie pgflow_demo_dev -S mix phx.server

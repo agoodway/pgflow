@@ -7,6 +7,20 @@ import Config
 # any compile-time configuration in here, as it won't be applied.
 # The block below contains prod specific runtime configuration.
 
+# Load `.env` for dev and test (gitignored, holds local secrets).
+# Real env vars always win.
+if config_env() in [:dev, :test] and File.exists?(".env") do
+  case Dotenvy.source(".env") do
+    {:ok, vars} ->
+      Enum.each(vars, fn {key, value} ->
+        if is_nil(System.get_env(key)), do: System.put_env(key, value)
+      end)
+
+    _ ->
+      :ok
+  end
+end
+
 # ## Using releases
 #
 # If you use `mix release`, you need to explicitly enable the server
@@ -21,13 +35,12 @@ if System.get_env("PHX_SERVER") do
 end
 
 config :pgflow_demo, PgflowDemoWeb.Endpoint,
-  http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+  http: [port: String.to_integer(System.get_env("PORT", "4022"))]
 
-# LLM configuration for ReqLLM
-# Set OPENAI_API_KEY env var with your OpenAI API key
-# Optionally override the model (defaults to gpt-4o-mini)
 config :pgflow_demo,
-  llm_model: System.get_env("LLM_MODEL", "openai:gpt-4o-mini")
+  ai_api_key: System.get_env("AI_API_KEY"),
+  ai_api_base: System.get_env("AI_API_BASE", "https://api.fireworks.ai/inference/v1"),
+  ai_model_name: System.get_env("AI_MODEL_NAME", "accounts/fireworks/models/deepseek-v3p2")
 
 if config_env() == :prod do
   database_url =

@@ -1,6 +1,8 @@
 defmodule PgFlow.QueriesTest do
   use ExUnit.Case
 
+  require Logger
+
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.Queries.Flows
   alias PgFlow.Queries.Workers, as: WorkerQueries
@@ -167,6 +169,36 @@ defmodule PgFlow.QueriesTest do
     end
   end
 
+  # ── delay_run ──────────────────────────────────────────────────────
+
+  describe "delay_run/4" do
+    test "moves the first queued task visibility into the future" do
+      flow_slug = compile_flow(SimpleFlow)
+      {:ok, run_id} = Flows.start_flow(TestRepo, flow_slug, %{"value" => 1})
+
+      assert :ok = Flows.delay_run(TestRepo, flow_slug, run_id, 20)
+
+      {:ok, run_id_binary} = Ecto.UUID.dump(run_id)
+
+      %{rows: [[%DateTime{} = visible_at]]} =
+        TestRepo.query!(
+          """
+          SELECT queue.vt
+          FROM pgflow.step_tasks AS task
+          JOIN pgmq.q_simple_query_flow AS queue ON queue.msg_id = task.message_id
+          WHERE task.run_id = $1::uuid
+          """,
+          [run_id_binary]
+        )
+
+      assert DateTime.diff(visible_at, DateTime.utc_now(), :second) in 17..22
+    end
+
+    test "zero seconds is a no-op" do
+      assert :ok = Flows.delay_run(TestRepo, "missing_flow", Ecto.UUID.generate(), 0)
+    end
+  end
+
   # ── flow_exists? ───────────────────────────────────────────────────
 
   describe "flow_exists?/2" do
@@ -222,7 +254,52 @@ defmodule PgFlow.QueriesTest do
 
       assert messages == []
     end
+
+    test "suppresses Ecto query logs by default" do
+      flow_slug = compile_flow(SimpleFlow)
+      previous = Application.get_env(:pgflow, :log_queue_polls)
+      previous_level = Logger.level()
+
+      Application.delete_env(:pgflow, :log_queue_polls)
+      Logger.configure(level: :debug)
+
+      try do
+        log =
+          ExUnit.CaptureLog.capture_log([level: :debug], fn ->
+            {:ok, _} = Flows.read(TestRepo, flow_slug, 30, 10)
+          end)
+
+        refute log =~ "pgmq.read"
+      after
+        Logger.configure(level: previous_level)
+        if previous != nil, do: Application.put_env(:pgflow, :log_queue_polls, previous)
+      end
+    end
+
+    test "emits Ecto query logs when :log_queue_polls is true" do
+      flow_slug = compile_flow(SimpleFlow)
+      previous = Application.get_env(:pgflow, :log_queue_polls)
+      previous_level = Logger.level()
+
+      Application.put_env(:pgflow, :log_queue_polls, true)
+      Logger.configure(level: :debug)
+
+      try do
+        log =
+          ExUnit.CaptureLog.capture_log([level: :debug], fn ->
+            {:ok, _} = Flows.read(TestRepo, flow_slug, 30, 10)
+          end)
+
+        assert log =~ "pgmq.read"
+      after
+        Logger.configure(level: previous_level)
+        restore_log_queue_polls(previous)
+      end
+    end
   end
+
+  defp restore_log_queue_polls(nil), do: Application.delete_env(:pgflow, :log_queue_polls)
+  defp restore_log_queue_polls(value), do: Application.put_env(:pgflow, :log_queue_polls, value)
 
   # ── start_tasks ────────────────────────────────────────────────────
 

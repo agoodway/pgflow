@@ -1,13 +1,18 @@
 services:
   db:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ./database
+      dockerfile: Dockerfile.postgres
     ports:
-      - '54323:5432'
+      - "54323:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./database/tests:/tests
     environment:
-      POSTGRES_DB: pgflow_test
+      POSTGRES_DB: pgflow_demo_dev
       POSTGRES_PASSWORD: postgres
-      POSTGRES_HOST: /var/run/postgresql
-      POSTGRES_PORT: 5432
-    command: postgres -c cron.database_name=pgflow_test
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command: postgres -c cron.database_name=pgflow_demo_dev
+
+volumes:
+  pgdata:

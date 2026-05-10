@@ -35,8 +35,11 @@ pgflow_demo-*.tar
 npm-debug.log
 /assets/node_modules/
 
-# Environment files with secrets
-.env*
+# Environment variables.
+# `.env` holds your local secrets — gitignored.
+# `.env.sample` is the committed template.
+.env
+!.env.sample
 
 .playwright-mcp
 

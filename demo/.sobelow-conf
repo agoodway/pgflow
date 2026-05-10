@@ -1,0 +1,15 @@
+# Sobelow configuration for the local demo app.
+#
+# The demo includes a non-production unsubscribe secret so local RFC 8058
+# headers work without extra environment setup. Production hosts configure
+# their own secret outside this demo.
+[
+  exit: "High",
+  ignore: [],
+  ignore_files: [],
+  format: "txt",
+  router: nil,
+  skip: false,
+  threshold: :low,
+  verbose: false
+]

@@ -40,6 +40,47 @@ defmodule PgFlow.Queries.Flows do
   end
 
   @doc """
+  Delays the first queued task for a flow run by moving its pgmq visibility time.
+
+  This is a lower-level helper for public APIs such as `PgFlow.enqueue_in/3`
+  and `PgFlow.enqueue_at/3`. Call it in the same repository transaction as
+  `start_flow/3` when callers need to ensure workers cannot see the task before
+  the delay is applied.
+  """
+  @spec delay_run(Ecto.Repo.t(), String.t(), String.t(), non_neg_integer()) ::
+          :ok | {:error, term()}
+  def delay_run(_repo, _flow_slug, _run_id, 0), do: :ok
+
+  def delay_run(repo, flow_slug, run_id, delay_seconds)
+      when is_integer(delay_seconds) and delay_seconds > 0 do
+    sql = """
+    WITH task AS (
+      SELECT step_tasks.message_id
+      FROM pgflow.step_tasks AS step_tasks
+      WHERE step_tasks.flow_slug = $1::text
+        AND step_tasks.run_id = $2::uuid
+      ORDER BY step_tasks.queued_at ASC
+      LIMIT 1
+    ),
+    delayed AS (
+      SELECT pgflow.set_vt_batch(
+        $1::text,
+        ARRAY[task.message_id]::bigint[],
+        ARRAY[$3::integer]::integer[]
+      )
+      FROM task
+    )
+    SELECT count(*) FROM delayed
+    """
+
+    case SQL.query(repo, sql, [flow_slug, parse_uuid(run_id), delay_seconds]) do
+      {:ok, %{rows: [[1]]}} -> :ok
+      {:ok, %{rows: [[0]]}} -> {:error, :task_not_found}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  @doc """
   Retrieves a flow run's current state.
 
   ## Parameters
@@ -85,12 +126,7 @@ defmodule PgFlow.Queries.Flows do
           {:ok, term()} | {:error, term()}
   def complete_task(repo, run_id, step_slug, task_index, output) do
     sql = "SELECT * FROM pgflow.complete_task($1, $2, $3, $4::jsonb)"
-
-    case SQL.query(repo, sql, [parse_uuid(run_id), step_slug, task_index, output]) do
-      {:ok, %{rows: [row | _]}} -> {:ok, row}
-      {:ok, %{rows: []}} -> {:ok, nil}
-      {:error, error} -> {:error, error}
-    end
+    query_single_row(repo, sql, [parse_uuid(run_id), step_slug, task_index, output])
   end
 
   @doc """
@@ -113,12 +149,7 @@ defmodule PgFlow.Queries.Flows do
           {:ok, term()} | {:error, term()}
   def fail_task(repo, run_id, step_slug, task_index, error_message) do
     sql = "SELECT * FROM pgflow.fail_task($1, $2, $3, $4)"
-
-    case SQL.query(repo, sql, [parse_uuid(run_id), step_slug, task_index, error_message]) do
-      {:ok, %{rows: [row | _]}} -> {:ok, row}
-      {:ok, %{rows: []}} -> {:ok, nil}
-      {:error, error} -> {:error, error}
-    end
+    query_single_row(repo, sql, [parse_uuid(run_id), step_slug, task_index, error_message])
   end
 
   @doc """
@@ -127,6 +158,10 @@ defmodule PgFlow.Queries.Flows do
   Uses pgmq.read() to fetch available messages. Returns immediately whether or
   not messages are available. Messages are made invisible for the visibility
   timeout period to prevent duplicate processing.
+
+  Queue poll SQL logging is disabled by default because workers call this
+  frequently. Set `config :pgflow, :log_queue_polls, true` to enable Ecto query
+  logging for these reads while debugging.
 
   ## Parameters
 
@@ -152,8 +187,22 @@ defmodule PgFlow.Queries.Flows do
     )
     """
 
-    case SQL.query(repo, sql, [queue_name, visibility_timeout, batch_size]) do
+    case SQL.query(repo, sql, [queue_name, visibility_timeout, batch_size],
+           log: log_queue_polls?()
+         ) do
       {:ok, %{rows: rows}} -> {:ok, rows}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp log_queue_polls? do
+    Application.get_env(:pgflow, :log_queue_polls, false)
+  end
+
+  defp query_single_row(repo, sql, params) do
+    case SQL.query(repo, sql, params) do
+      {:ok, %{rows: [row | _]}} -> {:ok, row}
+      {:ok, %{rows: []}} -> {:ok, nil}
       {:error, error} -> {:error, error}
     end
   end
@@ -238,21 +287,33 @@ defmodule PgFlow.Queries.Flows do
 
     tx_result =
       repo.transaction(fn ->
-        with {:ok, _} <- advisory_lock_slug(repo, slug),
-             {:ok, exists} <- flow_exists?(repo, slug),
-             :ok <- maybe_delete_existing_flow(repo, slug, exists),
-             :ok <- create_flow_definition(repo, slug, max_attempts, base_delay, timeout),
-             :ok <- add_flow_steps(repo, slug, steps) do
-          status = if exists, do: "recompiled", else: "compiled"
-          %{"status" => status, "differences" => []}
-        else
-          {:error, reason} -> repo.rollback(reason)
-        end
+        upsert_flow_transaction(repo, slug, max_attempts, base_delay, timeout, steps)
       end)
 
     case tx_result do
       {:ok, status_map} -> {:ok, status_map}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp upsert_flow_transaction(repo, slug, max_attempts, base_delay, timeout, steps) do
+    case upsert_flow_definition(repo, slug, max_attempts, base_delay, timeout, steps) do
+      {:ok, exists} ->
+        status = if exists, do: "recompiled", else: "compiled"
+        %{"status" => status, "differences" => []}
+
+      {:error, reason} ->
+        repo.rollback(reason)
+    end
+  end
+
+  defp upsert_flow_definition(repo, slug, max_attempts, base_delay, timeout, steps) do
+    with {:ok, _} <- advisory_lock_slug(repo, slug),
+         {:ok, exists} <- flow_exists?(repo, slug),
+         :ok <- maybe_delete_existing_flow(repo, slug, exists),
+         :ok <- create_flow_definition(repo, slug, max_attempts, base_delay, timeout),
+         :ok <- add_flow_steps(repo, slug, steps) do
+      {:ok, exists}
     end
   end
 

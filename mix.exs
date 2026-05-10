@@ -2,7 +2,7 @@ defmodule PgFlow.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/pgflow-dev/pgflow"
+  @source_url "https://github.com/agoodway/pgflow"
 
   def project do
     [
@@ -15,17 +15,21 @@ defmodule PgFlow.MixProject do
       aliases: aliases(),
 
       # Hex
-      description: "Elixir implementation of pgflow workflow engine",
+      description: description(),
       package: package(),
 
       # Dialyzer
-      dialyzer: [plt_add_apps: [:mix, :inets]],
+      dialyzer: [plt_add_apps: [:mix, :inets, :ex_unit]],
 
       # Docs
       name: "PgFlow",
       source_url: @source_url,
       docs: docs()
     ]
+  end
+
+  def cli do
+    [preferred_envs: [quality: :test]]
   end
 
   def application do
@@ -51,7 +55,8 @@ defmodule PgFlow.MixProject do
       # Dashboard (optional)
       {:phoenix_live_view, "~> 1.0", optional: true},
       {:phoenix, "~> 1.7", optional: true},
-      {:live_filter, github: "agoodway/livefilter", optional: true},
+      {:livefilter, "~> 0.1.8", optional: true},
+      # {:livefilter, path: "../livefilter", optional: true},
       {:tz, "~> 0.28", optional: true},
       {:ecto_evolver, "~> 0.1.0"},
 
@@ -59,7 +64,10 @@ defmodule PgFlow.MixProject do
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:doctor, "~> 0.22.0", only: :dev, runtime: false}
+      {:doctor, "~> 0.22.0", only: [:dev, :test], runtime: false},
+      {:ex_slop, "~> 0.3", only: [:dev, :test], runtime: false},
+      {:sobelow, "~> 0.14", only: [:dev, :test], runtime: false},
+      {:ex_dna, "~> 1.2", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -73,18 +81,25 @@ defmodule PgFlow.MixProject do
         "compile --warnings-as-errors",
         "deps.unlock --unused",
         "format --check-formatted",
-        "credo --strict",
+        "sobelow --config",
+        "ex_dna",
         "doctor",
+        "credo --strict",
         "dialyzer"
       ]
     ]
   end
 
+  defp description do
+    "Workflows, background jobs and cron in Elixir and Postgres powered by PGMQ."
+  end
+
   defp package do
     [
-      maintainers: ["PgFlow Team"],
+      maintainers: ["Chase Pursley"],
       licenses: ["MIT"],
-      links: %{"GitHub" => @source_url}
+      links: %{"GitHub" => @source_url},
+      files: ~w(lib priv mix.exs README.md LICENSE .formatter.exs)
     ]
   end
 

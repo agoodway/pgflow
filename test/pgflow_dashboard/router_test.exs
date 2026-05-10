@@ -41,4 +41,48 @@ defmodule PgFlowDashboard.RouterTest do
       assert Router.compute_base_path("/something/else", "/pgflow") == "/pgflow"
     end
   end
+
+  describe "ensure_dashboard_dependencies!/0" do
+    test "returns :ok when all required dashboard deps are loadable" do
+      # In the pgflow test environment phoenix_live_view, live_filter, and tz
+      # are present as deps so the real dependency probe must succeed.
+      assert :ok = Router.ensure_dashboard_dependencies!()
+    end
+  end
+
+  describe "missing_dependencies/1" do
+    test "returns [] when every module loads" do
+      assert Router.missing_dependencies([
+               {:elixir, Kernel},
+               {:elixir, Enum}
+             ]) == []
+    end
+
+    test "returns the app names whose modules are not loadable" do
+      assert Router.missing_dependencies([
+               {:elixir, Kernel},
+               {:nonexistent_dep, PgFlowDashboard.NotARealDependencyZ},
+               {:other_missing, PgFlowDashboard.AlsoNotRealZ}
+             ]) == [:nonexistent_dep, :other_missing]
+    end
+  end
+
+  describe "check_dashboard_dependencies!/1" do
+    test "returns :ok when no deps are missing" do
+      assert :ok = Router.check_dashboard_dependencies!([{:elixir, Kernel}])
+    end
+
+    test "raises ArgumentError listing missing deps" do
+      error =
+        assert_raise ArgumentError, fn ->
+          Router.check_dashboard_dependencies!([
+            {:phoenix_live_view, Phoenix.LiveView},
+            {:made_up_dep, PgFlowDashboard.MadeUpDependencyZ}
+          ])
+        end
+
+      assert error.message =~ "PgFlowDashboard requires :made_up_dep"
+      assert error.message =~ "before mounting pgflow_dashboard/2"
+    end
+  end
 end

@@ -6,7 +6,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   use PgflowDemoWeb, :live_view
 
   alias PgFlow.Client
-  alias PgflowDemoWeb.Components.{FlowDSL, CronDSL, PoweredBy}
+  alias PgflowDemoWeb.Components.{CronDSL, FlowDSL, PoweredBy}
 
   # UI Constants
   @node_radius 10
@@ -101,13 +101,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
             cancel_timer(socket.assigns.timer_ref)
 
-            timer_ref =
-              if connected?(socket) do
-                {:ok, ref} = :timer.send_interval(@timer_interval_ms, self(), :tick)
-                ref
-              else
-                nil
-              end
+            timer_ref = maybe_start_tick_timer(socket)
 
             socket =
               socket
@@ -241,20 +235,12 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         step_status = Map.get(socket.assigns.steps, step_atom)
 
         socket =
-          if step_status == :completed and socket.assigns.run_id do
-            # Completed step: show output and highlight
-            socket
-            |> assign(:output_step, step_atom)
-            |> assign(:output_loading, true)
-            |> assign(:highlighted_step, step_atom)
-            |> maybe_push_scroll_event(scroll_event, step_atom)
-            |> tap(fn _ -> send(self(), {:fetch_step_output, step_atom}) end)
-          else
-            # Non-completed step: just highlight
-            socket
-            |> assign(:highlighted_step, step_atom)
-            |> maybe_push_scroll_event(scroll_event, step_atom)
-          end
+          assign_step_click(
+            socket,
+            step_atom,
+            step_status == :completed and socket.assigns.run_id,
+            scroll_event
+          )
 
         {:noreply, socket}
 
@@ -267,6 +253,29 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   defp maybe_push_scroll_event(socket, event, step_atom) do
     push_event(socket, event, %{step: to_string(step_atom)})
+  end
+
+  defp maybe_start_tick_timer(socket) do
+    if connected?(socket) do
+      {:ok, ref} = :timer.send_interval(@timer_interval_ms, self(), :tick)
+      ref
+    end
+  end
+
+  defp assign_step_click(socket, step_atom, true, scroll_event) do
+    send(self(), {:fetch_step_output, step_atom})
+
+    socket
+    |> assign(:output_step, step_atom)
+    |> assign(:output_loading, true)
+    |> assign(:highlighted_step, step_atom)
+    |> maybe_push_scroll_event(scroll_event, step_atom)
+  end
+
+  defp assign_step_click(socket, step_atom, _completed?, scroll_event) do
+    socket
+    |> assign(:highlighted_step, step_atom)
+    |> maybe_push_scroll_event(scroll_event, step_atom)
   end
 
   @impl true
@@ -293,7 +302,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   # PgFlow PubSub events — new namespaced tuple format from Telemetry.PubSub bridge
 
   @impl true
-  def handle_info({:pgflow, _run_id, {:task_started, %{step_slug: step_slug, task_index: task_index}}}, socket) do
+  def handle_info(
+        {:pgflow, _run_id, {:task_started, %{step_slug: step_slug, task_index: task_index}}},
+        socket
+      ) do
     case to_step_atom(step_slug) do
       nil ->
         {:noreply, socket}
@@ -320,7 +332,11 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   end
 
   @impl true
-  def handle_info({:pgflow, _run_id, {:task_completed, %{step_slug: step_slug, duration_ms: duration_ms, output: output}}}, socket) do
+  def handle_info(
+        {:pgflow, _run_id,
+         {:task_completed, %{step_slug: step_slug, duration_ms: duration_ms, output: output}}},
+        socket
+      ) do
     case to_step_atom(step_slug) do
       nil ->
         {:noreply, socket}
@@ -353,7 +369,11 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   end
 
   @impl true
-  def handle_info({:pgflow, _run_id, {:task_failed, %{step_slug: step_slug, error: error, duration_ms: duration_ms}}}, socket) do
+  def handle_info(
+        {:pgflow, _run_id,
+         {:task_failed, %{step_slug: step_slug, error: error, duration_ms: duration_ms}}},
+        socket
+      ) do
     case to_step_atom(step_slug) do
       nil ->
         {:noreply, socket}
@@ -385,7 +405,11 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   @impl true
   def handle_info({:pgflow, _run_id, {:run_completed, _payload}}, socket) do
     cancel_timer(socket.assigns.timer_ref)
-    elapsed_ms = if socket.assigns.start_time, do: System.monotonic_time(:millisecond) - socket.assigns.start_time, else: 0
+
+    elapsed_ms =
+      if socket.assigns.start_time,
+        do: System.monotonic_time(:millisecond) - socket.assigns.start_time,
+        else: 0
 
     socket =
       socket
@@ -402,7 +426,11 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   @impl true
   def handle_info({:pgflow, _run_id, {:run_failed, %{error: error}}}, socket) do
     cancel_timer(socket.assigns.timer_ref)
-    elapsed_ms = if socket.assigns.start_time, do: System.monotonic_time(:millisecond) - socket.assigns.start_time, else: 0
+
+    elapsed_ms =
+      if socket.assigns.start_time,
+        do: System.monotonic_time(:millisecond) - socket.assigns.start_time,
+        else: 0
 
     socket =
       socket
@@ -672,7 +700,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </a>
           </div>
         </div>
-
+        
     <!-- GitHub link (top right) -->
         <a
           href="https://github.com/agoodway/pgflow"
@@ -688,7 +716,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             />
           </svg>
         </a>
-
+        
     <!-- Header -->
         <div class="text-center mb-8">
           <h1 class="text-4xl font-bold text-white mb-2">
@@ -702,7 +730,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
           </p>
           <PoweredBy.powered_by size={:md} class="mt-1" />
         </div>
-
+        
     <!-- Interactive tip -->
         <div class="mb-6 px-4 py-3 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center gap-3">
           <span class="text-purple-400 text-lg" title="Tip">ⓘ</span>
@@ -728,7 +756,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             >Step Output</a>.
           </p>
         </div>
-
+        
     <!-- Input -->
         <div class="backdrop-blur-xl bg-white/5 rounded-2xl p-6 mb-6 border border-white/10">
           <form phx-submit="start_flow" class="flex gap-4">
@@ -744,7 +772,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <button
               :if={@run_status != :running}
               type="submit"
-              class="px-6 py-3 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white font-semibold rounded-xl shadow-lg"
+              class="px-6 py-3 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white font-semibold rounded-xl shadow-lg cursor-pointer"
             >
               Start Flow
             </button>
@@ -752,7 +780,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               :if={@run_status in [:completed, :failed]}
               type="button"
               phx-click="reset"
-              class="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl"
+              class="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl cursor-pointer"
             >
               Reset
             </button>
@@ -784,7 +812,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <p class="text-red-300 text-sm">{@error}</p>
           </div>
         </div>
-
+        
     <!-- Main Grid - Side by side on md+ screens, stacked on mobile -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <!-- Workflow -->
@@ -822,7 +850,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                   <polygon points="0 0, 6 2, 0 4" fill="#10B981" />
                 </marker>
               </defs>
-
+              
     <!-- Edges -->
               <%= for {from, to} <- @edges do %>
                 <% {x1, y1} = get_step_coords(from) %>
@@ -854,7 +882,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                   }
                 />
               <% end %>
-
+              
     <!-- Nodes -->
               <%= for step <- @steps_config do %>
                 <% status = Map.get(@steps, step.slug, :pending) %>
@@ -951,7 +979,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               <% end %>
             </svg>
           </div>
-
+          
     <!-- Event Log -->
           <div
             id="event-log"
@@ -994,7 +1022,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </div>
           </div>
         </div>
-
+        
     <!-- Flow DSL -->
         <div
           id="flow-dsl"
@@ -1030,10 +1058,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                 <span class="text-xs text-gray-400 font-mono">
                   {@migration_path}
                 </span>
-                <button
-                  phx-click="toggle_migration"
-                  class="text-xs text-gray-500 hover:text-gray-400"
-                >
+                <button phx-click="toggle_migration" class="text-xs text-gray-500 hover:text-gray-400">
                   Close
                 </button>
               </div>
@@ -1043,7 +1068,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </div>
           <% end %>
         </div>
-
+        
     <!-- Step Output -->
         <div
           id="step-output"
@@ -1079,7 +1104,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <% end %>
           </div>
         </div>
-
+        
     <!-- Cron DSL -->
         <div
           id="cron-dsl"
@@ -1106,7 +1131,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </a>
           </p>
         </div>
-
+        
     <!-- Footer -->
         <footer class="mt-8 text-center max-w-2xl mx-auto">
           <div class="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">

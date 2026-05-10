@@ -15,6 +15,10 @@ defmodule PgFlow.Logger do
       config :pgflow, :log_format, :fancy  # or :simple
 
   The format defaults to `:fancy` in dev/test and `:simple` in prod.
+  Empty polling logs are disabled by default. Enable them only when debugging
+  worker polling behavior:
+
+      config :pgflow, :log_empty_polls, true
 
   ## Usage
 
@@ -218,6 +222,26 @@ defmodule PgFlow.Logger do
   """
   @spec polling(String.t()) :: :ok
   def polling(worker_name) do
+    if log_empty_polls?(), do: do_polling(worker_name), else: :ok
+  end
+
+  @doc """
+  Logs the number of tasks found after polling.
+  """
+  @spec task_count(String.t(), non_neg_integer()) :: :ok
+  def task_count(worker_name, 0) do
+    if log_empty_polls?(), do: do_task_count(worker_name, 0), else: :ok
+  end
+
+  def task_count(worker_name, count) when count > 0 do
+    do_task_count(worker_name, count)
+  end
+
+  defp log_empty_polls? do
+    Application.get_env(:pgflow, :log_empty_polls, false)
+  end
+
+  defp do_polling(worker_name) do
     metadata = [worker_name: worker_name]
 
     case log_format() do
@@ -235,45 +259,33 @@ defmodule PgFlow.Logger do
     end
   end
 
-  @doc """
-  Logs the number of tasks found after polling.
-  """
-  @spec task_count(String.t(), non_neg_integer()) :: :ok
-  def task_count(worker_name, 0) do
-    metadata = [worker_name: worker_name, task_count: 0]
-
-    case log_format() do
-      :fancy ->
-        Logger.debug(
-          fn -> "#{worker_name}: No tasks" end,
-          metadata
-        )
-
-      :simple ->
-        Logger.debug(
-          fn -> "worker=#{worker_name} status=no_tasks" end,
-          metadata
-        )
-    end
-  end
-
-  def task_count(worker_name, count) when count > 0 do
+  defp do_task_count(worker_name, count) do
     metadata = [worker_name: worker_name, task_count: count]
 
     case log_format() do
       :fancy ->
         Logger.debug(
-          fn -> "#{worker_name}: Starting #{count} #{pluralize_task(count)}" end,
+          fn -> task_count_message(worker_name, count) end,
           metadata
         )
 
       :simple ->
         Logger.debug(
-          fn -> "worker=#{worker_name} status=starting task_count=#{count}" end,
+          fn -> task_count_status(worker_name, count) end,
           metadata
         )
     end
   end
+
+  defp task_count_message(worker_name, 0), do: "#{worker_name}: No tasks"
+
+  defp task_count_message(worker_name, count),
+    do: "#{worker_name}: Starting #{count} #{pluralize_task(count)}"
+
+  defp task_count_status(worker_name, 0), do: "worker=#{worker_name} status=no_tasks"
+
+  defp task_count_status(worker_name, count),
+    do: "worker=#{worker_name} status=starting task_count=#{count}"
 
   @doc """
   Logs worker shutdown phases.
@@ -461,16 +473,11 @@ defmodule PgFlow.Logger do
   end
 
   defp simple_task_failed(ctx, error, nil) do
-    "worker=#{ctx.worker_name} flow=#{ctx.flow_slug} step=#{ctx.step_slug} " <>
-      "run_id=#{ctx.run_id} task_index=#{ctx[:task_index] || 0} status=failed " <>
-      "error=\"#{escape_quotes(error)}\""
+    task_failed_status_base(ctx, error)
   end
 
   defp simple_task_failed(ctx, error, retry_info) do
-    base =
-      "worker=#{ctx.worker_name} flow=#{ctx.flow_slug} step=#{ctx.step_slug} " <>
-        "run_id=#{ctx.run_id} task_index=#{ctx[:task_index] || 0} status=failed " <>
-        "error=\"#{escape_quotes(error)}\""
+    base = task_failed_status_base(ctx, error)
 
     if retry_info.attempt < retry_info.max_attempts do
       base <>
@@ -483,6 +490,12 @@ defmodule PgFlow.Logger do
   defp simple_startup_banner(ctx, flow) do
     "worker=#{ctx.worker_name} worker_id=#{ctx.worker_id} queue=#{ctx.queue_name} " <>
       "flow=#{flow.flow_slug} status=#{flow.status}"
+  end
+
+  defp task_failed_status_base(ctx, error) do
+    "worker=#{ctx.worker_name} flow=#{ctx.flow_slug} step=#{ctx.step_slug} " <>
+      "run_id=#{ctx.run_id} task_index=#{ctx[:task_index] || 0} status=failed " <>
+      "error=\"#{escape_quotes(error)}\""
   end
 
   # ============================================================================

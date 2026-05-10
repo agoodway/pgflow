@@ -54,6 +54,7 @@ defmodule Mix.Tasks.Pgflow.Gen.JobMigration do
 
   use Mix.Task
 
+  alias Mix.Tasks.Pgflow.Helpers
   alias PgFlow.Flow.Definition
   alias PgFlow.JobCompiler
 
@@ -147,10 +148,10 @@ defmodule Mix.Tasks.Pgflow.Gen.JobMigration do
     migrations_path = Keyword.get(opts, :migrations_path, "priv/repo/migrations")
     File.mkdir_p!(migrations_path)
 
-    timestamp = generate_timestamp()
+    timestamp = Helpers.generate_timestamp()
 
     job_slug = Atom.to_string(definition.slug)
-    migration_module = "Compile#{camelize(job_slug)}"
+    migration_module = "Compile#{Helpers.camelize(job_slug)}"
 
     migration_content =
       generate_migration_content(migration_module, job_slug, sql_statements, has_cron)
@@ -178,7 +179,8 @@ defmodule Mix.Tasks.Pgflow.Gen.JobMigration do
 
   defp generate_migration_content(migration_module, job_slug, sql_statements, has_cron) do
     up_statements = format_execute_statements(sql_statements)
-    down_statements = build_down_statements(job_slug, has_cron)
+    unschedule_sql = if has_cron, do: JobCompiler.cron_unschedule_sql(String.to_atom(job_slug))
+    down_statements = Helpers.build_down_statements(job_slug, has_cron, unschedule_sql)
 
     """
     defmodule PgFlow.Repo.Migrations.#{migration_module} do
@@ -210,48 +212,5 @@ defmodule Mix.Tasks.Pgflow.Gen.JobMigration do
       escaped = String.replace(sql, "\"", "\\\"")
       ~s(    execute "#{escaped}")
     end)
-  end
-
-  defp build_down_statements(job_slug, true = _has_cron) do
-    unschedule_sql = JobCompiler.cron_unschedule_sql(String.to_atom(job_slug))
-
-    """
-        execute "#{unschedule_sql}"
-        execute "DELETE FROM pgflow.deps WHERE flow_slug = '#{job_slug}'"
-        execute "DELETE FROM pgflow.steps WHERE flow_slug = '#{job_slug}'"
-        execute "DELETE FROM pgflow.flows WHERE flow_slug = '#{job_slug}'"
-        execute "SELECT pgmq.drop_queue('#{job_slug}')"
-    """
-    |> String.trim_trailing()
-  end
-
-  defp build_down_statements(job_slug, false = _has_cron) do
-    """
-        execute "DELETE FROM pgflow.deps WHERE flow_slug = '#{job_slug}'"
-        execute "DELETE FROM pgflow.steps WHERE flow_slug = '#{job_slug}'"
-        execute "DELETE FROM pgflow.flows WHERE flow_slug = '#{job_slug}'"
-        execute "SELECT pgmq.drop_queue('#{job_slug}')"
-    """
-    |> String.trim_trailing()
-  end
-
-  defp generate_timestamp do
-    {{year, month, day}, {hour, minute, second}} = :calendar.universal_time()
-
-    :io_lib.format("~4..0B~2..0B~2..0B~2..0B~2..0B~2..0B", [
-      year,
-      month,
-      day,
-      hour,
-      minute,
-      second
-    ])
-    |> IO.iodata_to_binary()
-  end
-
-  defp camelize(string) do
-    string
-    |> String.split("_")
-    |> Enum.map_join(&String.capitalize/1)
   end
 end

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+export PATH="$HOME/.asdf/shims:$HOME/.asdf/bin:/opt/homebrew/bin:$PATH"
+unset PORT
+
+exec hivemind Procfile.dev

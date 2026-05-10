@@ -27,7 +27,9 @@ defmodule PgflowDemoWeb.Components.PoweredBy do
       Powered by <.tech_link href="https://www.postgresql.org" size={@size}>PostgreSQL</.tech_link>(<.tech_link
         href="https://github.com/pgmq/pgmq"
         size={@size}
-      >PGMQ</.tech_link>, <.tech_link href="https://github.com/citusdata/pg_cron" size={@size}>pg_cron</.tech_link>, <.tech_link
+      >
+        PGMQ
+      </.tech_link>, <.tech_link href="https://github.com/citusdata/pg_cron" size={@size}>pg_cron</.tech_link>, <.tech_link
         href="https://pgflow.dev"
         size={@size}
       >PgFlow</.tech_link>),

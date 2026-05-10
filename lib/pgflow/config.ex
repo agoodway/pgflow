@@ -39,6 +39,8 @@ defmodule PgFlow.Config do
 
   """
 
+  alias PgFlow.Config.RepoValidator
+
   # Maximum allowed values for interval configurations
   @max_poll_interval_limit 300_000
   @max_fallback_interval_limit 600_000
@@ -141,7 +143,7 @@ defmodule PgFlow.Config do
   def validate!(opts) when is_list(opts) do
     case NimbleOptions.validate(opts, @schema) do
       {:ok, config} ->
-        validate_repo!(config[:repo])
+        RepoValidator.validate_repo!(config[:repo])
         validate_intervals!(config)
         config
 
@@ -155,20 +157,6 @@ defmodule PgFlow.Config do
   """
   @spec schema() :: keyword()
   def schema, do: @schema
-
-  # Validates that the repo module is loaded and implements the Ecto.Repo behaviour
-  defp validate_repo!(repo) do
-    unless Code.ensure_loaded?(repo) do
-      raise ArgumentError, "repo module #{inspect(repo)} is not loaded"
-    end
-
-    unless function_exported?(repo, :__adapter__, 0) do
-      raise ArgumentError,
-            "repo module #{inspect(repo)} does not implement Ecto.Repo behaviour"
-    end
-
-    :ok
-  end
 
   # Validates interval configuration constraints
   defp validate_intervals!(config) do

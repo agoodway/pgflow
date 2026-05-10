@@ -103,10 +103,85 @@ defmodule PgFlow.EnqueueTest do
   end
 
   describe "PgFlow.enqueue/3" do
-    test "enqueues a job with options (reserved for future use)" do
+    test "enqueues a job with empty options" do
       {:ok, run_id} = PgFlow.enqueue(EnqueueTestJob, %{"value" => 1}, [])
       assert is_binary(run_id)
       assert {:ok, _} = Ecto.UUID.cast(run_id)
+    end
+
+    test "enqueues a job with delayed visibility" do
+      {:ok, run_id} = PgFlow.enqueue(EnqueueTestJob, %{"value" => 1}, delay_seconds: 20)
+
+      {:ok, run_id_binary} = Ecto.UUID.dump(run_id)
+
+      %{rows: [[%DateTime{} = visible_at]]} =
+        TestRepo.query!(
+          """
+          SELECT queue.vt
+          FROM pgflow.step_tasks AS task
+          JOIN pgmq.q_enqueue_test_job AS queue ON queue.msg_id = task.message_id
+          WHERE task.run_id = $1::uuid
+          """,
+          [run_id_binary]
+        )
+
+      assert DateTime.diff(visible_at, DateTime.utc_now(), :second) in 17..22
+    end
+
+    test "enqueues a job with an absolute scheduled_at timestamp" do
+      scheduled_at = DateTime.add(DateTime.utc_now(), 20, :second)
+
+      {:ok, run_id} = PgFlow.enqueue(EnqueueTestJob, %{"value" => 1}, scheduled_at: scheduled_at)
+
+      assert_visible_in(run_id, 17..22)
+    end
+  end
+
+  describe "PgFlow.enqueue_in/3" do
+    test "enqueues a job that becomes visible later" do
+      {:ok, run_id} = PgFlow.enqueue_in(EnqueueTestJob, %{"value" => 1}, 20)
+
+      assert_visible_in(run_id, 17..22)
+    end
+
+    test "zero seconds enqueues a job for immediate visibility" do
+      {:ok, run_id} = PgFlow.enqueue_in(EnqueueTestJob, %{"value" => 1}, 0)
+
+      assert_visible_in(run_id, -1..1)
+    end
+
+    test "rejects invalid delay values" do
+      assert {:error, :invalid_delay_seconds} =
+               PgFlow.enqueue_in(EnqueueTestJob, %{"value" => 1}, -1)
+
+      assert {:error, :invalid_delay_seconds} =
+               PgFlow.enqueue(EnqueueTestJob, %{"value" => 1}, delay_seconds: -1)
+    end
+  end
+
+  describe "PgFlow.enqueue_at/3" do
+    test "enqueues a job that becomes visible at the requested time" do
+      scheduled_at = DateTime.add(DateTime.utc_now(), 20, :second)
+
+      {:ok, run_id} = PgFlow.enqueue_at(EnqueueTestJob, %{"value" => 1}, scheduled_at)
+
+      assert_visible_in(run_id, 17..22)
+    end
+
+    test "past timestamps enqueue a job for immediate visibility" do
+      scheduled_at = DateTime.add(DateTime.utc_now(), -20, :second)
+
+      {:ok, run_id} = PgFlow.enqueue_at(EnqueueTestJob, %{"value" => 1}, scheduled_at)
+
+      assert_visible_in(run_id, -1..1)
+    end
+
+    test "rejects invalid scheduled timestamps" do
+      assert {:error, :invalid_scheduled_at} =
+               PgFlow.enqueue_at(EnqueueTestJob, %{"value" => 1}, "tomorrow")
+
+      assert {:error, :invalid_scheduled_at} =
+               PgFlow.enqueue(EnqueueTestJob, %{"value" => 1}, scheduled_at: "tomorrow")
     end
   end
 
@@ -200,5 +275,22 @@ defmodule PgFlow.EnqueueTest do
       [[flow_type]] = result.rows
       assert flow_type == "job"
     end
+  end
+
+  defp assert_visible_in(run_id, range) do
+    {:ok, run_id_binary} = Ecto.UUID.dump(run_id)
+
+    %{rows: [[%DateTime{} = visible_at]]} =
+      TestRepo.query!(
+        """
+        SELECT queue.vt
+        FROM pgflow.step_tasks AS task
+        JOIN pgmq.q_enqueue_test_job AS queue ON queue.msg_id = task.message_id
+        WHERE task.run_id = $1::uuid
+        """,
+        [run_id_binary]
+      )
+
+    assert DateTime.diff(visible_at, DateTime.utc_now(), :second) in range
   end
 end

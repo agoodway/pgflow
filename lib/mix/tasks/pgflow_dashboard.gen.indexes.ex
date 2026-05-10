@@ -41,31 +41,20 @@ defmodule Mix.Tasks.PgflowDashboard.Gen.Indexes do
 
   use Mix.Task
 
+  alias Mix.Tasks.Pgflow.Helpers
+
   @impl Mix.Task
   def run(args) do
-    {opts, _, _} =
-      OptionParser.parse(args,
-        switches: [migrations_path: :string],
-        aliases: [p: :migrations_path]
-      )
-
-    generate_migration(opts)
+    Helpers.write_migration(
+      args,
+      "add_pgflow_dashboard_indexes",
+      &generate_migration_content/1,
+      &message/1
+    )
   end
 
-  defp generate_migration(opts) do
-    migrations_path = Keyword.get(opts, :migrations_path, "priv/repo/migrations")
-    File.mkdir_p!(migrations_path)
-
-    timestamp = generate_timestamp()
-    app_module = get_app_module()
-    migration_content = generate_migration_content(app_module)
-
-    filename = "#{timestamp}_add_pgflow_dashboard_indexes.exs"
-    filepath = Path.join(migrations_path, filename)
-
-    File.write!(filepath, migration_content)
-
-    Mix.shell().info("""
+  defp message(filepath) do
+    """
     Generated migration: #{filepath}
 
     Run the migration with:
@@ -73,7 +62,7 @@ defmodule Mix.Tasks.PgflowDashboard.Gen.Indexes do
 
     This will create performance indexes for dashboard queries.
     These indexes are optional but recommended for high-traffic dashboards.
-    """)
+    """
   end
 
   defp generate_migration_content(app_module) do
@@ -143,29 +132,5 @@ defmodule Mix.Tasks.PgflowDashboard.Gen.Indexes do
       end
     end
     """
-  end
-
-  defp get_app_module do
-    case Mix.Project.config()[:app] do
-      nil ->
-        Mix.raise("Could not determine app name from Mix.Project")
-
-      app ->
-        app |> to_string() |> Macro.camelize()
-    end
-  end
-
-  defp generate_timestamp do
-    {{year, month, day}, {hour, minute, second}} = :calendar.universal_time()
-
-    :io_lib.format("~4..0B~2..0B~2..0B~2..0B~2..0B~2..0B", [
-      year,
-      month,
-      day,
-      hour,
-      minute,
-      second
-    ])
-    |> IO.iodata_to_binary()
   end
 end

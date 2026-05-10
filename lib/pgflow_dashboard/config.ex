@@ -29,6 +29,8 @@ defmodule PgFlowDashboard.Config do
 
   """
 
+  alias PgFlow.Config.RepoValidator
+
   @schema [
     repo: [
       type: :atom,
@@ -95,7 +97,7 @@ defmodule PgFlowDashboard.Config do
   def validate!(opts) when is_list(opts) do
     case NimbleOptions.validate(opts, @schema) do
       {:ok, config} ->
-        validate_repo!(config[:repo])
+        RepoValidator.validate_repo!(config[:repo])
         config
 
       {:error, error} ->
@@ -108,18 +110,4 @@ defmodule PgFlowDashboard.Config do
   """
   @spec schema() :: keyword()
   def schema, do: @schema
-
-  # Validates that the repo module is loaded and implements the Ecto.Repo behaviour
-  defp validate_repo!(repo) do
-    unless Code.ensure_loaded?(repo) do
-      raise ArgumentError, "repo module #{inspect(repo)} is not loaded"
-    end
-
-    unless function_exported?(repo, :__adapter__, 0) do
-      raise ArgumentError,
-            "repo module #{inspect(repo)} does not implement Ecto.Repo behaviour"
-    end
-
-    :ok
-  end
 end

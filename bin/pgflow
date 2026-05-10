@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+usage() {
+  echo "Usage: pgflow <command>"
+  echo ""
+  echo "Commands:"
+  echo "  start     Start Docker Postgres + demo Phoenix via Hivemind"
+  echo "  stop      Gracefully stop all demo services"
+  echo "  console   Attach an interactive Elixir shell to the demo BEAM node"
+  echo "  help      Show this help message"
+}
+
+case "${1:-help}" in
+  start)
+    exec "$REPO_DIR/bin/dev"
+    ;;
+  stop)
+    exec "$REPO_DIR/bin/stop"
+    ;;
+  console)
+    exec "$REPO_DIR/bin/console"
+    ;;
+  help|--help|-h)
+    usage
+    ;;
+  *)
+    echo "Unknown command: $1" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

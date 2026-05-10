@@ -54,31 +54,20 @@ defmodule Mix.Tasks.PgflowDashboard.Gen.Migration do
 
   use Mix.Task
 
+  alias Mix.Tasks.Pgflow.Helpers
+
   @impl Mix.Task
   def run(args) do
-    {opts, _, _} =
-      OptionParser.parse(args,
-        switches: [migrations_path: :string],
-        aliases: [p: :migrations_path]
-      )
-
-    generate_migration(opts)
+    Helpers.write_migration(
+      args,
+      "create_pgflow_dashboard",
+      &generate_migration_content/1,
+      &message/1
+    )
   end
 
-  defp generate_migration(opts) do
-    migrations_path = Keyword.get(opts, :migrations_path, "priv/repo/migrations")
-    File.mkdir_p!(migrations_path)
-
-    timestamp = generate_timestamp()
-    app_module = get_app_module()
-    migration_content = generate_migration_content(app_module)
-
-    filename = "#{timestamp}_create_pgflow_dashboard.exs"
-    filepath = Path.join(migrations_path, filename)
-
-    File.write!(filepath, migration_content)
-
-    Mix.shell().info("""
+  defp message(filepath) do
+    """
     Generated migration: #{filepath}
 
     Run the migration with:
@@ -97,7 +86,7 @@ defmodule Mix.Tasks.PgflowDashboard.Gen.Migration do
         ]
 
     Note: The pgflow schema must already exist. Run pgflow migrations first if needed.
-    """)
+    """
   end
 
   defp generate_migration_content(app_module) do
@@ -122,29 +111,5 @@ defmodule Mix.Tasks.PgflowDashboard.Gen.Migration do
       end
     end
     """
-  end
-
-  defp get_app_module do
-    case Mix.Project.config()[:app] do
-      nil ->
-        Mix.raise("Could not determine app name from Mix.Project")
-
-      app ->
-        app |> to_string() |> Macro.camelize()
-    end
-  end
-
-  defp generate_timestamp do
-    {{year, month, day}, {hour, minute, second}} = :calendar.universal_time()
-
-    :io_lib.format("~4..0B~2..0B~2..0B~2..0B~2..0B~2..0B", [
-      year,
-      month,
-      day,
-      hour,
-      minute,
-      second
-    ])
-    |> IO.iodata_to_binary()
   end
 end

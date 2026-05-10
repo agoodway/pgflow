@@ -156,21 +156,37 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
     {abs_diff, suffix, prefix} =
       if diff >= 0, do: {diff, "", "in "}, else: {abs(diff), " ago", ""}
 
+    relative_time(abs_diff, prefix, suffix)
+  end
+
+  defp relative_time(abs_diff, prefix, suffix) when abs_diff < 3600 do
     cond do
       abs_diff < 5 -> "just now"
       abs_diff < 60 -> "#{prefix}#{abs_diff} seconds#{suffix}"
       abs_diff < 120 -> "#{prefix}1 minute#{suffix}"
-      abs_diff < 3600 -> "#{prefix}#{div(abs_diff, 60)} minutes#{suffix}"
+      true -> "#{prefix}#{div(abs_diff, 60)} minutes#{suffix}"
+    end
+  end
+
+  defp relative_time(abs_diff, prefix, suffix) when abs_diff < 172_800 do
+    cond do
       abs_diff < 7200 -> "#{prefix}1 hour#{suffix}"
       abs_diff < 86_400 -> "#{prefix}#{div(abs_diff, 3600)} hours#{suffix}"
-      abs_diff < 172_800 -> "#{prefix}1 day#{suffix}"
+      true -> "#{prefix}1 day#{suffix}"
+    end
+  end
+
+  defp relative_time(abs_diff, prefix, suffix) when abs_diff < 63_072_000 do
+    cond do
       abs_diff < 2_592_000 -> "#{prefix}#{div(abs_diff, 86_400)} days#{suffix}"
       abs_diff < 5_184_000 -> "#{prefix}1 month#{suffix}"
       abs_diff < 31_536_000 -> "#{prefix}#{div(abs_diff, 2_592_000)} months#{suffix}"
-      abs_diff < 63_072_000 -> "#{prefix}1 year#{suffix}"
-      true -> "#{prefix}#{div(abs_diff, 31_536_000)} years#{suffix}"
+      true -> "#{prefix}1 year#{suffix}"
     end
   end
+
+  defp relative_time(abs_diff, prefix, suffix),
+    do: "#{prefix}#{div(abs_diff, 31_536_000)} years#{suffix}"
 
   @doc """
   Returns a short form of a UUID for display.

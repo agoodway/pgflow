@@ -51,6 +51,8 @@ defmodule Mix.Tasks.Pgflow.Setup do
 
   use Mix.Task
 
+  alias Mix.Tasks.Pgflow.Helpers
+
   @impl Mix.Task
   def run(args) do
     {opts, _, _} =
@@ -58,11 +60,11 @@ defmodule Mix.Tasks.Pgflow.Setup do
         switches: [repo: :string, helpers: :boolean, dashboard: :boolean]
       )
 
-    repo = resolve_repo(opts[:repo])
+    repo = Helpers.resolve_repo(opts[:repo])
     helpers? = Keyword.get(opts, :helpers, true)
     dashboard? = Keyword.get(opts, :dashboard, false)
 
-    migrations_dir = Path.join(priv_path(repo), "migrations")
+    migrations_dir = Path.join(Helpers.priv_path(repo), "migrations")
     File.mkdir_p!(migrations_dir)
 
     timestamp = timestamp()
@@ -79,39 +81,6 @@ defmodule Mix.Tasks.Pgflow.Setup do
     Ensure pgmq is installed before this migration runs (via
     `mix pgflow.gen.pgmq_migration`) unless your Postgres already ships pgmq.
     """)
-  end
-
-  defp resolve_repo(nil) do
-    app = Mix.Project.config()[:app]
-
-    case Application.get_env(app, :ecto_repos, []) do
-      [repo] ->
-        repo
-
-      [repo | _] = repos ->
-        Mix.shell().info(
-          "Multiple repos configured (#{inspect(repos)}); using #{inspect(repo)}. " <>
-            "Pass `--repo` to choose a specific one."
-        )
-
-        repo
-
-      [] ->
-        Mix.raise("No Ecto repos configured. Add `:ecto_repos` to your app config.")
-    end
-  end
-
-  defp resolve_repo(repo_string) do
-    Module.concat([repo_string])
-  end
-
-  defp priv_path(repo) do
-    case repo.config()[:priv] do
-      nil -> "priv/repo"
-      priv when is_binary(priv) -> priv
-    end
-  rescue
-    _ -> "priv/repo"
   end
 
   defp timestamp do

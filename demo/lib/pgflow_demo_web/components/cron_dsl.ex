@@ -6,6 +6,8 @@ defmodule PgflowDemoWeb.Components.CronDSL do
 
   use Phoenix.Component
 
+  alias PgFlowDashboard.Live.LiveHelpers
+
   # Read the job source at compile time
   @cron_source_path "lib/pgflow_demo/jobs/article_flow_cleanup.ex"
   @external_resource @cron_source_path
@@ -51,7 +53,7 @@ defmodule PgflowDemoWeb.Components.CronDSL do
 
     %{
       next_run_at: next_run_at,
-      relative_time: PgFlowDashboard.Live.LiveHelpers.format_relative_time(next_run_at),
+      relative_time: LiveHelpers.format_relative_time(next_run_at),
       expression: "@hourly",
       human_schedule: "Hourly"
     }
@@ -91,7 +93,7 @@ defmodule PgflowDemoWeb.Components.CronDSL do
           <span class="text-xs text-emerald-400">Active</span>
         </div>
       </div>
-
+      
     <!-- Cron Source Code -->
       <div class="font-mono text-xs leading-relaxed">
         {Phoenix.HTML.raw(@highlighted_source)}

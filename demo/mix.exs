@@ -28,7 +28,7 @@ defmodule PgflowDemo.MixProject do
 
   def cli do
     [
-      preferred_envs: [precommit: :test]
+      preferred_envs: [precommit: :test, quality: :test]
     ]
   end
 
@@ -41,11 +41,12 @@ defmodule PgflowDemo.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
-      # PgFlow - path dependency to parent library
-      {:pgflow, path: ".."},
+      {:pgflow, "~> 0.1.0"},
+      # {:pgflow, path: ".."},
+      {:livefilter, "~> 0.1.8"},
 
-      # LiveFilter - for dashboard runs filtering
-      {:live_filter, github: "agoodway/livefilter", override: true},
+      # Tz - required by PgFlowDashboard for time_zone support
+      {:tz, "~> 0.28"},
 
       # Phoenix
       {:phoenix, "~> 1.8.3"},
@@ -77,7 +78,10 @@ defmodule PgflowDemo.MixProject do
       {:floki, "~> 0.36"},
 
       # LLM integration
-      {:req_llm, "~> 1.2"},
+      {:req_llm, "~> 1.11"},
+
+      # Loads .env files in dev/test
+      {:dotenvy, "~> 1.1"},
 
       # Syntax highlighting for code display
       {:makeup_elixir, "~> 0.16"},
@@ -87,7 +91,11 @@ defmodule PgflowDemo.MixProject do
 
       # Code quality
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+      {:ex_slop, "~> 0.3", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:sobelow, "~> 0.14", only: [:dev, :test], runtime: false},
+      {:doctor, "~> 0.22", only: [:dev, :test], runtime: false},
+      {:ex_dna, "~> 1.2", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -118,7 +126,16 @@ defmodule PgflowDemo.MixProject do
         "esbuild pgflow_demo --minify",
         "phx.digest"
       ],
-      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"],
+      quality: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format --check-formatted",
+        "sobelow --config",
+        "ex_dna",
+        "doctor",
+        "credo --strict"
+      ]
     ]
   end
 end

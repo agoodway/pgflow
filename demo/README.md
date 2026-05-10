@@ -40,12 +40,23 @@ mix ecto.migrate
 # 5. Setup assets
 mix assets.setup
 
-# 6. Set your OpenAI API key (required for LLM steps)
-export OPENAI_API_KEY="sk-..."
+# 6. Configure your LLM API key (see "LLM configuration" below)
+cp .env.sample .env
+$EDITOR .env
 
-# 7. Run the server
+# 7. Run the server (or `pgflow start` from the repo root for hivemind + docker)
 mix phx.server
 ```
 
-- Demo app: http://localhost:4000
-- PgFlow Dashboard: http://localhost:4000/pgflow
+- Demo app: http://localhost:4022
+- PgFlow Dashboard: http://localhost:4022/pgflow
+
+## LLM configuration
+
+The `summarize` and `extract_keywords` steps call **DeepSeek V3.2** on
+**Fireworks AI** through ReqLLM by default.
+
+1. Get a key at <https://fireworks.ai/account/api-keys> (looks like `fw_...`).
+2. `cp .env.sample .env` and set `AI_API_KEY=fw_...`.
+
+`.env` is gitignored. `runtime.exs` loads it via dotenvy.

@@ -1,19 +1,44 @@
 defmodule PgflowDemo.LLM do
   @moduledoc """
-  LLM integration for the PgFlow demo app using ReqLLM.
+  LLM integration for the PgFlow demo via ReqLLM.
 
-  Uses OpenAI's gpt-4o-mini model by default. Configure via environment variable:
+  Routes through an OpenAI-compatible endpoint (Fireworks by default).
+  Configure via env vars (loaded by `runtime.exs`):
 
-      OPENAI_API_KEY=sk-...
+      AI_API_KEY=<fireworks key>
+      AI_API_BASE=https://api.fireworks.ai/inference/v1
+      AI_MODEL_NAME=accounts/fireworks/models/deepseek-v3p1
   """
 
-  @default_model "openai:gpt-4o-mini"
   @max_content_length 12_000
 
   @doc """
-  Summarize article content using the LLM.
+  Returns the ReqLLM model spec for the configured provider/model.
+  """
+  @spec model_spec() :: %{id: String.t(), provider: :openai}
+  def model_spec do
+    %{id: model_name(), provider: :openai}
+  end
 
-  Takes markdown content and returns a concise 2-3 paragraph summary.
+  @doc """
+  Returns per-call options (api_key + base_url + timeouts) merged with overrides.
+  """
+  @spec request_opts(keyword()) :: keyword()
+  def request_opts(overrides \\ []) do
+    Keyword.merge(
+      [
+        api_key: api_key(),
+        base_url: api_base(),
+        receive_timeout: 45_000,
+        max_retries: 0,
+        req_http_options: [pool_timeout: 3_000]
+      ],
+      overrides
+    )
+  end
+
+  @doc """
+  Summarizes article content into a 2-3 paragraph summary.
   """
   @spec summarize(String.t()) :: {:ok, String.t()} | {:error, term()}
   def summarize(content) do
@@ -29,9 +54,7 @@ defmodule PgflowDemo.LLM do
   end
 
   @doc """
-  Extract keywords from article content using the LLM.
-
-  Takes markdown content and returns a list of 5-10 relevant keywords.
+  Extracts 5-10 keywords from article content via structured output.
   """
   @spec extract_keywords(String.t()) :: {:ok, list(String.t())} | {:error, term()}
   def extract_keywords(content) do
@@ -44,29 +67,27 @@ defmodule PgflowDemo.LLM do
 
     schema = [keywords: [type: {:list, :string}, required: true]]
 
-    case ReqLLM.generate_object(model(), prompt, schema) do
-      {:ok, response} ->
-        {:ok, ReqLLM.Response.object(response)["keywords"]}
-
-      {:error, reason} ->
-        {:error, format_error(reason)}
+    with {:ok, response} <-
+           ReqLLM.generate_object(model_spec(), prompt, schema, request_opts()),
+         {:ok, object} <- ReqLLM.Response.unwrap_object(response) do
+      {:ok, object["keywords"] || object[:keywords] || []}
+    else
+      {:error, reason} -> {:error, format_error(reason)}
     end
   end
 
   @doc """
   Generate text from the LLM.
-
-  Returns `{:ok, text}` on success or `{:error, reason}` on failure.
   """
   @spec generate(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def generate(prompt, opts \\ []) do
-    model_spec = model()
     temperature = Keyword.get(opts, :temperature, 0.7)
     max_tokens = Keyword.get(opts, :max_tokens, 1000)
 
-    case ReqLLM.generate_text(model_spec, prompt,
-           temperature: temperature,
-           max_tokens: max_tokens
+    case ReqLLM.generate_text(
+           model_spec(),
+           prompt,
+           request_opts(temperature: temperature, max_tokens: max_tokens)
          ) do
       {:ok, response} ->
         {:ok, ReqLLM.Response.text(response)}
@@ -76,12 +97,19 @@ defmodule PgflowDemo.LLM do
     end
   end
 
-  @doc """
-  Get the current model being used.
-  """
-  @spec model() :: String.t()
-  def model do
-    Application.get_env(:pgflow_demo, :llm_model, @default_model)
+  defp model_name do
+    Application.get_env(:pgflow_demo, :ai_model_name) ||
+      raise "AI_MODEL_NAME not configured (set :ai_model_name in :pgflow_demo config)"
+  end
+
+  defp api_key do
+    Application.get_env(:pgflow_demo, :ai_api_key) ||
+      raise "AI_API_KEY not configured (set :ai_api_key in :pgflow_demo config)"
+  end
+
+  defp api_base do
+    Application.get_env(:pgflow_demo, :ai_api_base) ||
+      raise "AI_API_BASE not configured (set :ai_api_base in :pgflow_demo config)"
   end
 
   defp format_error(%{message: message}) when is_binary(message), do: message

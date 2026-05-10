@@ -76,3 +76,6 @@ RUN apt-get remove -y build-essential git postgresql-server-dev-17 \
 # Configure shared_preload_libraries for extensions that require it
 # pg_cron and pg_net need to be preloaded (pgsodium NOT needed for Atlas dev)
 RUN echo "shared_preload_libraries = 'pg_cron,pg_net'" >> /usr/share/postgresql/postgresql.conf.sample
+
+# Auto-create pgflow_test alongside POSTGRES_DB on first container init
+COPY init/ /docker-entrypoint-initdb.d/

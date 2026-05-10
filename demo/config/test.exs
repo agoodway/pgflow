@@ -9,7 +9,10 @@ config :pgflow_demo, PgflowDemo.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "pgflow_demo_test#{System.get_env("MIX_TEST_PARTITION")}",
+  port: 54323,
+  # Uses the same database as dev — Ecto Sandbox provides isolation.
+  # Required because pg_cron only supports one database per cluster.
+  database: "pgflow_demo_dev",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 

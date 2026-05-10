@@ -213,22 +213,61 @@ defmodule PgFlow do
   """
   @spec enqueue(module(), map()) :: {:ok, String.t()} | {:error, term()}
   def enqueue(job_module, input) when is_atom(job_module) and is_map(input) do
-    start_flow(job_module, input)
+    Client.enqueue(job_module, input)
   end
 
   @doc """
   Enqueues a background job with options.
 
-  Currently options are reserved for future use (e.g., scheduled jobs).
+  Supported options:
+
+    * `:delay_seconds` - non-negative integer seconds before the job is available
+    * `:scheduled_at` - `DateTime` when the job should become available
 
   ## Examples
 
-      {:ok, run_id} = PgFlow.enqueue(MyApp.Jobs.SendEmail, %{"to" => "user@example.com"}, [])
+      {:ok, run_id} = PgFlow.enqueue(MyApp.Jobs.SendEmail, %{"to" => "user@example.com"}, delay_seconds: 60)
+      {:ok, run_id} = PgFlow.enqueue(MyApp.Jobs.SendEmail, %{"to" => "user@example.com"}, scheduled_at: ~U[2026-05-08 12:00:00Z])
 
   """
   @spec enqueue(module(), map(), keyword()) :: {:ok, String.t()} | {:error, term()}
-  def enqueue(job_module, input, _opts) when is_atom(job_module) and is_map(input) do
-    start_flow(job_module, input)
+  def enqueue(job_module, input, opts) when is_atom(job_module) and is_map(input) do
+    Client.enqueue(job_module, input, opts)
+  end
+
+  @doc """
+  Enqueues a background job that becomes available after `delay_seconds`.
+
+  PgFlow persists the run immediately, then delays the initial pgmq task
+  visibility so workers cannot execute it until the delay elapses. Values of
+  `0` enqueue the job for immediate execution.
+
+  ## Examples
+
+      {:ok, run_id} = PgFlow.enqueue_in(MyApp.Jobs.SendEmail, %{"to" => "user@example.com"}, 60)
+
+  """
+  @spec enqueue_in(module(), map(), non_neg_integer()) :: {:ok, String.t()} | {:error, term()}
+  def enqueue_in(job_module, input, delay_seconds)
+      when is_atom(job_module) and is_map(input) do
+    Client.enqueue_in(job_module, input, delay_seconds)
+  end
+
+  @doc """
+  Enqueues a background job that becomes available at `scheduled_at`.
+
+  Timestamps in the past enqueue the job for immediate execution. Any `DateTime`
+  time zone is accepted; PgFlow compares the scheduled timestamp as an instant.
+
+  ## Examples
+
+      {:ok, run_id} = PgFlow.enqueue_at(MyApp.Jobs.SendEmail, %{"to" => "user@example.com"}, ~U[2026-05-08 12:00:00Z])
+
+  """
+  @spec enqueue_at(module(), map(), DateTime.t()) :: {:ok, String.t()} | {:error, term()}
+  def enqueue_at(job_module, input, scheduled_at)
+      when is_atom(job_module) and is_map(input) do
+    Client.enqueue_at(job_module, input, scheduled_at)
   end
 
   @doc """

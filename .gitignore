@@ -32,3 +32,4 @@ pgflow-reference/
 .opencode
 openspec
 .playwright-mcp
+.DS_Store

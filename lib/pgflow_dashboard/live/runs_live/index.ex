@@ -106,7 +106,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
 
   @impl true
   def handle_info(
-        {:live_filter, :updated, params},
+        {:livefilter, :updated, params},
         %{assigns: %{remaining_params: remaining_params, pagination: %{limit: limit}}} = socket
       ) do
     pagination_params = %{"limit" => to_string(limit), "offset" => "0"}
@@ -118,8 +118,8 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
 
   @impl true
   def handle_info(
-        {:live_filter, :page_changed, pagination_params},
-        %{assigns: %{remaining_params: remaining_params, live_filter: %{filters: filters}}} =
+        {:livefilter, :page_changed, pagination_params},
+        %{assigns: %{remaining_params: remaining_params, livefilter: %{filters: filters}}} =
           socket
       ) do
     filter_params = Serializer.to_params(filters)
@@ -165,7 +165,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
     |> assign(:crons, crons)
   end
 
-  defp load_runs(%{assigns: %{pagination: pagination, live_filter: %{filters: filters}}} = socket) do
+  defp load_runs(%{assigns: %{pagination: pagination, livefilter: %{filters: filters}}} = socket) do
     import Ecto.Query
 
     base_query =
@@ -230,7 +230,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
       <Layouts.page_header title="Runs" subtitle="All workflow executions" />
 
       <div class="mb-6 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-        <LiveFilter.bar filter={@live_filter} />
+        <LiveFilter.bar filter={@livefilter} />
       </div>
 
       <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
