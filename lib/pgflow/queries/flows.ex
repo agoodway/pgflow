@@ -591,10 +591,19 @@ defmodule PgFlow.Queries.Flows do
   end
 
   @doc """
-  Recovers stalled tasks by resetting step_tasks stuck in 'started' status.
+  Recovers stalled tasks via the `pgflow.recover_stalled_tasks` helper, returning
+  the number requeued.
 
-  Tasks that have been in 'started' status longer than the stale threshold
-  are reset to 'queued' so they can be re-processed by workers.
+  A task is stalled once it has been `started` longer than its effective timeout
+  — `coalesce(step.opt_timeout, flow.opt_timeout)` — plus `stale_threshold`
+  seconds of buffer. Stalled tasks are reset to `queued`; past a requeue cap they
+  are archived and marked `permanently_stalled_at`.
+
+  The deadline is step-aware on purpose: upstream pgflow's
+  `requeue_stalled_tasks()` deadlines on the flow timeout alone, which would
+  reclaim a healthy long step (e.g. a step with `timeout: 120` under a 30s flow
+  default) mid-flight. Step-awareness matches how `start_tasks` sets each
+  message's pgmq visibility timeout.
   """
   @spec recover_stalled_tasks(Ecto.Repo.t(), pos_integer()) ::
           {:ok, non_neg_integer()} | {:error, term()}

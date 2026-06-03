@@ -10,7 +10,8 @@ defmodule PgFlow.Worker.StalledTaskRecovery do
   ## Configuration
 
     * `:recovery_interval` - Milliseconds between recovery sweeps (default: 15_000)
-    * `:stale_threshold` - Seconds after which a started task is considered stalled (default: 60)
+    * `:stale_threshold` - Buffer in seconds beyond a task's effective (step or
+      flow) `opt_timeout` before it is considered stalled (default: 60)
   """
 
   use GenServer
@@ -49,6 +50,9 @@ defmodule PgFlow.Worker.StalledTaskRecovery do
     {:ok, state}
   end
 
+  # Run as a supervised OTP sweep so recovery carries no dependency on pg_cron
+  # being installed. `stale_threshold` is the buffer beyond each task's effective
+  # (step or flow) timeout — see `PgFlow.Queries.Flows.recover_stalled_tasks/2`.
   @impl true
   def handle_info(:recover, state) do
     case Flows.recover_stalled_tasks(state.repo, state.stale_threshold) do

@@ -18,7 +18,7 @@ defmodule PgFlow.Config do
     * `:notify_fallback_interval` (optional) - Milliseconds between fallback polls when using `:notify` strategy. Default: `30000`. Max: `600_000` (10 minutes).
     * `:notify_throttle_ms` (optional) - Throttle interval for pgmq LISTEN/NOTIFY trigger. Default: `250`.
     * `:recovery_interval` (optional) - Milliseconds between stalled task recovery sweeps. Default: `15_000`.
-    * `:stale_threshold` (optional) - Seconds after which a started task is considered stalled. Default: `60`.
+    * `:stale_threshold` (optional) - Buffer in seconds added beyond a task's effective (step or flow) `opt_timeout` before it is considered stalled. Default: `60`.
     * `:attach_default_logger` (optional) - Whether to attach the default telemetry logger. Default: `false`.
     * `:pubsub` (optional) - Phoenix.PubSub module for broadcasting telemetry events to LiveViews. Default: `nil` (disabled).
 
@@ -109,7 +109,8 @@ defmodule PgFlow.Config do
     stale_threshold: [
       type: :pos_integer,
       default: 60,
-      doc: "Seconds after which a started task is considered stalled"
+      doc:
+        "Buffer in seconds beyond a task's effective (step or flow) opt_timeout before it is considered stalled"
     ],
     attach_default_logger: [
       type: :boolean,
