@@ -45,7 +45,7 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
 
     # Start the repo
     {:ok, _} = Application.ensure_all_started(:ecto_sql)
-    {:ok, _} = repo.start_link()
+    start_repo(repo)
 
     results = [
       check_schema_exists(repo),
@@ -79,6 +79,14 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
 
       repo_string ->
         Module.concat([repo_string])
+    end
+  end
+
+  defp start_repo(repo) do
+    case repo.start_link() do
+      {:ok, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+      {:error, error} -> raise "Failed to start repo: #{inspect(error)}"
     end
   end
 
@@ -152,22 +160,42 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
   end
 
   defp check_pgmq_extension(repo) do
-    query = """
+    extension_query = """
     SELECT extname
     FROM pg_extension
     WHERE extname = 'pgmq'
     """
 
-    case repo.query(query) do
+    case repo.query(extension_query) do
       {:ok, %{num_rows: 1}} ->
         Mix.shell().info("  ✓ pgmq extension is installed")
+        :ok
+
+      {:ok, %{num_rows: 0}} ->
+        check_vendored_pgmq(repo)
+
+      {:error, error} ->
+        {:error, "Failed to check pgmq extension: #{inspect(error)}"}
+    end
+  end
+
+  defp check_vendored_pgmq(repo) do
+    vendored_query = """
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'pgmq' AND table_name = 'meta'
+    """
+
+    case repo.query(vendored_query) do
+      {:ok, %{num_rows: 1}} ->
+        Mix.shell().info("  ✓ pgmq is installed (vendored)")
         :ok
 
       {:ok, %{num_rows: 0}} ->
         {:error, "pgmq extension is not installed"}
 
       {:error, error} ->
-        {:error, "Failed to check pgmq extension: #{inspect(error)}"}
+        {:error, "Failed to check pgmq installation: #{inspect(error)}"}
     end
   end
 end

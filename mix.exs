@@ -1,7 +1,7 @@
 defmodule PgFlow.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.1.1"
   @source_url "https://github.com/agoodway/pgflow"
 
   def project do
@@ -55,7 +55,7 @@ defmodule PgFlow.MixProject do
       # Dashboard (optional)
       {:phoenix_live_view, "~> 1.0", optional: true},
       {:phoenix, "~> 1.7", optional: true},
-      {:livefilter, "~> 0.1.8", optional: true},
+      {:livefilter, "~> 0.2.0", optional: true},
       # {:livefilter, path: "../livefilter", optional: true},
       {:tz, "~> 0.28", optional: true},
       {:ecto_evolver, "~> 0.1.0"},
