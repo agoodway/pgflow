@@ -99,14 +99,21 @@ defmodule PgFlow.MixProject do
       maintainers: ["Chase Pursley"],
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib priv mix.exs README.md LICENSE .formatter.exs)
+      files: ~w(lib priv docs mix.exs README.md LICENSE .formatter.exs)
     ]
   end
 
   defp docs do
     [
       main: "readme",
-      extras: ["README.md"],
+      extras: [
+        "README.md",
+        "docs/ARCHITECTURE.md",
+        "docs/COMPARISON.md",
+        "docs/DASHBOARD.md",
+        "docs/ELIXIR_VS_SUPABASE.md",
+        "docs/LIVE_CLIENT.md"
+      ],
       source_ref: "v#{@version}"
     ]
   end

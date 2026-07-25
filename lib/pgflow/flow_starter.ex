@@ -55,7 +55,15 @@ defmodule PgFlow.FlowStarter do
   @default_backoff_jitter_ratio 0.20
 
   defmodule ModuleState do
-    @moduledoc false
+    @moduledoc """
+    Registration snapshot for one flow/job module, as returned by
+    `PgFlow.FlowStarter.module_status/1` and embedded in `status/0` results.
+
+    Tracks where the module is in the registration lifecycle (`:status`),
+    which phase it last executed (registry, worker start, DB notify setup,
+    notify registration), how many attempts have run, and the classified
+    last error, if any.
+    """
 
     @type status :: :pending | :retrying | :succeeded | :failed_permanent
     @type phase :: :registry | :worker | :notify_db | :notify_register

@@ -104,9 +104,25 @@ defmodule PgFlow.Migration do
     Evolver.up(opts)
   end
 
-  defdelegate down(opts \\ []), to: Evolver
-  defdelegate current_version(), to: Evolver
-  defdelegate migrated_version(opts \\ []), to: Evolver
+  @doc """
+  Rolls the pgflow schema back down, reversing `up/1`.
+
+  Accepts the same `:prefix` and `:version` options as `up/1`.
+  """
+  @spec down(keyword()) :: :ok
+  def down(opts \\ []), do: Evolver.down(opts)
+
+  @doc "Latest schema version bundled with this library release."
+  @spec current_version() :: non_neg_integer()
+  def current_version, do: Evolver.current_version()
+
+  @doc """
+  Schema version currently installed in the database, `0` when absent.
+
+  Accepts `:prefix` (default `"pgflow"`).
+  """
+  @spec migrated_version(keyword()) :: non_neg_integer()
+  def migrated_version(opts \\ []), do: Evolver.migrated_version(opts)
 
   defp preflight!(prefix) do
     cond do
