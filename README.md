@@ -45,7 +45,7 @@ Add `pgflow` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:pgflow, "~> 0.1.0"}
+    {:pgflow, "~> 0.1.2"}
   ]
 end
 ```
@@ -66,7 +66,7 @@ mix deps.get
 docker compose up -d
 ```
 
-This builds a Postgres 17 image with pgmq, pg_cron, and the pgflow schema pre-loaded. Database available at `localhost:54322` (user: `postgres`, password: `postgres`, database: `pgflow_test`).
+This builds a Postgres 17 image with pgmq, pg_cron, and the pgflow schema pre-loaded. Database available at `localhost:54323` (user: `postgres`, password: `postgres`, database: `pgflow_test`).
 
 **Resetting the database:** The pgflow schema is loaded by the Docker init script on first container creation only. If you drop the database (e.g. `mix ecto.reset`), you must re-apply it:
 
@@ -309,6 +309,8 @@ docker compose up -d
 # Run tests
 mix test
 ```
+
+Without a database at `localhost:54323` the suite silently excludes every `:integration` test and still reports success. Set `PGFLOW_REQUIRE_DB=1` (recommended in CI) to make an unreachable database fail the run instead.
 
 ## Compatibility with PgFlow TypeScript/Deno
 

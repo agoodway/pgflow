@@ -5,6 +5,17 @@ db_available? =
     _ -> false
   end
 
+# Set PGFLOW_REQUIRE_DB=1 in CI (or any run that must not silently skip) so an
+# unreachable database aborts instead of quietly excluding every `:integration`
+# test — an otherwise-green run that exercised none of the worker.
+if not db_available? and System.get_env("PGFLOW_REQUIRE_DB") == "1" do
+  raise """
+  PGFLOW_REQUIRE_DB=1 is set but no database answered at localhost:54323.
+
+  Start it with `docker compose up -d`, then re-run the suite.
+  """
+end
+
 if db_available? do
   {:ok, _} = Application.ensure_all_started(:ecto_sql)
   {:ok, _} = PgFlow.TestRepo.start_link()

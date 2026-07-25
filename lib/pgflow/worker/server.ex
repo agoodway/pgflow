@@ -687,15 +687,18 @@ defmodule PgFlow.Worker.Server do
       """
     end
 
-    # Parse inputs - Postgrex returns JSONB as maps/lists/primitives
-    input_data = decode_json_if_needed(input)
-    flow_input_data = decode_json_if_needed(flow_input)
-
+    # `input` and `flow_input` arrive from jsonb columns, so Postgrex has already
+    # decoded them into native Elixir terms. A binary here IS a JSON string value
+    # (e.g. a UUID element of a mapped array), not undecoded JSON text - decoding
+    # it again would raise on plain strings and silently rewrite ones that happen
+    # to parse ("123" -> 123). The TypeScript reference worker decodes at this
+    # point because its driver hands back raw JSON text; Postgrex does not.
+    #
     # Route input based on step type (matching TypeScript reference pattern):
     # - Map steps: receive raw array element directly
     # - Root steps (no deps): receive flow_input directly
     # - Dependent steps: receive deps object {dep1: val1, dep2: val2, ...}
-    handler_input = route_handler_input(step_def, input_data, flow_input_data)
+    handler_input = route_handler_input(step_def, input, flow_input)
 
     # Get handler function from flow module
     handler = state.flow_module.__pgflow_handler__(step_slug_atom)
@@ -707,7 +710,7 @@ defmodule PgFlow.Worker.Server do
       task_index: task_index,
       attempt: 1,
       repo: state.repo,
-      flow_input: flow_input_data || :not_loaded
+      flow_input: flow_input || :not_loaded
     }
 
     # Start task under supervisor
@@ -950,15 +953,6 @@ defmodule PgFlow.Worker.Server do
   end
 
   defp serialize_handler_output(output), do: %{"_raw" => inspect(output)}
-
-  # Helper to decode JSON only if needed - Postgrex returns JSONB as native Elixir types
-  defp decode_json_if_needed(nil), do: nil
-  defp decode_json_if_needed(value) when is_map(value), do: value
-  defp decode_json_if_needed(value) when is_list(value), do: value
-  defp decode_json_if_needed(value) when is_binary(value), do: Jason.decode!(value)
-  # Handle primitives (numbers, booleans) that come from JSONB array elements
-  defp decode_json_if_needed(value) when is_number(value), do: value
-  defp decode_json_if_needed(value) when is_boolean(value), do: value
 
   # Get step definition from flow module
   defp get_step_definition(flow_module, step_slug) do

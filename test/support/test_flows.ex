@@ -113,6 +113,48 @@ defmodule PgFlow.TestFlows do
     end
   end
 
+  defmodule StringMapFlow do
+    @moduledoc """
+    A root map step whose input array holds strings (e.g. UUIDs, slugs).
+
+    The handler echoes each element back unchanged so tests can assert on the
+    exact value the worker handed to the handler, including its type.
+    """
+    use PgFlow.Flow
+
+    @flow slug: :string_map_flow, max_attempts: 1, base_delay: 1
+
+    map :echo_items do
+      fn item, _ctx ->
+        %{echoed: item}
+      end
+    end
+  end
+
+  defmodule DependentStringMapFlow do
+    @moduledoc """
+    A step emitting an array of strings that feeds a dependent map step.
+
+    The map handler echoes each element so tests can assert what arrived on
+    the dependent-map dispatch path.
+    """
+    use PgFlow.Flow
+
+    @flow slug: :dependent_string_map_flow, max_attempts: 1, base_delay: 1
+
+    step :generate_ids do
+      fn input, _ctx ->
+        input["ids"]
+      end
+    end
+
+    map :echo_ids, array: :generate_ids do
+      fn item, _ctx ->
+        %{echoed: item}
+      end
+    end
+  end
+
   defmodule DependentMapFlow do
     @moduledoc """
     A flow with a dependent map step that processes output from another step.

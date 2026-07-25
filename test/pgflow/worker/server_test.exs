@@ -21,6 +21,8 @@ defmodule PgFlow.Worker.ServerTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.Queries.Flows, as: FlowQueries
+  alias PgFlow.TestFlows.DependentStringMapFlow
+  alias PgFlow.TestFlows.StringMapFlow
   alias PgFlow.TestRepo
   alias PgFlow.Worker.Server
 
@@ -1126,6 +1128,113 @@ defmodule PgFlow.Worker.ServerTest do
       # Only aggregate (leaf step) output is in run.output
       # Aggregate: sum of (1*2 + 2*2 + ... + 20*2) = 2 * sum(1..20) = 2 * 210 = 420
       assert run.output["aggregate"]["total"] == 420
+
+      Server.stop(worker_pid)
+    end
+  end
+
+  # ============= Map Input Fidelity Tests =============
+
+  describe "map input fidelity" do
+    test "delivers plain string elements verbatim to the handler", %{
+      task_supervisor: task_supervisor
+    } do
+      # Input: ["alpha-one", "beta-two"] - the shape a map over a list of UUIDs takes
+      # Verifies: each element reaches the handler as the original Elixir string
+      flow_slug = compile_flow(StringMapFlow)
+      worker_pid = start_worker(StringMapFlow, task_supervisor, max_concurrency: 10)
+
+      Process.sleep(100)
+
+      run_id = start_flow_run(flow_slug, ["alpha-one", "beta-two"])
+
+      {:ok, status} = wait_for_run_completion(run_id, 10_000)
+      assert status == "completed"
+
+      run = get_run(run_id)
+      results = run.output["echo_items"]
+
+      assert results == [%{"echoed" => "alpha-one"}, %{"echoed" => "beta-two"}]
+
+      Server.stop(worker_pid)
+    end
+
+    test "does not reinterpret string elements that look like JSON scalars", %{
+      task_supervisor: task_supervisor
+    } do
+      # Strings that parse as JSON, plus empty / non-ASCII / emoji payloads
+      # Verifies: handler receives the strings themselves, not 123 / true / "quoted" / nil,
+      # and that unicode survives the pgmq + jsonb round trip byte for byte
+      flow_slug = compile_flow(StringMapFlow)
+      worker_pid = start_worker(StringMapFlow, task_supervisor, max_concurrency: 10)
+
+      Process.sleep(100)
+
+      items = ["123", "true", "\"quoted\"", "null", "", "prénom-łódź", "flow 🚀 done ✅"]
+      run_id = start_flow_run(flow_slug, items)
+
+      {:ok, status} = wait_for_run_completion(run_id, 10_000)
+      assert status == "completed"
+
+      run = get_run(run_id)
+      results = run.output["echo_items"]
+
+      assert results == Enum.map(items, &%{"echoed" => &1})
+
+      Server.stop(worker_pid)
+    end
+
+    test "delivers every JSON type verbatim from a mixed array", %{
+      task_supervisor: task_supervisor
+    } do
+      # One element per JSON type, including a nested array, a nested object whose
+      # value is a JSON-looking string, and a null
+      # Verifies: each element reaches the handler with its type intact
+      flow_slug = compile_flow(StringMapFlow)
+      worker_pid = start_worker(StringMapFlow, task_supervisor, max_concurrency: 10)
+
+      Process.sleep(100)
+
+      items = [1, "a", true, nil, %{"content" => "123"}, [1, 2]]
+      run_id = start_flow_run(flow_slug, items)
+
+      {:ok, status} = wait_for_run_completion(run_id, 10_000)
+      assert status == "completed"
+
+      run = get_run(run_id)
+      results = run.output["echo_items"]
+
+      assert results == [
+               %{"echoed" => 1},
+               %{"echoed" => "a"},
+               %{"echoed" => true},
+               %{"echoed" => nil},
+               %{"echoed" => %{"content" => "123"}},
+               %{"echoed" => [1, 2]}
+             ]
+
+      Server.stop(worker_pid)
+    end
+
+    test "delivers string elements verbatim on the dependent map path", %{
+      task_supervisor: task_supervisor
+    } do
+      # A step emits an array of strings; the dependent map fans out over it
+      # Verifies: dependent-map dispatch preserves string elements too
+      flow_slug = compile_flow(DependentStringMapFlow)
+      worker_pid = start_worker(DependentStringMapFlow, task_supervisor, max_concurrency: 10)
+
+      Process.sleep(100)
+
+      run_id = start_flow_run(flow_slug, %{ids: ["gamma-three", "42"]})
+
+      {:ok, status} = wait_for_run_completion(run_id, 10_000)
+      assert status == "completed"
+
+      run = get_run(run_id)
+      results = run.output["echo_ids"]
+
+      assert results == [%{"echoed" => "gamma-three"}, %{"echoed" => "42"}]
 
       Server.stop(worker_pid)
     end
