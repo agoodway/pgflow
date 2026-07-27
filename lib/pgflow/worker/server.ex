@@ -81,6 +81,7 @@ defmodule PgFlow.Worker.Server do
   alias PgFlow.Queries.Flows
   alias PgFlow.Queries.Workers, as: WorkerQueries
   alias PgFlow.Worker.Lifecycle
+  alias PgFlow.Worker.TaskRow
 
   @type task_metadata :: %{
           run_id: String.t(),
@@ -658,18 +659,27 @@ defmodule PgFlow.Worker.Server do
 
   @spec dispatch_task(state(), list()) :: state()
   defp dispatch_task(state, task_detail) do
-    # Parse task detail row from pgflow.start_tasks:
-    # [flow_slug, run_id (binary UUID), step_slug, input, msg_id, task_index, flow_input]
+    # Row shape and the seven/eight column split live in `TaskRow`:
     # - input: step-specific input (raw element for map, {} for root, deps for dependent)
     # - flow_input: original flow input (only for root non-map steps, NULL otherwise)
-    [_flow_slug, run_id_bin, step_slug, input, msg_id, task_index, flow_input] = task_detail
+    # - attempt: 1-indexed, from attempts_count, which start_tasks increments before dispatch
+    %{
+      run_id: run_id_bin,
+      step_slug: step_slug,
+      input: input,
+      msg_id: msg_id,
+      task_index: task_index,
+      flow_input: flow_input,
+      attempt: attempt
+    } = TaskRow.decode(task_detail)
 
     # Convert binary UUID to string format
     run_id = Ecto.UUID.load!(run_id_bin)
 
-    # Get step definition to determine input routing
-    step_slug_atom = String.to_atom(step_slug)
-    step_def = get_step_definition(state.flow_module, step_slug_atom)
+    # Looked up by the database's string slug. The atom is then taken off the
+    # compiled definition rather than built from the row, so a queue carrying an
+    # unknown slug cannot add to the atom table on its way to the raise below.
+    step_def = get_step_definition(state.flow_module, step_slug)
 
     unless step_def do
       defined_steps =
@@ -677,7 +687,7 @@ defmodule PgFlow.Worker.Server do
         |> Enum.map(& &1.slug)
 
       raise """
-      Step #{inspect(step_slug_atom)} not found in #{inspect(state.flow_module)} definition.
+      Step #{inspect(step_slug)} not found in #{inspect(state.flow_module)} definition.
 
       Steps defined in module: #{inspect(defined_steps)}
       Step slug (queue) from database: #{inspect(step_slug)}
@@ -686,6 +696,8 @@ defmodule PgFlow.Worker.Server do
       Re-run the migration to sync: mix ecto.migrate
       """
     end
+
+    step_slug_atom = step_def.slug
 
     # `input` and `flow_input` arrive from jsonb columns, so Postgrex has already
     # decoded them into native Elixir terms. A binary here IS a JSON string value
@@ -708,7 +720,7 @@ defmodule PgFlow.Worker.Server do
       run_id: run_id,
       step_slug: step_slug_atom,
       task_index: task_index,
-      attempt: 1,
+      attempt: attempt,
       repo: state.repo,
       flow_input: flow_input || :not_loaded
     }
@@ -779,10 +791,7 @@ defmodule PgFlow.Worker.Server do
 
   # Resolves the timeout for a task: step-level override > flow-level > default 60s
   defp resolve_task_timeout(state, step_slug) do
-    step_slug_atom =
-      if is_atom(step_slug), do: step_slug, else: String.to_atom(step_slug)
-
-    step_def = get_step_definition(state.flow_module, step_slug_atom)
+    step_def = get_step_definition(state.flow_module, step_slug)
     flow_timeout = Keyword.get(state.flow_def.opts, :timeout, 60)
 
     if step_def && step_def.timeout, do: step_def.timeout, else: flow_timeout
@@ -955,26 +964,31 @@ defmodule PgFlow.Worker.Server do
   defp serialize_handler_output(output), do: %{"_raw" => inspect(output)}
 
   # Get step definition from flow module
-  defp get_step_definition(flow_module, step_slug) do
-    definition = flow_module.__pgflow_definition__()
+  # Accepts the slug as either the atom the flow module defined or the string the
+  # database stores. Matching the string form against the compiled steps is what
+  # lets callers avoid `String.to_atom/1` on a database value: a stale or
+  # unrecognized queue row simply finds nothing, rather than growing the atom
+  # table on the way to the same conclusion.
+  defp get_step_definition(flow_module, step_slug) when is_atom(step_slug) do
+    flow_module.__pgflow_definition__().steps
+    |> Enum.find(&(&1.slug == step_slug))
+  end
 
-    Enum.find(definition.steps, fn step ->
-      step.slug == step_slug
-    end)
+  defp get_step_definition(flow_module, step_slug) when is_binary(step_slug) do
+    flow_module.__pgflow_definition__().steps
+    |> Enum.find(&(Atom.to_string(&1.slug) == step_slug))
   end
 
   # Check if a step has downstream dependents (other steps that depend on it)
   # Used to determine if we should poll after completing a task - only poll
   # if the completed step might trigger downstream work
+  # Compares in string form so a slug that arrived from the database never has to
+  # become an atom; `depends_on` holds the compiled atoms, which are safe to render.
   defp step_has_dependents?(flow_module, step_slug) do
-    step_slug_atom =
-      if is_atom(step_slug), do: step_slug, else: String.to_atom(step_slug)
+    slug = to_string(step_slug)
 
-    definition = flow_module.__pgflow_definition__()
-
-    Enum.any?(definition.steps, fn step ->
-      step_slug_atom in step.depends_on
-    end)
+    flow_module.__pgflow_definition__().steps
+    |> Enum.any?(fn step -> Enum.any?(step.depends_on, &(Atom.to_string(&1) == slug)) end)
   end
 
   # Route handler input based on step type (matching TypeScript reference pattern)

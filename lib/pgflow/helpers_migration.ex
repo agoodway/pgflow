@@ -23,6 +23,10 @@ defmodule PgFlow.HelpersMigration do
   use EctoEvolver,
     otp_app: :pgflow,
     default_prefix: "pgflow",
-    versions: [PgFlow.Migrations.Versions.V01, PgFlow.Migrations.Versions.V02],
+    versions: [
+      PgFlow.Migrations.Versions.V01,
+      PgFlow.Migrations.Versions.V02,
+      PgFlow.Migrations.Versions.V03
+    ],
     tracking_object: {:view, "extensions_version"}
 end

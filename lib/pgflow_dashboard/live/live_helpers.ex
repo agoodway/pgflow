@@ -92,10 +92,25 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
     Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S")
   end
 
+  # Resolved through the host application's configured `:time_zone_database`
+  # rather than a database this library picks, so an app already carrying one
+  # (`tzdata` via Timex, say) is not made to install a second copy of the IANA
+  # data. Either failure renders the unshifted UTC timestamp — a dashboard
+  # showing the right moment in the wrong zone beats one that renders nothing.
   def format_timestamp(%DateTime{} = dt, time_zone) do
-    case DateTime.shift_zone(dt, time_zone, Tz.TimeZoneDatabase) do
+    case DateTime.shift_zone(dt, time_zone) do
       {:ok, shifted} ->
         Calendar.strftime(shifted, "%Y-%m-%d %H:%M:%S")
+
+      {:error, :utc_only_time_zone_database} ->
+        Logger.warning(
+          "format_timestamp: cannot shift to #{inspect(time_zone)} because no " <>
+            ":time_zone_database is configured. Set `config :elixir, " <>
+            ":time_zone_database, Tzdata.TimeZoneDatabase` (or the tz equivalent), " <>
+            "or configure the dashboard with `time_zone: \"UTC\"`."
+        )
+
+        Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S")
 
       {:error, reason} ->
         Logger.warning(
@@ -149,6 +164,28 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
       true -> "#{Float.round(total_seconds / 3600, 1)}h"
     end
   end
+
+  @doc """
+  Formats a percentage for display, rounded to one decimal place.
+
+  The dashboard's percentage columns are `numeric`, which Postgrex decodes to
+  `Decimal`. `Phoenix.HTML.Safe` has no implementation for that struct, so
+  interpolating one straight into a template raises `Protocol.UndefinedError`
+  — every such value has to reach the markup through a formatter.
+  """
+  def format_percent(nil), do: "0"
+
+  def format_percent(%Decimal{} = percent) do
+    percent |> Decimal.round(1) |> Decimal.to_string()
+  end
+
+  def format_percent(percent) when is_number(percent) do
+    (percent / 1) |> Decimal.from_float() |> format_percent()
+  rescue
+    _ -> "0"
+  end
+
+  def format_percent(_percent), do: "0"
 
   defp relative_from_now(dt) do
     diff = DateTime.diff(dt, DateTime.utc_now(), :second)

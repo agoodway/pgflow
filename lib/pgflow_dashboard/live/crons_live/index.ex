@@ -189,7 +189,7 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
                 <p class="text-xs text-slate-500 dark:text-slate-400">runs</p>
               </div>
               <div class="bg-emerald-50 dark:bg-emerald-900/20 rounded p-2">
-                <p class="text-lg font-semibold text-emerald-600 dark:text-emerald-400">{cron.success_rate_24h}%</p>
+                <p class="text-lg font-semibold text-emerald-600 dark:text-emerald-400">{LiveHelpers.format_percent(cron.success_rate_24h)}%</p>
                 <p class="text-xs text-slate-500 dark:text-slate-400">success</p>
               </div>
               <div class="bg-slate-50 dark:bg-slate-900 rounded p-2">
@@ -281,7 +281,7 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
               {cron.total_runs_24h}
             </td>
             <td class="px-4 py-3 text-sm text-emerald-600 dark:text-emerald-400">
-              {cron.success_rate_24h}%
+              {LiveHelpers.format_percent(cron.success_rate_24h)}%
             </td>
             <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
               <%= if cron.next_run_at do %>

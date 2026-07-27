@@ -133,17 +133,6 @@ defmodule PgFlow.FlowStarter do
     ]
   end
 
-  # ── Child spec ─────────────────────────────────────────────────────
-
-  def child_spec(opts) do
-    %{
-      id: __MODULE__,
-      start: {__MODULE__, :start_link, [opts]},
-      type: :worker,
-      restart: :permanent
-    }
-  end
-
   # ── Client API ─────────────────────────────────────────────────────
 
   @spec start_link(keyword()) :: GenServer.on_start()

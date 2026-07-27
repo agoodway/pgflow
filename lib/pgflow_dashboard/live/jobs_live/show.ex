@@ -128,7 +128,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Show do
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
             <p class="text-sm text-slate-500 dark:text-slate-400">Success Rate</p>
             <p class="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">
-              {@job.success_rate_24h}%
+              {LiveHelpers.format_percent(@job.success_rate_24h)}%
             </p>
           </div>
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">

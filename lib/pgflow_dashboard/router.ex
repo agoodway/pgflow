@@ -131,15 +131,18 @@ defmodule PgFlowDashboard.Router do
   Ensures optional dashboard dependencies are available before routes are mounted.
 
   PgFlow can be used without PgFlowDashboard. When an application imports and
-  mounts `pgflow_dashboard/2`, the dashboard requires Phoenix LiveView,
-  LiveFilter, and Tz to be installed in the host project.
+  mounts `pgflow_dashboard/2`, the dashboard requires Phoenix LiveView and
+  LiveFilter to be installed in the host project.
+
+  No timezone database is required here. Timestamps are shifted through the
+  host's configured `:time_zone_database`, so an app that already has one keeps
+  using it, and an app with none renders timestamps in UTC.
   """
   @spec ensure_dashboard_dependencies!() :: :ok
   def ensure_dashboard_dependencies! do
     check_dashboard_dependencies!([
       {:phoenix_live_view, Phoenix.LiveView},
-      {:livefilter, LiveFilter},
-      {:tz, Tz}
+      {:livefilter, LiveFilter}
     ])
   end
 

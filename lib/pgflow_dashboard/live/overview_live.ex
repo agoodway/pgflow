@@ -179,7 +179,7 @@ defmodule PgFlowDashboard.Live.OverviewLive do
                     </div>
                     <div class="text-right">
                       <p class="text-xs text-slate-500 dark:text-slate-400">{LiveHelpers.format_duration(run.duration_ms)}</p>
-                      <p class="text-xs text-slate-400">{run.progress_percent}%</p>
+                      <p class="text-xs text-slate-400">{LiveHelpers.format_percent(run.progress_percent)}%</p>
                     </div>
                   </div>
                 </.link>

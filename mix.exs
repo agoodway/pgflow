@@ -1,7 +1,7 @@
 defmodule PgFlow.MixProject do
   use Mix.Project
 
-  @version "0.1.2"
+  @version "0.2.0"
   @source_url "https://github.com/agoodway/pgflow"
 
   def project do
@@ -57,14 +57,13 @@ defmodule PgFlow.MixProject do
       {:phoenix, "~> 1.7", optional: true},
       {:livefilter, "~> 0.2.0", optional: true},
       # {:livefilter, path: "../livefilter", optional: true},
-      {:tz, "~> 0.28", optional: true},
       {:ecto_evolver, "~> 0.1.0"},
 
       # Dev/Test
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:doctor, "~> 0.22.0", only: [:dev, :test], runtime: false},
+      {:doctor, "~> 0.23", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.3", only: [:dev, :test], runtime: false},
       {:sobelow, "~> 0.14", only: [:dev, :test], runtime: false},
       {:ex_dna, "~> 1.2", only: [:dev, :test], runtime: false}

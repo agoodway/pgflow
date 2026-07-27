@@ -33,15 +33,6 @@ defmodule PgFlow.Signal.Notify do
           channels: %{String.t() => String.t()}
         }
 
-  def child_spec(opts) do
-    %{
-      id: __MODULE__,
-      start: {__MODULE__, :start_link, [opts]},
-      type: :worker,
-      restart: :permanent
-    }
-  end
-
   # Client API
 
   @doc """
