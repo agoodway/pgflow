@@ -377,6 +377,17 @@ defmodule PgFlow.Worker.Server do
     end
   end
 
+  # Catch-all for messages this worker never subscribed to. Workers routinely
+  # end up in some other process's $callers chain (e.g. Task.Supervisor async
+  # tasks), and libraries like Swoosh's Test adapter broadcast captured
+  # messages to every pid in that chain. Without this clause any such stray
+  # message crashes the GenServer with a FunctionClauseError.
+  @impl true
+  def handle_info(msg, state) do
+    Logger.debug("Worker #{state.worker_id} received unexpected message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
   @impl true
   def handle_call(:stop, _from, state) do
     {:stop, :normal, :ok, do_stop(state)}

@@ -400,5 +400,31 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
 
       GenServer.stop(pid)
     end
+
+    test "survives stray messages and still handles recovery" do
+      # Same defect class as PgFlow.Worker.Server: this GenServer defines
+      # handle_info/2 clauses without a catch-all, so any message it wasn't
+      # expecting (e.g. Swoosh Test adapter's $callers broadcast) crashes it.
+      %{run_id_bin: rid} = setup_started()
+      backdate(rid, 120)
+
+      {:ok, pid} =
+        StalledTaskRecovery.start_link(
+          repo: TestRepo,
+          recovery_interval: 60_000,
+          stale_threshold: 60
+        )
+
+      send(pid, {:email, :garbage})
+      send(pid, :unexpected)
+      _ = :sys.get_state(pid)
+
+      send(pid, :recover)
+      _ = :sys.get_state(pid)
+
+      assert task(rid, "status") == ["queued"]
+
+      GenServer.stop(pid)
+    end
   end
 end

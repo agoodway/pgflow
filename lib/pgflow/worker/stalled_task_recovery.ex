@@ -71,6 +71,16 @@ defmodule PgFlow.Worker.StalledTaskRecovery do
     {:noreply, state}
   end
 
+  # Catch-all for messages this sweep never subscribed to. Defining any
+  # handle_info/2 clause replaces GenServer's default fallback entirely, so
+  # without this clause a stray message (e.g. Swoosh Test adapter's
+  # $callers broadcast) would crash the process with a FunctionClauseError.
+  @impl true
+  def handle_info(msg, state) do
+    Logger.debug("StalledTaskRecovery received unexpected message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
   defp schedule_recovery(state) do
     Process.send_after(self(), :recover, state.recovery_interval)
   end

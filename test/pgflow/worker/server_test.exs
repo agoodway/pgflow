@@ -913,6 +913,40 @@ defmodule PgFlow.Worker.ServerTest do
     end
   end
 
+  describe "unexpected messages" do
+    test "worker survives a stray message and keeps processing tasks", %{
+      task_supervisor: task_supervisor
+    } do
+      # Real observed case: the host app's Swoosh Test adapter delivers
+      # {:email, %Swoosh.Email{}} to every pid in $callers. The worker
+      # GenServer ends up in a step task's callers chain and receives it as
+      # a plain handle_info message it never asked for.
+      flow_slug = compile_flow(SimpleWorkerFlow)
+      worker_pid = start_worker(SimpleWorkerFlow, task_supervisor)
+
+      Process.sleep(100)
+
+      send(worker_pid, {:email, :garbage})
+      send(worker_pid, :unexpected)
+
+      # Round-trip a synchronous call so the mailbox drains past the two
+      # sends above before asserting on liveness.
+      _state = Server.get_state(worker_pid)
+
+      assert Process.alive?(worker_pid)
+
+      # Confirm the worker still functions normally after the stray messages.
+      run_id = start_flow_run(flow_slug, %{"value" => 21})
+      {:ok, status} = wait_for_run_completion(run_id)
+      assert status == "completed"
+
+      run = get_run(run_id)
+      assert run.output["process"]["result"] == 42
+
+      Server.stop(worker_pid)
+    end
+  end
+
   # ============= Multi-Step Flow Tests =============
 
   describe "multi-step flows" do
