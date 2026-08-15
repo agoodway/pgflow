@@ -46,11 +46,16 @@ defmodule PgFlow.Flow.Step do
     :base_delay,
     :timeout,
     :start_delay,
+    :if,
+    :if_not,
+    :when_unmet,
+    :when_exhausted,
     step_type: :single,
     depends_on: []
   ]
 
   @type step_type :: :single | :map
+  @type skip_mode :: :fail | :skip | :skip_cascade
 
   @type t :: %__MODULE__{
           slug: atom(),
@@ -59,7 +64,11 @@ defmodule PgFlow.Flow.Step do
           max_attempts: pos_integer() | nil,
           base_delay: pos_integer() | nil,
           timeout: pos_integer() | nil,
-          start_delay: pos_integer() | nil
+          start_delay: pos_integer() | nil,
+          if: map() | nil,
+          if_not: map() | nil,
+          when_unmet: skip_mode() | nil,
+          when_exhausted: skip_mode() | nil
         }
 
   @doc """
@@ -93,6 +102,10 @@ defmodule PgFlow.Flow.Step do
   - `:base_delay` - Base delay in milliseconds for exponential backoff (default: flow default)
   - `:timeout` - Timeout in milliseconds (default: flow default)
   - `:start_delay` - Delay in milliseconds before starting (default: `nil`)
+  - `:if` - Map pattern that must match for the step to run (default: `nil`)
+  - `:if_not` - Map pattern that must not match for the step to run (default: `nil`)
+  - `:when_unmet` - Behavior when condition is unmet: `:fail`, `:skip`, or `:skip_cascade` (default: `nil`)
+  - `:when_exhausted` - Behavior when map is exhausted: `:fail`, `:skip`, or `:skip_cascade` (default: `nil`)
 
   ## Examples
 
@@ -126,7 +139,11 @@ defmodule PgFlow.Flow.Step do
       max_attempts: Keyword.get(opts, :max_attempts),
       base_delay: Keyword.get(opts, :base_delay),
       timeout: Keyword.get(opts, :timeout),
-      start_delay: Keyword.get(opts, :start_delay)
+      start_delay: Keyword.get(opts, :start_delay),
+      if: Keyword.get(opts, :if),
+      if_not: Keyword.get(opts, :if_not),
+      when_unmet: Keyword.get(opts, :when_unmet),
+      when_exhausted: Keyword.get(opts, :when_exhausted)
     }
   end
 end

@@ -296,4 +296,46 @@ defmodule PgFlow.DSL.ValidationTest do
       end
     end
   end
+
+  describe "validate_step_opts!/2" do
+    test "accepts if map and when_unmet atom" do
+      assert :ok ==
+               Validation.validate_step_opts!(
+                 [if: %{plan: "premium"}, when_unmet: :skip],
+                 fake_env()
+               )
+    end
+
+    test "accepts if and if_not together" do
+      assert :ok ==
+               Validation.validate_step_opts!(
+                 [if: %{status: "active"}, if_not: %{role: "admin"}, when_unmet: :skip],
+                 fake_env()
+               )
+    end
+
+    test "rejects keyword-list if" do
+      assert_raise CompileError, ~r/:if must be a map/, fn ->
+        Validation.validate_step_opts!([if: [plan: "premium"]], fake_env())
+      end
+    end
+
+    test "rejects unknown when_unmet" do
+      assert_raise CompileError, ~r/when_unmet/, fn ->
+        Validation.validate_step_opts!([if: %{}, when_unmet: :maybe], fake_env())
+      end
+    end
+
+    test "rejects when_unmet without if or if_not" do
+      assert_raise CompileError, ~r/when_unmet requires :if or :if_not/, fn ->
+        Validation.validate_step_opts!([when_unmet: :skip], fake_env())
+      end
+    end
+
+    test "rejects unknown step keys" do
+      assert_raise CompileError, ~r/Unknown @step option/, fn ->
+        Validation.validate_step_opts!([iff: %{}], fake_env())
+      end
+    end
+  end
 end

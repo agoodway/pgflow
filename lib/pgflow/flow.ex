@@ -54,6 +54,10 @@ defmodule PgFlow.Flow do
     * `:base_delay` - override flow-level base_delay
     * `:timeout` - override flow-level timeout
     * `:start_delay` - seconds to delay before starting this step
+    * `:if` - map pattern that must match for the step to run
+    * `:if_not` - map pattern that must not match for the step to run
+    * `:when_unmet` - behavior when condition is unmet: `:fail`, `:skip`, or `:skip_cascade`
+    * `:when_exhausted` - behavior when a map step is exhausted: `:fail`, `:skip`, or `:skip_cascade`
 
   ## Map Options
 
@@ -165,6 +169,10 @@ defmodule PgFlow.Flow do
     steps = Module.get_attribute(env.module, :pgflow_steps) |> Enum.reverse()
 
     validate_flow_attrs!(flow_attrs, env)
+
+    Enum.each(steps, fn {_slug, _type, opts, _block} ->
+      Validation.validate_step_opts!(opts, env)
+    end)
 
     {slug, flow_opts, cron_expression, cron_input} = extract_flow_config(flow_attrs, env)
 
@@ -287,7 +295,11 @@ defmodule PgFlow.Flow do
         max_attempts: max_attempts,
         base_delay: base_delay,
         timeout: timeout,
-        start_delay: start_delay
+        start_delay: start_delay,
+        if: Keyword.get(opts, :if),
+        if_not: Keyword.get(opts, :if_not),
+        when_unmet: Keyword.get(opts, :when_unmet),
+        when_exhausted: Keyword.get(opts, :when_exhausted)
       }
     end)
   end

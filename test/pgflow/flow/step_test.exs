@@ -269,4 +269,30 @@ defmodule PgFlow.Flow.StepTest do
       assert updated.timeout == 60_000
     end
   end
+
+  describe "from_tuple/1 condition options" do
+    test "copies if, if_not, when_unmet, when_exhausted" do
+      step =
+        Step.from_tuple(
+          {:premium,
+           if: %{plan: "premium"},
+           if_not: %{role: "admin"},
+           when_unmet: :skip,
+           when_exhausted: :skip_cascade}
+        )
+
+      assert step.if == %{plan: "premium"}
+      assert step.if_not == %{role: "admin"}
+      assert step.when_unmet == :skip
+      assert step.when_exhausted == :skip_cascade
+    end
+
+    test "condition fields default to nil" do
+      step = Step.from_tuple(:plain)
+      assert step.if == nil
+      assert step.if_not == nil
+      assert step.when_unmet == nil
+      assert step.when_exhausted == nil
+    end
+  end
 end

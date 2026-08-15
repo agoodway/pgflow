@@ -85,6 +85,57 @@ defmodule PgFlow.DSL.Validation do
   def validate_option!(:input, val, env),
     do: compile_error!(env, ":input must be a map, got: #{inspect(val)}")
 
+  @step_valid_keys [
+    :depends_on,
+    :handler,
+    :max_attempts,
+    :base_delay,
+    :timeout,
+    :start_delay,
+    :array,
+    :if,
+    :if_not,
+    :when_unmet,
+    :when_exhausted
+  ]
+
+  @skip_modes [:fail, :skip, :skip_cascade]
+
+  @doc false
+  @spec validate_step_opts!(keyword(), Macro.Env.t()) :: :ok | no_return()
+  def validate_step_opts!(opts, env) when is_list(opts) do
+    validate_unknown_keys!(opts, @step_valid_keys, :step, env)
+
+    if Keyword.has_key?(opts, :if), do: validate_pattern!(:if, Keyword.fetch!(opts, :if), env)
+
+    if Keyword.has_key?(opts, :if_not),
+      do: validate_pattern!(:if_not, Keyword.fetch!(opts, :if_not), env)
+
+    if Keyword.has_key?(opts, :when_unmet) do
+      unless Keyword.has_key?(opts, :if) or Keyword.has_key?(opts, :if_not) do
+        compile_error!(env, "when_unmet requires :if or :if_not")
+      end
+
+      validate_mode!(:when_unmet, Keyword.fetch!(opts, :when_unmet), env)
+    end
+
+    if Keyword.has_key?(opts, :when_exhausted) do
+      validate_mode!(:when_exhausted, Keyword.fetch!(opts, :when_exhausted), env)
+    end
+
+    :ok
+  end
+
+  defp validate_pattern!(_key, val, _env) when is_map(val), do: :ok
+
+  defp validate_pattern!(key, val, env),
+    do: compile_error!(env, ":#{key} must be a map, got: #{inspect(val)}")
+
+  defp validate_mode!(_key, val, _env) when val in @skip_modes, do: :ok
+
+  defp validate_mode!(key, val, env),
+    do: compile_error!(env, ":#{key} must be :fail, :skip, or :skip_cascade, got: #{inspect(val)}")
+
   @cron_valid_keys [:schedule, :input]
 
   @doc """
