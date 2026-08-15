@@ -20,6 +20,10 @@ defmodule PgFlow.Schema.Step do
     field(:opt_max_attempts, :integer)
     field(:opt_base_delay, :integer)
     field(:opt_timeout, :integer)
+    field(:required_input_pattern, :map)
+    field(:forbidden_input_pattern, :map)
+    field(:when_unmet, :string)
+    field(:when_exhausted, :string)
 
     belongs_to(:flow, PgFlow.Schema.Flow,
       foreign_key: :flow_slug,
@@ -48,7 +52,11 @@ defmodule PgFlow.Schema.Step do
       :deps_count,
       :opt_max_attempts,
       :opt_base_delay,
-      :opt_timeout
+      :opt_timeout,
+      :required_input_pattern,
+      :forbidden_input_pattern,
+      :when_unmet,
+      :when_exhausted
     ])
     |> validate_required([:flow_slug, :step_slug, :step_type, :deps_count])
     |> validate_inclusion(:step_type, ["single", "map"])

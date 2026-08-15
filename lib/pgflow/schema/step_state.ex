@@ -26,6 +26,8 @@ defmodule PgFlow.Schema.StepState do
     field(:started_at, :utc_datetime_usec)
     field(:completed_at, :utc_datetime_usec)
     field(:failed_at, :utc_datetime_usec)
+    field(:skip_reason, :string)
+    field(:skipped_at, :utc_datetime_usec)
 
     belongs_to(:run, PgFlow.Schema.Run,
       foreign_key: :run_id,
@@ -57,7 +59,9 @@ defmodule PgFlow.Schema.StepState do
       :remaining_deps,
       :output,
       :error_message,
-      :initial_tasks
+      :initial_tasks,
+      :skip_reason,
+      :skipped_at
     ])
     |> validate_required([:run_id, :step_slug, :status, :remaining_tasks])
     |> validate_number(:remaining_tasks, greater_than_or_equal_to: 0)

@@ -107,6 +107,38 @@ defmodule PgFlow.Queries.Flows do
   end
 
   @doc """
+  Lists skipped steps for a flow run, ordered by skip time.
+
+  ## Parameters
+
+    * `repo` - The Ecto repository
+    * `run_id` - The flow run UUID
+
+  ## Returns
+
+    * `{:ok, [%{step_slug: String.t(), skip_reason: String.t()}]}` - Skipped steps
+    * `{:error, reason}` - Error details if the operation fails
+  """
+  @spec list_skipped_steps(Ecto.Repo.t(), String.t()) ::
+          {:ok, [%{step_slug: String.t(), skip_reason: String.t()}]} | {:error, term()}
+  def list_skipped_steps(repo, run_id) do
+    sql = """
+    SELECT step_slug, skip_reason
+    FROM pgflow.step_states
+    WHERE run_id = $1 AND status = 'skipped'
+    ORDER BY skipped_at ASC NULLS LAST, step_slug
+    """
+
+    case SQL.query(repo, sql, [parse_uuid(run_id)]) do
+      {:ok, %{rows: rows}} ->
+        {:ok, Enum.map(rows, fn [slug, reason] -> %{step_slug: slug, skip_reason: reason} end)}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  @doc """
   Marks a task as completed with output data.
 
   ## Parameters
@@ -271,7 +303,8 @@ defmodule PgFlow.Queries.Flows do
     * `slug` - The flow identifier slug
     * `opts` - Flow-level options map with keys: `"max_attempts"`, `"base_delay"`, `"timeout"`
     * `steps` - List of step definition maps with keys: `"slug"`, `"deps"`, `"step_type"`,
-      and optional `"max_attempts"`, `"base_delay"`, `"timeout"`, `"start_delay"`
+      and optional `"max_attempts"`, `"base_delay"`, `"timeout"`, `"start_delay"`,
+      `"if"`, `"if_not"`, `"when_unmet"`, `"when_exhausted"` (string or atom keys)
 
   ## Returns
 
@@ -442,31 +475,66 @@ defmodule PgFlow.Queries.Flows do
 
   defp add_flow_steps(repo, slug, steps) do
     Enum.reduce_while(steps, :ok, fn step, :ok ->
-      step_slug = Map.fetch!(step, "slug")
-      deps = Map.get(step, "deps", [])
-      step_type = Map.get(step, "step_type", "single")
-      step_max = Map.get(step, "max_attempts")
-      step_delay = Map.get(step, "base_delay")
-      step_timeout = Map.get(step, "timeout")
-      start_delay = Map.get(step, "start_delay")
+      step_slug = step_value(step, :slug) || Map.fetch!(step, "slug")
+      deps = step_value(step, :deps, [])
+      step_type = step_value(step, :step_type, "single")
+      step_max = step_value(step, :max_attempts)
+      step_delay = step_value(step, :base_delay)
+      step_timeout = step_value(step, :timeout)
+      start_delay = step_value(step, :start_delay)
 
-      add_sql = "SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8)"
+      args = [slug, step_slug, deps, step_max, step_delay, step_timeout, start_delay, step_type]
 
-      case SQL.query(repo, add_sql, [
-             slug,
-             step_slug,
-             deps,
-             step_max,
-             step_delay,
-             step_timeout,
-             start_delay,
-             step_type
-           ]) do
+      {add_sql, args} =
+        if condition_opts?(step) do
+          {
+            "SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12)",
+            args ++
+              [
+                step_value(step, :if),
+                step_value(step, :if_not),
+                mode_or_default(step, :when_unmet, "skip"),
+                mode_or_default(step, :when_exhausted, "fail")
+              ]
+          }
+        else
+          {"SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8)", args}
+        end
+
+      case SQL.query(repo, add_sql, args) do
         {:ok, _} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, {:add_step_failed, step_slug, reason}}}
       end
     end)
   end
+
+  defp condition_opts?(step) do
+    Enum.any?([:if, :if_not, :when_unmet, :when_exhausted], &step_has_key?(step, &1))
+  end
+
+  defp step_has_key?(step, key) do
+    Map.has_key?(step, to_string(key)) or Map.has_key?(step, key)
+  end
+
+  defp step_value(step, key, default \\ nil) do
+    case Map.fetch(step, to_string(key)) do
+      {:ok, value} -> value
+      :error -> Map.get(step, key, default)
+    end
+  end
+
+  # Mode columns are NOT NULL; never bind nil (overrides add_step DEFAULTs).
+  defp mode_or_default(step, key, default) do
+    case step_value(step, key, default) do
+      nil -> default
+      mode -> normalize_mode(mode)
+    end
+  end
+
+  defp normalize_mode(:skip_cascade), do: "skip-cascade"
+  defp normalize_mode("skip_cascade"), do: "skip-cascade"
+  defp normalize_mode(mode) when is_atom(mode), do: Atom.to_string(mode)
+  defp normalize_mode(mode) when is_binary(mode), do: mode
 
   @doc """
   Retrieves the input data for a flow run.

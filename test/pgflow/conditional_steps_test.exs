@@ -220,6 +220,22 @@ defmodule PgFlow.ConditionalStepsTest do
     end
   end
 
+  describe "Queries.Flows.list_skipped_steps/2" do
+    test "returns skipped slugs and reasons" do
+      create_flow("cond_list_skip")
+
+      add_conditional_step("cond_list_skip", "only",
+        if: %{"plan" => "premium"},
+        when_unmet: "skip"
+      )
+
+      run_id = start_flow_run("cond_list_skip", %{"plan" => "free"})
+
+      assert {:ok, [%{step_slug: "only", skip_reason: "condition_unmet"}]} =
+               PgFlow.Queries.Flows.list_skipped_steps(TestRepo, run_id)
+    end
+  end
+
   # poll_and_fail/1 may not exhaust max_attempts: 1 in one call if the task
   # is requeued. Loop until the step is terminal (or fail_task if already started).
   defp fail_until_terminal(flow_slug, run_id, step_slug, attempts_left \\ 5) do

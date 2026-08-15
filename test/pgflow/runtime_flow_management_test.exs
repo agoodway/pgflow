@@ -308,6 +308,57 @@ defmodule PgFlow.RuntimeFlowManagementTest do
     end
   end
 
+  describe "query-layer condition options" do
+    test "upsert_flow persists if/when_unmet via 12-arg add_step" do
+      assert {:ok, _} =
+               Flows.upsert_flow(TestRepo, "test_cond_upsert", %{}, [
+                 %{
+                   "slug" => "premium_only",
+                   "if" => %{"plan" => "premium"},
+                   "when_unmet" => "skip"
+                 }
+               ])
+
+      %{rows: [[pattern, when_unmet, when_exhausted]]} =
+        TestRepo.query!(
+          """
+          SELECT required_input_pattern, when_unmet, when_exhausted
+          FROM pgflow.steps
+          WHERE flow_slug = $1 AND step_slug = $2
+          """,
+          ["test_cond_upsert", "premium_only"]
+        )
+
+      assert pattern == %{"plan" => "premium"}
+      assert when_unmet == "skip"
+      assert when_exhausted == "fail"
+
+      {:ok, run_id} = Flows.start_flow(TestRepo, "test_cond_upsert", %{"plan" => "free"})
+
+      assert {:ok, [%{step_slug: "premium_only", skip_reason: "condition_unmet"}]} =
+               Flows.list_skipped_steps(TestRepo, run_id)
+    end
+
+    test "maps skip_cascade to skip-cascade" do
+      assert {:ok, _} =
+               Flows.upsert_flow(TestRepo, "test_cond_cascade_mode", %{}, [
+                 %{
+                   "slug" => "branch",
+                   "if" => %{"on" => true},
+                   "when_unmet" => "skip_cascade"
+                 }
+               ])
+
+      %{rows: [[when_unmet]]} =
+        TestRepo.query!(
+          "SELECT when_unmet FROM pgflow.steps WHERE flow_slug = $1 AND step_slug = $2",
+          ["test_cond_cascade_mode", "branch"]
+        )
+
+      assert when_unmet == "skip-cascade"
+    end
+  end
+
   describe "query-layer rollback safety" do
     test "upsert_flow rolls back on add_step failure" do
       assert {:error, {:add_step_failed, "bad_step", _reason}} =
