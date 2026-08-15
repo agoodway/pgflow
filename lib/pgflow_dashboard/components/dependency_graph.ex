@@ -231,28 +231,30 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
     """
   end
 
+  defp status_icon(%{status: status} = assigns) when status in [:skipped, "skipped"] do
+    ~H"""
+    <text x={@x} y={@y + 1} text-anchor="middle" dominant-baseline="middle" class="text-sm fill-white font-bold">
+      –
+    </text>
+    """
+  end
+
   defp status_icon(assigns) do
     ~H"""
     """
   end
 
-  defp node_fill(status) do
-    case status do
-      s when s in [:completed, "completed"] -> "#10b981"
-      s when s in [:failed, "failed"] -> "#ef4444"
-      s when s in [:started, "started"] -> "#8b5cf6"
-      _ -> "#94a3b8"
-    end
-  end
+  defp node_fill(s) when s in [:completed, "completed"], do: "#10b981"
+  defp node_fill(s) when s in [:failed, "failed"], do: "#ef4444"
+  defp node_fill(s) when s in [:started, "started"], do: "#8b5cf6"
+  defp node_fill(s) when s in [:skipped, "skipped"], do: "#94a3b8"
+  defp node_fill(_), do: "#94a3b8"
 
-  defp node_stroke(status) do
-    case status do
-      s when s in [:completed, "completed"] -> "#059669"
-      s when s in [:failed, "failed"] -> "#dc2626"
-      s when s in [:started, "started"] -> "#7c3aed"
-      _ -> "#64748b"
-    end
-  end
+  defp node_stroke(s) when s in [:completed, "completed"], do: "#059669"
+  defp node_stroke(s) when s in [:failed, "failed"], do: "#dc2626"
+  defp node_stroke(s) when s in [:started, "started"], do: "#7c3aed"
+  defp node_stroke(s) when s in [:skipped, "skipped"], do: "#64748b"
+  defp node_stroke(_), do: "#64748b"
 
   defp node_animation(_status) do
     # No animation on the node itself - the spinning icon inside indicates activity

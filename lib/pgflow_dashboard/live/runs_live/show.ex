@@ -119,6 +119,11 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   end
 
   @impl true
+  def handle_info({:pgflow, _run_id, {:step_skipped, _}}, socket) do
+    {:noreply, load_step_states(socket)}
+  end
+
+  @impl true
   def handle_info(_, socket), do: {:noreply, socket}
 
   @impl true
@@ -349,6 +354,9 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
                       <span class="text-xs text-slate-500 dark:text-slate-400">
                         {LiveHelpers.format_duration(state.duration_ms)}
                       </span>
+                    </div>
+                    <div :if={Map.get(state, :skip_reason)} class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      {state.skip_reason}
                     </div>
                     <div :if={state.total_tasks > 0} class="mt-2 text-xs text-slate-500 dark:text-slate-400">
                       Tasks: {state.completed_tasks}/{state.total_tasks}

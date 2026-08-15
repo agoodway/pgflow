@@ -23,7 +23,7 @@ defmodule PgFlowDashboard.Migration do
 
   Versions are tracked via PostgreSQL comments on the `runs_with_progress` view:
 
-      COMMENT ON VIEW schema.runs_with_progress IS 'PgFlowDashboard version=1';
+      COMMENT ON VIEW schema.runs_with_progress IS 'PgFlowDashboard version=2';
 
   """
 
@@ -34,6 +34,9 @@ defmodule PgFlowDashboard.Migration do
   use EctoEvolver,
     otp_app: :pgflow,
     default_prefix: "pgflow_dashboard",
-    versions: [PgFlowDashboard.Migrations.Versions.V01],
+    versions: [
+      PgFlowDashboard.Migrations.Versions.V01,
+      PgFlowDashboard.Migrations.Versions.V02
+    ],
     tracking_object: {:view, "runs_with_progress"}
 end

@@ -21,6 +21,7 @@ defmodule PgFlowDashboard.Schemas.Run do
     field(:total_steps, :integer)
     field(:completed_steps, :integer)
     field(:failed_steps, :integer)
+    field(:skipped_steps, :integer)
     field(:progress_percent, :decimal)
   end
 end

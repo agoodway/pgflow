@@ -10,7 +10,7 @@ defmodule PgFlowDashboard.Components.StatusBadge do
 
   ## Attributes
 
-    * `:status` - The status to display (completed, failed, started, created)
+    * `:status` - The status to display (completed, failed, started, created, skipped)
     * `:size` - Badge size (:sm, :md, :lg). Default: :md
     * `:pulse` - Whether to show pulse animation for active states. Default: false
 
@@ -50,6 +50,7 @@ defmodule PgFlowDashboard.Components.StatusBadge do
   defp normalize_status("failed"), do: :failed
   defp normalize_status("started"), do: :started
   defp normalize_status("created"), do: :created
+  defp normalize_status("skipped"), do: :skipped
   defp normalize_status(status) when is_binary(status), do: String.to_existing_atom(status)
   defp normalize_status(_), do: :unknown
 
@@ -57,6 +58,7 @@ defmodule PgFlowDashboard.Components.StatusBadge do
   defp status_text(:failed), do: "Failed"
   defp status_text(:started), do: "Running"
   defp status_text(:created), do: "Pending"
+  defp status_text(:skipped), do: "Skipped"
   defp status_text(status) when is_atom(status), do: status |> to_string() |> String.capitalize()
 
   # WCAG AA compliant colors
@@ -70,6 +72,10 @@ defmodule PgFlowDashboard.Components.StatusBadge do
 
   defp status_classes(:started) do
     "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400"
+  end
+
+  defp status_classes(:skipped) do
+    "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
   end
 
   defp status_classes(_) do
