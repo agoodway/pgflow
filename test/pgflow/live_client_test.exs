@@ -277,6 +277,49 @@ defmodule PgFlow.LiveClientTest do
       assert updated_run.failed_at == now
     end
 
+    test "applies step_skipped event to matching step", %{pubsub: pubsub} do
+      socket = build_socket() |> LiveClient.init(pubsub: pubsub)
+      {:ok, socket} = LiveClient.start_flow(socket, LiveClientTestFlow, %{"value" => 1})
+      run = socket.assigns[:flow_run]
+      now = DateTime.utc_now()
+
+      socket =
+        LiveClient.handle_info(
+          {:pgflow, run.run_id,
+           {:step_skipped,
+            %{step_slug: "step_a", skip_reason: "condition_unmet", timestamp: now}}},
+          socket
+        )
+
+      step_a = find_step(socket.assigns[:flow_run], "step_a")
+      assert step_a.status == "skipped"
+      assert step_a.skip_reason == "condition_unmet"
+      assert step_a.skipped_at == now
+    end
+
+    test "does not overwrite completed with skipped", %{pubsub: pubsub} do
+      socket = build_socket() |> LiveClient.init(pubsub: pubsub)
+      {:ok, socket} = LiveClient.start_flow(socket, LiveClientTestFlow, %{"value" => 1})
+      run = socket.assigns[:flow_run]
+      now = DateTime.utc_now()
+
+      socket =
+        LiveClient.handle_info(
+          {:pgflow, run.run_id,
+           {:task_completed, %{step_slug: "step_a", output: %{}, timestamp: now}}},
+          socket
+        )
+
+      socket =
+        LiveClient.handle_info(
+          {:pgflow, run.run_id,
+           {:step_skipped, %{step_slug: "step_a", skip_reason: "condition_unmet", timestamp: now}}},
+          socket
+        )
+
+      assert find_step(socket.assigns[:flow_run], "step_a").status == "completed"
+    end
+
     test "ignores events for untracked run_ids", %{pubsub: pubsub} do
       socket = build_socket() |> LiveClient.init(pubsub: pubsub)
       {:ok, socket} = LiveClient.start_flow(socket, LiveClientTestFlow, %{"value" => 1})

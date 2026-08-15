@@ -217,6 +217,21 @@ defmodule PgFlow.LiveClient do
     end)
   end
 
+  defp apply_event(%Run{} = run, {:step_skipped, %{step_slug: step_slug} = payload}) do
+    update_step(run, step_slug, fn step ->
+      if status_advances?(step.status, "skipped") do
+        %{
+          step
+          | status: "skipped",
+            skip_reason: payload[:skip_reason],
+            skipped_at: payload[:timestamp]
+        }
+      else
+        step
+      end
+    end)
+  end
+
   defp apply_event(%Run{} = run, {:run_started, _payload}) do
     # Run is already started when created, this is mostly informational
     run
@@ -303,8 +318,14 @@ defmodule PgFlow.LiveClient do
     %{run | step_states: step_states}
   end
 
-  # Status precedence: "created" < "started" < "completed" < "failed"
-  @status_order %{"created" => 0, "started" => 1, "completed" => 2, "failed" => 3}
+  # Status precedence: "created" < "started" < terminal ("completed" | "failed" | "skipped")
+  @status_order %{
+    "created" => 0,
+    "started" => 1,
+    "completed" => 2,
+    "failed" => 2,
+    "skipped" => 2
+  }
 
   defp status_advances?(current, new) do
     Map.get(@status_order, new, -1) > Map.get(@status_order, current, -1)
