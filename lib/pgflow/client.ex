@@ -24,6 +24,7 @@ defmodule PgFlow.Client do
 
   alias PgFlow.Queries.Flows
   alias PgFlow.Schema.Run
+  alias PgFlow.Telemetry
 
   @allowed_step_types ["single", "map"]
 
@@ -57,6 +58,8 @@ defmodule PgFlow.Client do
         %{system_time: System.system_time()},
         %{flow_slug: flow_slug, run_id: run_id}
       )
+
+      emit_post_start(repo, flow_slug, run_id)
 
       {:ok, run_id}
     end
@@ -350,6 +353,42 @@ defmodule PgFlow.Client do
   end
 
   # Private Functions
+
+  defp emit_post_start(repo, flow_slug, run_id) do
+    case Flows.list_skipped_steps(repo, run_id) do
+      {:ok, skipped} ->
+        Enum.each(skipped, fn %{step_slug: slug, skip_reason: reason} ->
+          Telemetry.emit_step_skipped(%{
+            flow_slug: flow_slug,
+            run_id: run_id,
+            step_slug: slug,
+            skip_reason: reason
+          })
+        end)
+
+      {:error, _} ->
+        :ok
+    end
+
+    case Flows.get_run(repo, run_id) do
+      {:ok, %{status: "completed", output: output}} ->
+        :telemetry.execute(
+          [:pgflow, :run, :completed],
+          %{system_time: System.system_time()},
+          %{flow_slug: flow_slug, run_id: run_id, output: output}
+        )
+
+      {:ok, %{status: "failed"}} ->
+        :telemetry.execute(
+          [:pgflow, :run, :failed],
+          %{system_time: System.system_time()},
+          %{flow_slug: flow_slug, run_id: run_id, error: "condition unmet"}
+        )
+
+      _ ->
+        :ok
+    end
+  end
 
   defp build_shape(repo, opts) do
     case Keyword.fetch(opts, :steps) do

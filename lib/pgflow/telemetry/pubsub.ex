@@ -9,7 +9,7 @@ defmodule PgFlow.Telemetry.PubSub do
 
     * `"pgflow:run:<run_id>"` — all events for a specific run
     * `"pgflow:runs"` — all run lifecycle events (started, completed, failed)
-    * `"pgflow:tasks"` — all task events (started, completed, failed)
+    * `"pgflow:tasks"` — all task events (started, completed, failed) and step skips
 
   ## Usage
 
@@ -33,7 +33,8 @@ defmodule PgFlow.Telemetry.PubSub do
   @task_events [
     [:pgflow, :worker, :task, :start],
     [:pgflow, :worker, :task, :stop],
-    [:pgflow, :worker, :task, :exception]
+    [:pgflow, :worker, :task, :exception],
+    [:pgflow, :step, :skipped]
   ]
 
   @run_events [
@@ -118,6 +119,20 @@ defmodule PgFlow.Telemetry.PubSub do
          task_index: metadata.task_index,
          error: error,
          duration_ms: duration_ms,
+         timestamp: DateTime.utc_now()
+       }}
+
+    broadcast(config.pubsub, run_id, payload, :task)
+  end
+
+  def handle_event([:pgflow, :step, :skipped], _measurements, metadata, config) do
+    run_id = normalize_uuid(metadata.run_id)
+
+    payload =
+      {:step_skipped,
+       %{
+         step_slug: metadata.step_slug,
+         skip_reason: metadata[:skip_reason],
          timestamp: DateTime.utc_now()
        }}
 

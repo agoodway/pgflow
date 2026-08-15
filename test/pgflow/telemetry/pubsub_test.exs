@@ -129,6 +129,30 @@ defmodule PgFlow.Telemetry.PubSubTest do
       assert_receive {:pgflow, ^run_id, {:task_failed, payload}}
       assert payload.error == "{:error, :timeout}"
     end
+
+    test "step:skipped broadcasts to per-run and tasks topics", %{pubsub: pubsub} do
+      run_id = Ecto.UUID.generate()
+      Phoenix.PubSub.subscribe(pubsub, "pgflow:run:#{run_id}")
+      Phoenix.PubSub.subscribe(pubsub, "pgflow:tasks")
+
+      :telemetry.execute(
+        [:pgflow, :step, :skipped],
+        %{system_time: System.system_time()},
+        %{
+          run_id: run_id,
+          flow_slug: "demo",
+          step_slug: "premium_only",
+          skip_reason: "condition_unmet"
+        }
+      )
+
+      assert_receive {:pgflow, ^run_id, {:step_skipped, payload}}
+      assert payload.step_slug == "premium_only"
+      assert payload.skip_reason == "condition_unmet"
+      assert %DateTime{} = payload.timestamp
+
+      assert_receive {:pgflow, ^run_id, {:step_skipped, _}}
+    end
   end
 
   # ── Run Events ────────────────────────────────────────────────────

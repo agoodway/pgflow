@@ -236,6 +236,41 @@ defmodule PgFlow.ConditionalStepsTest do
     end
   end
 
+  describe "Client.start_flow emits skips" do
+    test "root-only skip emits step:skipped and run:completed without a worker" do
+      create_flow("cond_client_skip")
+
+      add_conditional_step("cond_client_skip", "premium",
+        if: %{"plan" => "premium"},
+        when_unmet: "skip"
+      )
+
+      :persistent_term.put({PgFlow, :repo}, TestRepo)
+      on_exit(fn -> :persistent_term.erase({PgFlow, :repo}) end)
+
+      self = self()
+
+      :telemetry.attach_many(
+        "cond-client-skip",
+        [[:pgflow, :step, :skipped], [:pgflow, :run, :completed]],
+        fn event, _m, meta, _ -> send(self, {event, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach("cond-client-skip") end)
+
+      assert {:ok, run_id} =
+               PgFlow.Client.start_flow("cond_client_skip", %{"plan" => "free"})
+
+      assert_receive {[:pgflow, :step, :skipped], meta}
+      assert meta.step_slug == "premium"
+      assert meta.skip_reason == "condition_unmet"
+      assert meta.run_id == run_id
+
+      assert_receive {[:pgflow, :run, :completed], %{run_id: ^run_id}}
+    end
+  end
+
   # poll_and_fail/1 may not exhaust max_attempts: 1 in one call if the task
   # is requeued. Loop until the step is terminal (or fail_task if already started).
   defp fail_until_terminal(flow_slug, run_id, step_slug, attempts_left \\ 5) do

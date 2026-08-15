@@ -23,6 +23,10 @@ defmodule PgFlow.Telemetry do
   - `[:pgflow, :worker, :task, :stop]` — Task execution completed successfully
   - `[:pgflow, :worker, :task, :exception]` — Task execution failed
 
+  ### Step Lifecycle
+
+  - `[:pgflow, :step, :skipped]` — Step skipped without a worker (e.g. unmet `if`/`if_not`)
+
   ### Run Lifecycle
 
   - `[:pgflow, :run, :started]` — Flow run created (emitted by `PgFlow.Client`)
@@ -72,6 +76,7 @@ defmodule PgFlow.Telemetry do
       [:pgflow, :worker, :task, :start],
       [:pgflow, :worker, :task, :stop],
       [:pgflow, :worker, :task, :exception],
+      [:pgflow, :step, :skipped],
       [:pgflow, :run, :started],
       [:pgflow, :run, :completed],
       [:pgflow, :run, :failed]
@@ -91,6 +96,30 @@ defmodule PgFlow.Telemetry do
   @spec detach_default_logger() :: :ok | {:error, :not_found}
   def detach_default_logger do
     :telemetry.detach("pgflow-default-logger")
+  end
+
+  @doc """
+  Emits `[:pgflow, :step, :skipped]` when a step is skipped without a worker.
+
+  ## Metadata
+
+    * `:flow_slug` - Flow identifier
+    * `:run_id` - Run UUID
+    * `:step_slug` - Skipped step identifier
+    * `:skip_reason` - Why the step was skipped, or `nil`
+  """
+  @spec emit_step_skipped(%{
+          flow_slug: String.t(),
+          run_id: String.t(),
+          step_slug: String.t(),
+          skip_reason: String.t() | nil
+        }) :: :ok
+  def emit_step_skipped(meta) do
+    :telemetry.execute(
+      [:pgflow, :step, :skipped],
+      %{system_time: System.system_time()},
+      meta
+    )
   end
 
   @doc false
