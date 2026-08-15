@@ -218,6 +218,43 @@ defmodule PgFlow.FlowCompilerTest do
       assert sql ==
                "SELECT pgflow.add_step('my_flow', 'step', ARRAY[]::text[], NULL, NULL, NULL, NULL, 'single')"
     end
+
+    test "omits condition args when none are set" do
+      step = %Step{slug: :plain}
+      sql = FlowCompiler.add_step_sql(:my_flow, step)
+
+      assert sql ==
+               "SELECT pgflow.add_step('my_flow', 'plain', ARRAY[]::text[], NULL, NULL, NULL, NULL, 'single')"
+    end
+
+    test "emits jsonb if and default when_unmet skip" do
+      step = %Step{slug: :premium, if: %{plan: "premium"}}
+      sql = FlowCompiler.add_step_sql(:my_flow, step)
+
+      assert sql =~ "'{\"plan\":\"premium\"}'::jsonb"
+      assert sql =~ "'skip'"
+      assert sql =~ "SELECT pgflow.add_step("
+    end
+
+    test "encodes skip_cascade as skip-cascade" do
+      step = %Step{slug: :branch, if: %{on: true}, when_unmet: :skip_cascade}
+      sql = FlowCompiler.add_step_sql(:my_flow, step)
+      assert sql =~ "'skip-cascade'"
+      refute sql =~ "skip_cascade"
+    end
+
+    test "emits if_not and when_exhausted" do
+      step = %Step{
+        slug: :email,
+        if_not: %{plan: "premium"},
+        when_unmet: :skip,
+        when_exhausted: :skip
+      }
+
+      sql = FlowCompiler.add_step_sql(:my_flow, step)
+      assert sql =~ "'{\"plan\":\"premium\"}'::jsonb"
+      assert sql =~ "'skip'"
+    end
   end
 
   describe "integration with real flow definitions" do

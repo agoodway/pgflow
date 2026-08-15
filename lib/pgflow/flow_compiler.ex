@@ -115,7 +115,8 @@ defmodule PgFlow.FlowCompiler do
   """
   @spec add_step_sql(atom(), Step.t()) :: String.t()
   def add_step_sql(flow_slug, %Step{} = step) do
-    # pgflow.add_step(flow_slug, step_slug, deps_slugs[], max_attempts, base_delay, timeout, start_delay, step_type)
+    # pgflow.add_step(flow_slug, step_slug, deps_slugs[], max_attempts, base_delay, timeout, start_delay, step_type
+    #   [, required_input_pattern, forbidden_input_pattern, when_unmet, when_exhausted])
     args = [
       sql_value(Atom.to_string(flow_slug)),
       sql_value(Atom.to_string(step.slug)),
@@ -126,6 +127,29 @@ defmodule PgFlow.FlowCompiler do
       sql_value(step.start_delay),
       sql_value(Atom.to_string(step.step_type))
     ]
+
+    args =
+      if condition_opts?(step) do
+        # Columns are NOT NULL; binding SQL NULL overrides function DEFAULTs and fails.
+        when_unmet =
+          cond do
+            step.when_unmet -> step.when_unmet
+            step.if || step.if_not -> :skip
+            true -> :skip
+          end
+
+        when_exhausted = step.when_exhausted || :fail
+
+        args ++
+          [
+            sql_json(step.if),
+            sql_json(step.if_not),
+            sql_mode(when_unmet),
+            sql_mode(when_exhausted)
+          ]
+      else
+        args
+      end
 
     "SELECT pgflow.add_step(#{Enum.join(args, ", ")})"
   end
@@ -146,6 +170,17 @@ defmodule PgFlow.FlowCompiler do
     values = Enum.map_join(items, ", ", &"'#{Atom.to_string(&1)}'")
     "ARRAY[#{values}]::text[]"
   end
+
+  defp condition_opts?(%Step{} = step) do
+    step.if != nil or step.if_not != nil or step.when_unmet != nil or step.when_exhausted != nil
+  end
+
+  defp sql_json(nil), do: "NULL"
+  defp sql_json(map) when is_map(map), do: "'#{escape(Jason.encode!(map))}'::jsonb"
+
+  # when_unmet / when_exhausted are NOT NULL; never emit SQL NULL for modes.
+  defp sql_mode(:skip_cascade), do: "'skip-cascade'"
+  defp sql_mode(mode) when mode in [:fail, :skip], do: "'#{mode}'"
 
   @spec escape(String.t()) :: String.t()
   defp escape(str) when is_binary(str) do
