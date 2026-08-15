@@ -14,6 +14,7 @@ A native Elixir implementation of [pgflow](https://pgflow.dev) — a PostgreSQL-
 - **Queryable state** — All workflow state lives in SQL tables. Debug with `SELECT * FROM pgflow.runs`.
 - **Automatic retries** — Failed steps retry with exponential backoff. Only failed steps retry, not the whole workflow.
 - **Parallel processing** — Steps run concurrently when dependencies allow. Fan-out with `map` for array processing.
+- **Conditional steps** — Elixir supports pgflow 0.14 conditional steps (`if` / `if_not` / `when_unmet` / `when_exhausted`).
 - **Cross-language** — Same flows can be processed by Elixir or Deno (Supabase) workers side-by-side.
 
 ## Further Reading

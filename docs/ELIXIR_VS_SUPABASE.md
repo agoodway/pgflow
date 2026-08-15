@@ -62,13 +62,17 @@ Both compile to identical SQL: `pgflow.create_flow()` + `pgflow.add_step()`.
 
 ## Step/Flow Options
 
-| Option        | TypeScript      | Elixir              | Default                |
-| ------------- | --------------- | ------------------- | ---------------------- |
-| Identifier    | `slug`          | `queue:` / `slug:`  | —                      |
-| Max retries   | `maxAttempts`   | `max_attempts:`     | 1                      |
-| Retry delay   | `baseDelay`     | `base_delay:`       | 1s                     |
-| Timeout       | `timeout`       | `timeout:`          | 30s (TS), 60s (Elixir) |
-| Start delay   | `startDelay`    | `start_delay:`      | 0                      |
+| Option            | TypeScript      | Elixir              | Default                      |
+| ----------------- | --------------- | ------------------- | ---------------------------- |
+| Identifier        | `slug`          | `queue:` / `slug:`  | —                            |
+| Max retries       | `maxAttempts`   | `max_attempts:`     | 1                            |
+| Retry delay       | `baseDelay`     | `base_delay:`       | 1s                           |
+| Timeout           | `timeout`       | `timeout:`          | 30s (TS), 60s (Elixir)       |
+| Start delay       | `startDelay`    | `start_delay:`      | 0                            |
+| Required pattern  | `if`            | `if:`               | —                            |
+| Forbidden pattern | `ifNot`         | `if_not:`           | —                            |
+| Unmet mode        | `whenUnmet`     | `when_unmet:`       | `skip` when a pattern is set |
+| Exhausted mode    | `whenExhausted` | `when_exhausted:`   | `fail`                       |
 
 ## Handler Context
 
@@ -171,6 +175,7 @@ The real question is where the poll loop lives and what tradeoffs that creates:
 | Map steps                  | Yes        | Yes    | Identical                                      |
 | Dependent map steps        | Yes        | Yes    | Identical                                      |
 | Empty array cascade        | Yes        | Yes    | Same SQL logic                                 |
+| Conditional steps / skip   | Yes        | Yes    | `if` / `if_not` / `when_unmet` / `when_exhausted` |
 | Exponential backoff retry  | Yes        | Yes    | Same SQL function                              |
 | Compile-time DAG validation| Yes        | Yes    | TS generics vs Kahn's algorithm                |
 | Two-phase polling          | Yes        | Yes    | Same protocol                                  |

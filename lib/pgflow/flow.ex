@@ -56,8 +56,10 @@ defmodule PgFlow.Flow do
     * `:start_delay` - seconds to delay before starting this step
     * `:if` - map pattern that must match for the step to run
     * `:if_not` - map pattern that must not match for the step to run
-    * `:when_unmet` - behavior when condition is unmet: `:fail`, `:skip`, or `:skip_cascade`
-    * `:when_exhausted` - behavior when a map step is exhausted: `:fail`, `:skip`, or `:skip_cascade`
+    * `:when_unmet` - when condition is unmet: `:fail`, `:skip`, or `:skip_cascade`
+      (default `:skip` when `:if` or `:if_not` is set)
+    * `:when_exhausted` - when retries are exhausted: `:fail`, `:skip`, or `:skip_cascade`
+      (default `:fail`)
 
   ## Map Options
 
