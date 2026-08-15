@@ -355,20 +355,7 @@ defmodule PgFlow.Client do
   # Private Functions
 
   defp emit_post_start(repo, flow_slug, run_id) do
-    case Flows.list_skipped_steps(repo, run_id) do
-      {:ok, skipped} ->
-        Enum.each(skipped, fn %{step_slug: slug, skip_reason: reason} ->
-          Telemetry.emit_step_skipped(%{
-            flow_slug: flow_slug,
-            run_id: run_id,
-            step_slug: slug,
-            skip_reason: reason
-          })
-        end)
-
-      {:error, _} ->
-        :ok
-    end
+    Telemetry.emit_skipped_steps(repo, flow_slug, run_id)
 
     case Flows.get_run(repo, run_id) do
       {:ok, %{status: "completed", output: output}} ->

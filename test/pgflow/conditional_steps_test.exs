@@ -1,7 +1,40 @@
 defmodule PgFlow.ConditionalStepsTest do
   use PgFlow.IntegrationCase
 
+  alias Ecto.Adapters.SQL.Sandbox
+  alias PgFlow.Client
+  alias PgFlow.Worker.Server
+
   @moduletag :integration
+
+  defmodule CondAnalyzeFlow do
+    use PgFlow.Flow
+    @flow slug: :cond_analyze_flow, max_attempts: 1
+
+    step :analyze do
+      fn _input, _ctx -> %{"flag" => false} end
+    end
+
+    step :moderate,
+      depends_on: [:analyze],
+      if: %{analyze: %{flag: true}},
+      when_unmet: :skip do
+      fn deps, _ctx -> %{"ok" => deps.analyze} end
+    end
+  end
+
+  defmodule CondEmailFlow do
+    use PgFlow.Flow
+    @flow slug: :cond_email_flow, max_attempts: 1, base_delay: 1
+
+    step :email, max_attempts: 1, when_exhausted: :skip do
+      fn _input, _ctx -> raise "smtp timeout" end
+    end
+
+    step :finish, depends_on: [:email] do
+      fn _deps, _ctx -> %{"ok" => true} end
+    end
+  end
 
   describe "schema" do
     test "steps table has 0.14 condition columns" do
@@ -269,6 +302,101 @@ defmodule PgFlow.ConditionalStepsTest do
 
       assert_receive {[:pgflow, :run, :completed], %{run_id: ^run_id}}
     end
+  end
+
+  describe "worker notices skips after complete/fail" do
+    setup do
+      Sandbox.mode(TestRepo, :auto)
+      TestRepo.query!("SELECT pgflow_tests.reset_db()")
+      :persistent_term.put({PgFlow, :repo}, TestRepo)
+      {:ok, task_supervisor} = Task.Supervisor.start_link()
+
+      on_exit(fn ->
+        :persistent_term.erase({PgFlow, :repo})
+        Sandbox.mode(TestRepo, :manual)
+      end)
+
+      compile_definition(CondAnalyzeFlow)
+      compile_definition(CondEmailFlow)
+      {:ok, task_supervisor: task_supervisor}
+    end
+
+    test "emits step:skipped when a dependent is skipped after complete", %{
+      task_supervisor: task_supervisor
+    } do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:pgflow, :step, :skipped]
+        ])
+
+      worker_pid = start_worker(CondAnalyzeFlow, task_supervisor)
+      {:ok, run_id} = Client.start_flow(CondAnalyzeFlow, %{})
+      wait_for_run_completion(run_id)
+
+      assert_receive {[:pgflow, :step, :skipped], ^ref, _m,
+                      %{step_slug: "moderate", skip_reason: "condition_unmet", run_id: ^run_id}},
+                     5_000
+
+      Server.stop(worker_pid)
+    end
+
+    test "when_exhausted skip does not emit run:failed", %{task_supervisor: task_supervisor} do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:pgflow, :step, :skipped],
+          [:pgflow, :run, :failed]
+        ])
+
+      worker_pid = start_worker(CondEmailFlow, task_supervisor)
+      {:ok, run_id} = Client.start_flow(CondEmailFlow, %{})
+      wait_for_run_completion(run_id)
+
+      assert_receive {[:pgflow, :step, :skipped], ^ref, _m,
+                      %{step_slug: "email", skip_reason: "handler_failed"}},
+                     5_000
+
+      refute_received {[:pgflow, :run, :failed], ^ref, _, _}
+      Server.stop(worker_pid)
+    end
+  end
+
+  describe "late queue message" do
+    test "step_skipped?/3 is true after a skip" do
+      create_flow("cond_stale")
+
+      add_conditional_step("cond_stale", "only",
+        if: %{"plan" => "premium"},
+        when_unmet: "skip"
+      )
+
+      run_id = start_flow_run("cond_stale", %{"plan" => "free"})
+      assert PgFlow.Queries.Flows.step_skipped?(TestRepo, run_id, "only")
+      refute PgFlow.Queries.Flows.step_skipped?(TestRepo, run_id, "missing")
+    end
+  end
+
+  defp compile_definition(module) do
+    Enum.each(PgFlow.FlowCompiler.compile(module.__pgflow_definition__()), fn sql ->
+      TestRepo.query!(sql)
+    end)
+  end
+
+  defp start_worker(flow_module, task_supervisor) do
+    config = %{
+      flow_module: flow_module,
+      repo: TestRepo,
+      task_supervisor: task_supervisor,
+      max_concurrency: 10,
+      batch_size: 10,
+      signal_strategy: :polling,
+      min_poll_interval: 50,
+      max_poll_interval: 5_000,
+      notify_fallback_interval: 30_000
+    }
+
+    {:ok, pid} = Server.start_link(config)
+    Sandbox.allow(TestRepo, self(), pid)
+    pid
   end
 
   # poll_and_fail/1 may not exhaust max_attempts: 1 in one call if the task

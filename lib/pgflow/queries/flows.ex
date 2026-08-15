@@ -139,6 +139,23 @@ defmodule PgFlow.Queries.Flows do
   end
 
   @doc """
+  Returns whether a step on a run is already skipped.
+
+  Used by workers to drop late pgmq messages for steps that SQL skipped
+  after a parent completed or failed.
+  """
+  @spec step_skipped?(Ecto.Repo.t(), String.t(), String.t()) :: boolean()
+  def step_skipped?(repo, run_id, step_slug) do
+    sql =
+      "SELECT 1 FROM pgflow.step_states WHERE run_id = $1 AND step_slug = $2 AND status = 'skipped'"
+
+    case SQL.query(repo, sql, [parse_uuid(run_id), step_slug]) do
+      {:ok, %{num_rows: n}} -> n > 0
+      _ -> false
+    end
+  end
+
+  @doc """
   Marks a task as completed with output data.
 
   ## Parameters

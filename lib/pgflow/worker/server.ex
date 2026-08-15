@@ -80,6 +80,7 @@ defmodule PgFlow.Worker.Server do
   alias PgFlow.Logger, as: PgLogger
   alias PgFlow.Queries.Flows
   alias PgFlow.Queries.Workers, as: WorkerQueries
+  alias PgFlow.Telemetry
   alias PgFlow.Worker.Lifecycle
   alias PgFlow.Worker.TaskRow
 
@@ -674,18 +675,32 @@ defmodule PgFlow.Worker.Server do
     # - input: step-specific input (raw element for map, {} for root, deps for dependent)
     # - flow_input: original flow input (only for root non-map steps, NULL otherwise)
     # - attempt: 1-indexed, from attempts_count, which start_tasks increments before dispatch
+    %{run_id: run_id_bin, step_slug: step_slug, msg_id: msg_id} =
+      row = TaskRow.decode(task_detail)
+
+    # Convert binary UUID to string format
+    run_id = Ecto.UUID.load!(run_id_bin)
+
+    # A conditional step can be skipped after its message was already queued.
+    # The handler must not run in that case, so drop the stale message instead.
+    if Flows.step_skipped?(state.repo, run_id, step_slug) do
+      delete_message(state, msg_id)
+      state
+    else
+      dispatch_live_task(state, run_id, row)
+    end
+  end
+
+  @spec dispatch_live_task(state(), String.t(), map()) :: state()
+  defp dispatch_live_task(state, run_id, row) do
     %{
-      run_id: run_id_bin,
       step_slug: step_slug,
       input: input,
       msg_id: msg_id,
       task_index: task_index,
       flow_input: flow_input,
       attempt: attempt
-    } = TaskRow.decode(task_detail)
-
-    # Convert binary UUID to string format
-    run_id = Ecto.UUID.load!(run_id_bin)
+    } = row
 
     # Looked up by the database's string slug. The atom is then taken off the
     # compiled definition rather than built from the row, so a queue carrying an
@@ -833,6 +848,7 @@ defmodule PgFlow.Worker.Server do
            serialized
          ) do
       {:ok, _} ->
+        Telemetry.emit_skipped_steps(state.repo, state.flow_slug, task_meta.run_id)
         maybe_emit_run_completed(state, task_meta.run_id)
         # Delete message from queue ONLY after DB state is confirmed updated.
         # If we delete unconditionally (including on the :error branch below),
@@ -903,6 +919,8 @@ defmodule PgFlow.Worker.Server do
         # The fail_task function returns step_task record with attempts_count and max_attempts
         retry_info = extract_retry_info(result, state)
         PgLogger.task_failed(log_ctx, error_message, retry_info)
+        Telemetry.emit_skipped_steps(state.repo, state.flow_slug, task_meta.run_id)
+        maybe_emit_run_completed(state, task_meta.run_id)
         maybe_emit_run_failed(state, task_meta.run_id, error_message)
 
       {:error, fail_reason} ->

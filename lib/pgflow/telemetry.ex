@@ -59,6 +59,7 @@ defmodule PgFlow.Telemetry do
   require Logger
 
   alias PgFlow.Logger, as: PgLogger
+  alias PgFlow.Queries.Flows
 
   @doc """
   Attaches the default telemetry handlers for logging.
@@ -120,6 +121,32 @@ defmodule PgFlow.Telemetry do
       %{system_time: System.system_time()},
       meta
     )
+  end
+
+  @doc """
+  Emits `[:pgflow, :step, :skipped]` for each skipped step on a run.
+
+  Looks up skipped steps via `Flows.list_skipped_steps/2`. Query errors
+  are swallowed so callers can treat this as fire-and-forget.
+
+  Re-emitting the same skip is OK (LiveView is idempotent).
+  """
+  @spec emit_skipped_steps(Ecto.Repo.t(), String.t(), String.t()) :: :ok
+  def emit_skipped_steps(repo, flow_slug, run_id) do
+    case Flows.list_skipped_steps(repo, run_id) do
+      {:ok, skipped} ->
+        Enum.each(skipped, fn %{step_slug: slug, skip_reason: reason} ->
+          emit_step_skipped(%{
+            flow_slug: flow_slug,
+            run_id: run_id,
+            step_slug: slug,
+            skip_reason: reason
+          })
+        end)
+
+      {:error, _} ->
+        :ok
+    end
   end
 
   @doc false
