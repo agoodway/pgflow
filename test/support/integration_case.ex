@@ -108,6 +108,50 @@ defmodule PgFlow.IntegrationCase do
   end
 
   @doc """
+  Adds a step with 0.14 condition / exhaustion options.
+
+  ## Options
+    * `:deps` - dependency slugs (default: [])
+    * `:type` - "single" or "map" (default: "single")
+    * `:if` - map stored as required_input_pattern
+    * `:if_not` - map stored as forbidden_input_pattern
+    * `:when_unmet` - "fail" | "skip" | "skip-cascade"
+    * `:when_exhausted` - "fail" | "skip" | "skip-cascade"
+    * `:max_attempts` - integer
+  """
+  def add_conditional_step(flow_slug, step_slug, opts \\ []) do
+    deps = Keyword.get(opts, :deps, [])
+    step_type = Keyword.get(opts, :type, "single")
+    max_attempts = Keyword.get(opts, :max_attempts)
+    if_pattern = Keyword.get(opts, :if)
+    if_not = Keyword.get(opts, :if_not)
+    # Official add_step defaults: when_unmet='skip', when_exhausted='fail'.
+    # Passing NULL bypasses the function default and violates NOT NULL columns.
+    when_unmet = Keyword.get(opts, :when_unmet, "skip")
+    when_exhausted = Keyword.get(opts, :when_exhausted, "fail")
+
+    PgFlow.TestRepo.query!(
+      """
+      SELECT pgflow.add_step(
+        $1, $2, $3::text[], $4, null, null, null, $5,
+        $6::jsonb, $7::jsonb, $8, $9
+      )
+      """,
+      [
+        flow_slug,
+        step_slug,
+        deps,
+        max_attempts,
+        step_type,
+        if_pattern,
+        if_not,
+        when_unmet,
+        when_exhausted
+      ]
+    )
+  end
+
+  @doc """
   Creates a simple flow with multiple steps and their dependencies.
 
   ## Example
@@ -192,12 +236,12 @@ defmodule PgFlow.IntegrationCase do
   def get_step_states(run_id) do
     %{rows: rows} =
       PgFlow.TestRepo.query!(
-        "SELECT step_slug, status FROM pgflow.step_states WHERE run_id = $1 ORDER BY step_slug",
+        "SELECT step_slug, status, skip_reason FROM pgflow.step_states WHERE run_id = $1 ORDER BY step_slug",
         [ensure_uuid_binary(run_id)]
       )
 
-    Enum.map(rows, fn [step_slug, status] ->
-      %{step_slug: step_slug, status: status}
+    Enum.map(rows, fn [step_slug, status, skip_reason] ->
+      %{step_slug: step_slug, status: status, skip_reason: skip_reason}
     end)
   end
 
