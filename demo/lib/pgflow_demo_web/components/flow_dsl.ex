@@ -6,13 +6,17 @@ defmodule PgflowDemoWeb.Components.FlowDSL do
 
   use Phoenix.Component
 
-  # Read the flow source at compile time
-  @flow_source_path "lib/pgflow_demo/flows/article_flow.ex"
-  @external_resource @flow_source_path
+  alias PgflowDemo.Flows.{ArticleFlow, OnboardingFlow}
+
+  # Read flow sources at compile time
+  @article_source_path "lib/pgflow_demo/flows/article_flow.ex"
+  @onboarding_source_path "lib/pgflow_demo/flows/onboarding_flow.ex"
+  @external_resource @article_source_path
+  @external_resource @onboarding_source_path
 
   # Define segments with their line ranges (1-indexed, inclusive)
   # Each segment is either a step (clickable) or structural code (not clickable)
-  @segments [
+  @article_segment_defs [
     %{id: :preamble, lines: 1..14, clickable: false},
     %{id: :fetch_article, lines: 16..36, clickable: true},
     %{id: :convert_to_markdown, lines: 38..51, clickable: true},
@@ -21,40 +25,78 @@ defmodule PgflowDemoWeb.Components.FlowDSL do
     %{id: :publish, lines: 83..92, clickable: true}
   ]
 
-  # Pre-process segments at compile time
-  @flow_lines File.read!(@flow_source_path) |> String.split("\n")
+  @onboarding_segment_defs [
+    %{id: :preamble, lines: 1..22, clickable: false},
+    %{id: :create_account, lines: 24..33, clickable: true},
+    %{id: :setup_premium, lines: 35..43, clickable: true},
+    %{id: :activate_perk, lines: 45..50, clickable: true},
+    %{id: :send_welcome, lines: 52..64, clickable: true},
+    %{id: :finish, lines: 66..71, clickable: true}
+  ]
 
-  @processed_segments Enum.map(@segments, fn segment ->
-                        # Extract lines for this segment (convert to 0-indexed for Enum.slice)
-                        code_lines =
-                          Enum.slice(
-                            @flow_lines,
-                            (segment.lines.first - 1)..(segment.lines.last - 1)
-                          )
+  @processed_article_segments (
+                                flow_lines =
+                                  @article_source_path |> File.read!() |> String.split("\n")
 
-                        code = Enum.join(code_lines, "\n")
+                                Enum.map(@article_segment_defs, fn segment ->
+                                  code_lines =
+                                    Enum.slice(
+                                      flow_lines,
+                                      (segment.lines.first - 1)..(segment.lines.last - 1)
+                                    )
 
-                        # Generate highlighted HTML using Makeup
-                        html = Makeup.highlight(code, lexer: Makeup.Lexers.ElixirLexer)
+                                  code = Enum.join(code_lines, "\n")
+                                  html = Makeup.highlight(code, lexer: Makeup.Lexers.ElixirLexer)
 
-                        Map.merge(segment, %{
-                          code: code,
-                          html: html,
-                          line_count: length(code_lines)
-                        })
-                      end)
+                                  Map.merge(segment, %{
+                                    code: code,
+                                    html: html,
+                                    line_count: length(code_lines)
+                                  })
+                                end)
+                              )
+
+  @processed_onboarding_segments (
+                                   flow_lines =
+                                     @onboarding_source_path |> File.read!() |> String.split("\n")
+
+                                   Enum.map(@onboarding_segment_defs, fn segment ->
+                                     code_lines =
+                                       Enum.slice(
+                                         flow_lines,
+                                         (segment.lines.first - 1)..(segment.lines.last - 1)
+                                       )
+
+                                     code = Enum.join(code_lines, "\n")
+
+                                     html =
+                                       Makeup.highlight(code, lexer: Makeup.Lexers.ElixirLexer)
+
+                                     Map.merge(segment, %{
+                                       code: code,
+                                       html: html,
+                                       line_count: length(code_lines)
+                                     })
+                                   end)
+                                 )
 
   @doc """
-  Returns the pre-processed DSL segments for use in templates.
+  Returns the pre-processed ArticleFlow DSL segments for use in templates.
   """
-  def get_segments, do: @processed_segments
+  def get_segments, do: get_segments(ArticleFlow)
+
+  @doc """
+  Returns the pre-processed DSL segments for the given flow module.
+  """
+  def get_segments(ArticleFlow), do: @processed_article_segments
+  def get_segments(OnboardingFlow), do: @processed_onboarding_segments
 
   @doc """
   Renders the Flow DSL with interactive step highlighting.
 
   ## Assigns
-  - segments: List of DSL segments (from get_segments/0)
-  - steps: Map of step_slug => status (:pending, :running, :completed, :failed)
+  - segments: List of DSL segments (from get_segments/0 or get_segments/1)
+  - steps: Map of step_slug => status (:pending, :running, :completed, :failed, :skipped)
   - highlighted_step: Currently highlighted step slug (atom) or nil
   """
   attr :segments, :list, required: true
@@ -95,6 +137,7 @@ defmodule PgflowDemoWeb.Components.FlowDSL do
   defp status_class(:running, _), do: "bg-purple-500/20"
   defp status_class(:completed, _), do: "bg-emerald-500/10 hover:bg-emerald-500/20"
   defp status_class(:failed, _), do: "bg-red-500/10"
+  defp status_class(:skipped, _), do: "bg-slate-500/10 opacity-60 hover:bg-slate-500/20"
   defp status_class(:pending, true), do: "hover:bg-white/5"
   defp status_class(:pending, false), do: ""
   defp status_class(nil, _), do: ""

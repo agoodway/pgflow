@@ -13,50 +13,70 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   @timer_interval_ms 100
   @max_log_entries 50
 
-  # DAG layout - tight spacing
-  @steps [
-    %{slug: :fetch_article, label: "Fetch", x: 100, y: 15},
-    %{slug: :convert_to_markdown, label: "Markdown", x: 100, y: 80},
-    %{slug: :summarize, label: "Summarize", x: 50, y: 125},
-    %{slug: :extract_keywords, label: "Keywords", x: 150, y: 125},
-    %{slug: :publish, label: "Publish", x: 100, y: 170}
-  ]
-
-  @edges [
-    {:fetch_article, :convert_to_markdown},
-    {:convert_to_markdown, :summarize},
-    {:convert_to_markdown, :extract_keywords},
-    {:summarize, :publish},
-    {:extract_keywords, :publish}
-  ]
-
   @default_url "https://www.pgflow.dev/news/pgflow-0-13-1-cli-fix-step-output-storage-for-conditional-execution/"
 
-  # Valid step slugs for validation
-  @valid_step_slugs MapSet.new([
-                      :fetch_article,
-                      :convert_to_markdown,
-                      :summarize,
-                      :extract_keywords,
-                      :publish
-                    ])
+  @flow_modules %{
+    article: PgflowDemo.Flows.ArticleFlow,
+    onboarding: PgflowDemo.Flows.OnboardingFlow
+  }
+
+  @flows %{
+    article: %{
+      slug: :article_flow,
+      steps: [
+        %{slug: :fetch_article, label: "Fetch", x: 100, y: 15},
+        %{slug: :convert_to_markdown, label: "Markdown", x: 100, y: 80},
+        %{slug: :summarize, label: "Summarize", x: 50, y: 125},
+        %{slug: :extract_keywords, label: "Keywords", x: 150, y: 125},
+        %{slug: :publish, label: "Publish", x: 100, y: 170}
+      ],
+      edges: [
+        {:fetch_article, :convert_to_markdown},
+        {:convert_to_markdown, :summarize},
+        {:convert_to_markdown, :extract_keywords},
+        {:summarize, :publish},
+        {:extract_keywords, :publish}
+      ]
+    },
+    onboarding: %{
+      slug: :onboarding_flow,
+      steps: [
+        %{slug: :create_account, label: "Account", x: 100, y: 20},
+        %{slug: :setup_premium, label: "Premium", x: 40, y: 90},
+        %{slug: :activate_perk, label: "Perk", x: 40, y: 160},
+        %{slug: :send_welcome, label: "Email", x: 160, y: 90},
+        %{slug: :finish, label: "Finish", x: 100, y: 230}
+      ],
+      edges: [
+        {:create_account, :setup_premium},
+        {:setup_premium, :activate_perk},
+        {:create_account, :send_welcome},
+        {:create_account, :finish}
+      ]
+    }
+  }
 
   @impl true
   def mount(_params, _session, socket) do
+    article = flow_config(:article)
+
     socket =
       socket
+      |> assign(:selected_flow, :article)
+      |> assign(:plan, "free")
+      |> assign(:fail_email, false)
       |> assign(:url, @default_url)
       |> assign(:run_id, nil)
       |> assign(:run_status, :idle)
-      |> assign(:steps, initial_steps())
+      |> assign(:steps, initial_steps(article.steps))
       |> assign(:step_outputs, %{})
       |> assign(:error, nil)
       |> assign(:duration, nil)
       |> assign(:start_time, nil)
       |> assign(:elapsed_ms, 0)
       |> assign(:event_log, [])
-      |> assign(:steps_config, @steps)
-      |> assign(:edges, @edges)
+      |> assign(:steps_config, article.steps)
+      |> assign(:edges, article.edges)
       |> assign(:active_edges, MapSet.new())
       |> assign(:highlighted_step, nil)
       |> assign(:node_radius, @node_radius)
@@ -64,10 +84,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:output_step, nil)
       |> assign(:output_content, nil)
       |> assign(:output_loading, false)
-      |> assign(:dsl_segments, FlowDSL.get_segments())
+      |> assign(:dsl_segments, FlowDSL.get_segments(flow_module(:article)))
       |> assign(:show_migration, false)
-      |> assign(:migration_path, get_migration_path())
-      |> assign(:migration_content, get_migration_content())
+      |> assign(:migration_path, get_migration_path(:article))
+      |> assign(:migration_content, get_migration_content(:article))
       |> assign(:cron_highlighted_source, CronDSL.get_highlighted_source())
       |> assign(:cron_next_run_info, CronDSL.get_next_run_info())
 
@@ -87,72 +107,51 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   end
 
   @impl true
+  def handle_event("update_onboarding", params, socket) do
+    {:noreply,
+     socket
+     |> assign(:plan, params["plan"] || socket.assigns.plan)
+     |> assign(:fail_email, params["fail_email"] == "true")}
+  end
+
+  @impl true
+  def handle_event("select_flow", %{"flow" => flow}, socket) do
+    case parse_flow_key(flow) do
+      nil ->
+        {:noreply, socket}
+
+      selected ->
+        {:noreply, switch_flow(socket, selected)}
+    end
+  end
+
+  @impl true
+  def handle_event("start_flow", params, %{assigns: %{selected_flow: :onboarding}} = socket) do
+    plan = params["plan"] || socket.assigns.plan
+    fail_email = params["fail_email"] == "true"
+
+    socket = assign(socket, plan: plan, fail_email: fail_email)
+
+    start_selected_flow(socket, :onboarding_flow, %{
+      "plan" => plan,
+      "fail_email" => fail_email
+    })
+  end
+
+  @impl true
   def handle_event("start_flow", %{"url" => url}, socket) do
     case validate_url(url) do
       {:error, message} ->
         {:noreply, assign(socket, :error, message)}
 
       {:ok, valid_url} ->
-        case Client.start_flow(:article_flow, %{"url" => valid_url}) do
-          {:ok, run_id} ->
-            # Cleanup previous subscription before subscribing to new one
-            socket = cleanup_subscription(socket)
-            Phoenix.PubSub.subscribe(PgflowDemo.PubSub, "pgflow:run:#{run_id}")
-
-            cancel_timer(socket.assigns.timer_ref)
-
-            timer_ref = maybe_start_tick_timer(socket)
-
-            socket =
-              socket
-              |> assign(:run_id, run_id)
-              |> assign(:run_status, :running)
-              |> assign(:error, nil)
-              |> assign(:steps, initial_steps())
-              |> assign(:step_outputs, %{})
-              |> assign(:duration, nil)
-              |> assign(:start_time, System.monotonic_time(:millisecond))
-              |> assign(:elapsed_ms, 0)
-              |> assign(:event_log, [
-                log_entry(:info, "Flow started", "Run ID: #{short_id(run_id)}")
-              ])
-              |> assign(:active_edges, MapSet.new())
-              |> assign(:timer_ref, timer_ref)
-
-            {:noreply, socket}
-
-          {:error, reason} ->
-            {:noreply, assign(socket, :error, format_user_error(reason))}
-        end
+        start_selected_flow(socket, :article_flow, %{"url" => valid_url})
     end
   end
 
   @impl true
   def handle_event("reset", _params, socket) do
-    cancel_timer(socket.assigns.timer_ref)
-
-    socket =
-      socket
-      |> cleanup_subscription()
-      |> assign(:url, @default_url)
-      |> assign(:run_id, nil)
-      |> assign(:run_status, :idle)
-      |> assign(:steps, initial_steps())
-      |> assign(:step_outputs, %{})
-      |> assign(:error, nil)
-      |> assign(:duration, nil)
-      |> assign(:start_time, nil)
-      |> assign(:elapsed_ms, 0)
-      |> assign(:event_log, [])
-      |> assign(:active_edges, MapSet.new())
-      |> assign(:highlighted_step, nil)
-      |> assign(:timer_ref, nil)
-      |> assign(:output_step, nil)
-      |> assign(:output_content, nil)
-      |> assign(:output_loading, false)
-      |> assign(:show_migration, false)
-
-    {:noreply, socket}
+    {:noreply, reset_run_state(socket)}
   end
 
   @impl true
@@ -163,7 +162,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   @impl true
   def handle_event("highlight_step", %{"step" => step_slug}, socket) do
     # Event log entry click: highlight step and scroll within DSL pane
-    case validate_step_slug(step_slug) do
+    case validate_step_slug(step_slug, socket.assigns.steps_config) do
       {:ok, step_atom} ->
         socket =
           socket
@@ -197,7 +196,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   @impl true
   def handle_event("view_step_output", %{"step" => step_slug}, socket) do
     # Event log click on completed step: show output and highlight
-    case validate_step_slug(step_slug) do
+    case validate_step_slug(step_slug, socket.assigns.steps_config) do
       {:ok, nil} ->
         {:noreply, socket}
 
@@ -227,7 +226,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   # Shared handler for step clicks from graph nodes and DSL code
   defp handle_step_click(socket, step_slug, scroll_event) do
-    case validate_step_slug(step_slug) do
+    case validate_step_slug(step_slug, socket.assigns.steps_config) do
       {:ok, nil} ->
         {:noreply, socket}
 
@@ -280,7 +279,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   @impl true
   def handle_info({:fetch_step_output, step_atom}, socket) do
-    output = fetch_step_output(socket.assigns.run_id, to_string(step_atom))
+    output =
+      fetch_step_output(socket.assigns.run_id, to_string(step_atom), socket.assigns.steps_config)
 
     socket =
       socket
@@ -306,13 +306,13 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         {:pgflow, _run_id, {:task_started, %{step_slug: step_slug, task_index: task_index}}},
         socket
       ) do
-    case to_step_atom(step_slug) do
+    case to_step_atom(step_slug, socket.assigns.steps_config) do
       nil ->
         {:noreply, socket}
 
       step_atom ->
         steps = update_step_status(socket.assigns.steps, step_atom, :running)
-        active_edges = get_incoming_edges(step_atom)
+        active_edges = get_incoming_edges(step_atom, socket.assigns.edges)
 
         socket =
           socket
@@ -337,7 +337,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
          {:task_completed, %{step_slug: step_slug, duration_ms: duration_ms, output: output}}},
         socket
       ) do
-    case to_step_atom(step_slug) do
+    case to_step_atom(step_slug, socket.assigns.steps_config) do
       nil ->
         {:noreply, socket}
 
@@ -374,7 +374,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
          {:task_failed, %{step_slug: step_slug, error: error, duration_ms: duration_ms}}},
         socket
       ) do
-    case to_step_atom(step_slug) do
+    case to_step_atom(step_slug, socket.assigns.steps_config) do
       nil ->
         {:noreply, socket}
 
@@ -394,6 +394,25 @@ defmodule PgflowDemoWeb.FlowDemoLive do
           )
 
         {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info(
+        {:pgflow, _run_id, {:step_skipped, %{step_slug: step_slug, skip_reason: reason}}},
+        socket
+      ) do
+    case to_step_atom(step_slug, socket.assigns.steps_config) do
+      nil ->
+        {:noreply, socket}
+
+      step_atom ->
+        steps = update_step_status(socket.assigns.steps, step_atom, :skipped)
+
+        {:noreply,
+         socket
+         |> assign(:steps, steps)
+         |> add_log(:info, "Skipped", "#{format_step_label(step_atom)} (#{reason})", step_atom)}
     end
   end
 
@@ -450,7 +469,89 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   # Helpers
 
-  defp initial_steps, do: Map.new(@steps, fn step -> {step.slug, :pending} end)
+  defp flow_config(key), do: Map.fetch!(@flows, key)
+  defp flow_module(key), do: Map.fetch!(@flow_modules, key)
+
+  defp parse_flow_key("article"), do: :article
+  defp parse_flow_key("onboarding"), do: :onboarding
+  defp parse_flow_key(_), do: nil
+
+  defp start_selected_flow(socket, flow_slug, input) do
+    case Client.start_flow(flow_slug, input) do
+      {:ok, run_id} ->
+        socket = cleanup_subscription(socket)
+        Phoenix.PubSub.subscribe(PgflowDemo.PubSub, "pgflow:run:#{run_id}")
+
+        cancel_timer(socket.assigns.timer_ref)
+
+        timer_ref = maybe_start_tick_timer(socket)
+
+        socket =
+          socket
+          |> assign(:run_id, run_id)
+          |> assign(:run_status, :running)
+          |> assign(:error, nil)
+          |> assign(:steps, initial_steps(socket.assigns.steps_config))
+          |> assign(:step_outputs, %{})
+          |> assign(:duration, nil)
+          |> assign(:start_time, System.monotonic_time(:millisecond))
+          |> assign(:elapsed_ms, 0)
+          |> assign(:event_log, [
+            log_entry(:info, "Flow started", "Run ID: #{short_id(run_id)}")
+          ])
+          |> assign(:active_edges, MapSet.new())
+          |> assign(:timer_ref, timer_ref)
+          |> assign(:output_step, nil)
+          |> assign(:output_content, nil)
+          |> assign(:output_loading, false)
+
+        {:noreply, socket}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, :error, format_user_error(reason))}
+    end
+  end
+
+  defp switch_flow(socket, selected) do
+    config = flow_config(selected)
+
+    socket
+    |> reset_run_state()
+    |> assign(:selected_flow, selected)
+    |> assign(:steps_config, config.steps)
+    |> assign(:edges, config.edges)
+    |> assign(:steps, initial_steps(config.steps))
+    |> assign(:dsl_segments, FlowDSL.get_segments(flow_module(selected)))
+    |> assign(:migration_path, get_migration_path(selected))
+    |> assign(:migration_content, get_migration_content(selected))
+  end
+
+  defp reset_run_state(socket) do
+    cancel_timer(socket.assigns.timer_ref)
+
+    socket
+    |> cleanup_subscription()
+    |> assign(:url, @default_url)
+    |> assign(:run_id, nil)
+    |> assign(:run_status, :idle)
+    |> assign(:steps, initial_steps(socket.assigns.steps_config))
+    |> assign(:step_outputs, %{})
+    |> assign(:error, nil)
+    |> assign(:duration, nil)
+    |> assign(:start_time, nil)
+    |> assign(:elapsed_ms, 0)
+    |> assign(:event_log, [])
+    |> assign(:active_edges, MapSet.new())
+    |> assign(:highlighted_step, nil)
+    |> assign(:timer_ref, nil)
+    |> assign(:output_step, nil)
+    |> assign(:output_content, nil)
+    |> assign(:output_loading, false)
+    |> assign(:show_migration, false)
+  end
+
+  defp initial_steps(steps_config),
+    do: Map.new(steps_config, fn step -> {step.slug, :pending} end)
 
   defp cleanup_subscription(%{assigns: %{run_id: nil}} = socket), do: socket
 
@@ -462,40 +563,44 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp cancel_timer(nil), do: :ok
   defp cancel_timer(ref), do: :timer.cancel(ref)
 
-  @valid_step_slugs_strings [
-    "fetch_article",
-    "convert_to_markdown",
-    "summarize",
-    "extract_keywords",
-    "publish"
-  ]
+  defp step_slugs(steps_config) do
+    MapSet.new(steps_config, & &1.slug)
+  end
 
-  defp to_step_atom(step_slug) when is_binary(step_slug) do
-    if step_slug in @valid_step_slugs_strings do
+  defp step_slug_strings(steps_config) do
+    Enum.map(steps_config, &to_string(&1.slug))
+  end
+
+  defp to_step_atom(step_slug, steps_config) when is_binary(step_slug) do
+    if step_slug in step_slug_strings(steps_config) do
       String.to_existing_atom(step_slug)
     else
       nil
     end
   end
 
-  defp to_step_atom(step_slug) when is_atom(step_slug), do: step_slug
-  defp to_step_atom(_), do: nil
+  defp to_step_atom(step_slug, steps_config) when is_atom(step_slug) do
+    if MapSet.member?(step_slugs(steps_config), step_slug), do: step_slug, else: nil
+  end
+
+  defp to_step_atom(_, _), do: nil
 
   defp update_step_status(steps, step_slug, status), do: Map.put(steps, step_slug, status)
 
-  defp get_incoming_edges(step_slug) do
-    @edges |> Enum.filter(fn {_from, to} -> to == step_slug end) |> MapSet.new()
+  defp get_incoming_edges(step_slug, edges) do
+    edges |> Enum.filter(fn {_from, to} -> to == step_slug end) |> MapSet.new()
   end
 
-  defp fetch_step_output(run_id, step_slug) when is_binary(run_id) and is_binary(step_slug) do
-    if step_slug in @valid_step_slugs_strings do
+  defp fetch_step_output(run_id, step_slug, steps_config)
+       when is_binary(run_id) and is_binary(step_slug) do
+    if step_slug in step_slug_strings(steps_config) do
       PgflowDemo.Flows.get_step_output(run_id, step_slug)
     else
       nil
     end
   end
 
-  defp fetch_step_output(_, _), do: nil
+  defp fetch_step_output(_, _, _), do: nil
 
   # Validation helpers
 
@@ -516,19 +621,14 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
-  defp validate_step_slug(""), do: {:ok, nil}
-  defp validate_step_slug(nil), do: {:ok, nil}
+  defp validate_step_slug("", _steps_config), do: {:ok, nil}
+  defp validate_step_slug(nil, _steps_config), do: {:ok, nil}
 
-  defp validate_step_slug(step_slug) when is_binary(step_slug) do
-    atom = String.to_existing_atom(step_slug)
-
-    if MapSet.member?(@valid_step_slugs, atom) do
-      {:ok, atom}
-    else
-      {:error, :invalid_step}
+  defp validate_step_slug(step_slug, steps_config) when is_binary(step_slug) do
+    case to_step_atom(step_slug, steps_config) do
+      nil -> {:error, :invalid_step}
+      atom -> {:ok, atom}
     end
-  rescue
-    ArgumentError -> {:error, :invalid_step}
   end
 
   defp format_user_error(reason) when is_binary(reason), do: "Failed to start flow: #{reason}"
@@ -557,6 +657,29 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp step_color(:running), do: "#8B5CF6"
   defp step_color(:completed), do: "#10B981"
   defp step_color(:failed), do: "#EF4444"
+  defp step_color(:skipped), do: "#64748B"
+
+  defp node_stroke(:running), do: "#A78BFA"
+  defp node_stroke(:completed), do: "#34D399"
+  defp node_stroke(:skipped), do: "#94A3B8"
+  defp node_stroke(_), do: "#6B7280"
+
+  defp node_label_fill(:running), do: "#A78BFA"
+  defp node_label_fill(:completed), do: "#34D399"
+  defp node_label_fill(:skipped), do: "#94A3B8"
+  defp node_label_fill(_), do: "#D1D5DB"
+
+  defp node_style(:completed), do: "cursor: pointer"
+  defp node_style(:skipped), do: "cursor: default; opacity: 0.55"
+  defp node_style(_), do: "cursor: default"
+
+  defp flow_tab_class(true),
+    do:
+      "px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white shadow-lg shadow-purple-500/20"
+
+  defp flow_tab_class(false),
+    do:
+      "px-4 py-2 rounded-lg text-sm font-medium bg-slate-800/70 text-purple-200/70 hover:bg-slate-700/70"
 
   defp status_text(:idle), do: "Ready"
   defp status_text(:running), do: "Running"
@@ -603,33 +726,46 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp format_output(output) when is_map(output), do: Jason.encode!(output, pretty: true)
   defp format_output(output), do: inspect(output)
 
-  defp get_step_coords(slug) do
-    case Enum.find(@steps, &(&1.slug == slug)) do
+  defp get_step_coords(slug, steps_config) do
+    case Enum.find(steps_config, &(&1.slug == slug)) do
       %{x: x, y: y} -> {x, y}
       _ -> {0, 0}
     end
+  end
+
+  defp dag_viewbox(steps_config) do
+    max_y = steps_config |> Enum.map(& &1.y) |> Enum.max(fn -> 170 end)
+    "0 0 200 #{max_y + 30}"
   end
 
   defp edge_active?(edge, active_edges), do: MapSet.member?(active_edges, edge)
 
   # Migration content for display with syntax highlighting
   # Use glob pattern to find migration file (timestamp varies)
-  defp find_migration_file do
-    Path.wildcard("priv/repo/migrations/*_compile_article_flow.exs")
+  defp find_migration_file(selected_flow) do
+    slug = flow_config(selected_flow).slug
+
+    "priv/repo/migrations/*_compile_#{slug}.exs"
+    |> Path.wildcard()
     |> List.first()
   end
 
-  defp get_migration_path do
-    case find_migration_file() do
-      nil -> "priv/repo/migrations/*_compile_article_flow.exs"
-      path -> path
+  defp get_migration_path(selected_flow) do
+    case find_migration_file(selected_flow) do
+      nil ->
+        slug = flow_config(selected_flow).slug
+        "priv/repo/migrations/*_compile_#{slug}.exs"
+
+      path ->
+        path
     end
   end
 
-  defp get_migration_content do
-    case find_migration_file() do
+  defp get_migration_content(selected_flow) do
+    case find_migration_file(selected_flow) do
       nil ->
-        "# Migration file not found\n# Run: mix pgflow.gen.flow_migration PgflowDemo.Flows.ArticleFlow"
+        module = flow_module(selected_flow)
+        "# Migration file not found\n# Run: mix pgflow.gen.flow_migration #{inspect(module)}"
 
       path ->
         case File.read(path) do
@@ -759,7 +895,33 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         
     <!-- Input -->
         <div class="backdrop-blur-xl bg-white/5 rounded-2xl p-6 mb-6 border border-white/10">
-          <form phx-submit="start_flow" class="flex gap-4">
+          <div class="flex gap-2 mb-4">
+            <button
+              type="button"
+              id="tab-article"
+              phx-click="select_flow"
+              phx-value-flow="article"
+              class={flow_tab_class(@selected_flow == :article)}
+            >
+              Article
+            </button>
+            <button
+              type="button"
+              id="tab-onboarding"
+              phx-click="select_flow"
+              phx-value-flow="onboarding"
+              class={flow_tab_class(@selected_flow == :onboarding)}
+            >
+              Onboarding
+            </button>
+          </div>
+
+          <form
+            :if={@selected_flow == :article}
+            id="article-form"
+            phx-submit="start_flow"
+            class="flex gap-4"
+          >
             <input
               type="url"
               name="url"
@@ -781,6 +943,54 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               type="button"
               phx-click="reset"
               class="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl cursor-pointer"
+            >
+              Reset
+            </button>
+          </form>
+
+          <form
+            :if={@selected_flow == :onboarding}
+            id="onboarding-form"
+            phx-submit="start_flow"
+            phx-change="update_onboarding"
+            class="flex flex-wrap items-center gap-4"
+          >
+            <label class="flex items-center gap-2 text-sm text-purple-200/80">
+              <span>Plan</span>
+              <select
+                name="plan"
+                id="onboarding-plan"
+                disabled={@run_status == :running}
+                class="px-3 py-3 rounded-xl bg-slate-800/50 text-white border border-white/10 focus:outline-none focus:ring-2 focus:ring-purple-500"
+              >
+                <option value="free" selected={@plan == "free"}>free</option>
+                <option value="premium" selected={@plan == "premium"}>premium</option>
+              </select>
+            </label>
+            <label class="flex items-center gap-2 text-sm text-purple-200/80">
+              <input
+                type="checkbox"
+                name="fail_email"
+                id="onboarding-fail-email"
+                value="true"
+                checked={@fail_email}
+                disabled={@run_status == :running}
+                class="rounded border-white/20 bg-slate-800/50 text-orange-500 focus:ring-purple-500"
+              />
+              <span>Fail welcome email</span>
+            </label>
+            <button
+              :if={@run_status != :running}
+              type="submit"
+              class="px-6 py-3 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white font-semibold rounded-xl shadow-lg"
+            >
+              Start Flow
+            </button>
+            <button
+              :if={@run_status in [:completed, :failed]}
+              type="button"
+              phx-click="reset"
+              class="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl"
             >
               Reset
             </button>
@@ -824,7 +1034,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
               <span class="text-emerald-400">Workflow</span>
             </h2>
-            <svg viewBox="0 0 200 200" class="w-full h-auto max-w-md mx-auto">
+            <svg viewBox={dag_viewbox(@steps_config)} class="w-full h-auto max-w-md mx-auto">
               <defs>
                 <marker id="arrow" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
                   <polygon points="0 0, 6 2, 0 4" fill="#6B7280" />
@@ -853,10 +1063,12 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               
     <!-- Edges -->
               <%= for {from, to} <- @edges do %>
-                <% {x1, y1} = get_step_coords(from) %>
-                <% {x2, y2} = get_step_coords(to) %>
+                <% {x1, y1} = get_step_coords(from, @steps_config) %>
+                <% {x2, y2} = get_step_coords(to, @steps_config) %>
                 <% is_active = edge_active?({from, to}, @active_edges) %>
-                <% from_done = Map.get(@steps, from) == :completed %>
+                <% from_status = Map.get(@steps, from) %>
+                <% from_done = from_status in [:completed, :skipped] %>
+                <% from_skipped = from_status == :skipped %>
                 <% dx = x2 - x1
                 dy = y2 - y1
                 dist = :math.sqrt(dx * dx + dy * dy)
@@ -870,10 +1082,21 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                   x2={ex}
                   y2={ey}
                   stroke={
-                    if is_active, do: "#8B5CF6", else: if(from_done, do: "#10B981", else: "#4B5563")
+                    cond do
+                      is_active -> "#8B5CF6"
+                      from_skipped -> "#64748B"
+                      from_done -> "#10B981"
+                      true -> "#4B5563"
+                    end
                   }
                   stroke-width={if is_active, do: "2", else: "1.5"}
-                  stroke-dasharray={if is_active, do: "4 4", else: "none"}
+                  stroke-dasharray={
+                    cond do
+                      is_active -> "4 4"
+                      from_skipped -> "3 2"
+                      true -> "none"
+                    end
+                  }
                   class={if is_active, do: "edge-active", else: ""}
                   marker-end={
                     if is_active,
@@ -891,7 +1114,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                   class={if status == :running, do: "node-active", else: ""}
                   phx-click="click_node"
                   phx-value-step={step.slug}
-                  style={if status == :completed, do: "cursor: pointer", else: "cursor: default"}
+                  style={node_style(status)}
                 >
                   <%= if highlighted do %>
                     <circle
@@ -908,12 +1131,9 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                     cy={step.y}
                     r={@node_radius}
                     fill={step_color(status)}
-                    stroke={
-                      if status == :running,
-                        do: "#A78BFA",
-                        else: if(status == :completed, do: "#34D399", else: "#6B7280")
-                    }
+                    stroke={node_stroke(status)}
                     stroke-width={if status == :running, do: "1.5", else: "1"}
+                    stroke-dasharray={if status == :skipped, do: "3 2", else: "none"}
                   />
                   <%= if status == :completed do %>
                     <text
@@ -941,6 +1161,19 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                       ✗
                     </text>
                   <% end %>
+                  <%= if status == :skipped do %>
+                    <text
+                      x={step.x}
+                      y={step.y + 1}
+                      text-anchor="middle"
+                      dominant-baseline="middle"
+                      fill="white"
+                      font-size="8"
+                      font-weight="bold"
+                    >
+                      –
+                    </text>
+                  <% end %>
                   <%= if status == :running do %>
                     <circle
                       cx={step.x}
@@ -965,11 +1198,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                     x={step.x}
                     y={step.y + @node_radius + 10}
                     text-anchor="middle"
-                    fill={
-                      if status == :running,
-                        do: "#A78BFA",
-                        else: if(status == :completed, do: "#34D399", else: "#D1D5DB")
-                    }
+                    fill={node_label_fill(status)}
                     font-size="7"
                     font-weight="500"
                   >

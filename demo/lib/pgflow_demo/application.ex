@@ -16,7 +16,7 @@ defmodule PgflowDemo.Application do
       # pubsub: enables the telemetry-to-PubSub bridge for real-time LiveView updates
       {PgFlow.Supervisor,
        repo: PgflowDemo.Repo,
-       flows: [PgflowDemo.Flows.ArticleFlow],
+       flows: [PgflowDemo.Flows.ArticleFlow, PgflowDemo.Flows.OnboardingFlow],
        jobs: [PgflowDemo.Jobs.ArticleFlowCleanup],
        signal_strategy: :notify,
        notify_throttle_ms: 50,
