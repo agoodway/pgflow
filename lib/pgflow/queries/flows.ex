@@ -51,6 +51,12 @@ defmodule PgFlow.Queries.Flows do
   this snapshot instead of issuing a second query, which would race a fast
   worker and risk mislabeling a genuine handler failure.
 
+  This snapshot only covers the run's own `status`/`output` — it does not
+  extend to skipped steps. `PgFlow.Client.emit_post_start/4` still calls
+  `PgFlow.Telemetry.emit_skipped_steps/3` as a separate, post-commit query,
+  which can race a worker sweeping the same run; see the delivery contract on
+  `PgFlow.Telemetry.emit_skipped_steps/4` for what that guarantees.
+
   ## Returns
 
     * `{:ok, run_id, run}` - The run id and a map of the returned run row

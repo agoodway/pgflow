@@ -397,6 +397,17 @@ defmodule PgFlow.Client do
   # `when_unmet: :fail` path inside `cascade_resolve_conditions` — no task
   # has had a chance to run, let alone fail, yet.
   defp emit_post_start(repo, flow_slug, run_id, run_snapshot) do
+    # Unlike the run:completed/run:failed decision below, this is still a
+    # post-commit query — Telemetry.emit_skipped_steps/3 has no equivalent
+    # snapshot to read from, since skips can also be produced by later
+    # complete_task/fail_task cascades a worker drives. So it can still race
+    # a fast worker sweeping the same run's skips. That race is safe only
+    # because of the delivery contract documented on
+    # `PgFlow.Telemetry.emit_skipped_steps/4`: per-emitter exactly-once, not
+    # global exactly-once — a root-only-skip run can have its `step:skipped`
+    # announced once here and, if a worker also touches the run, once more
+    # per worker. Consumers must be idempotent on `{run_id, step_slug}` (as
+    # `PgFlow.LiveClient` is) rather than counting.
     Telemetry.emit_skipped_steps(repo, flow_slug, run_id)
 
     case run_snapshot do
