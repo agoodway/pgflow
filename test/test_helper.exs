@@ -51,6 +51,31 @@ if db_available? do
   Ecto.Migrator.up(PgFlow.TestRepo, 0, PgFlow.Test.CoreMigration, log: false)
   Ecto.Migrator.up(PgFlow.TestRepo, 1, PgFlow.Test.HelpersMigration, log: false)
 
+  # `Ecto.Migrator` skips a migration whose version it has already recorded, so
+  # the line above is a no-op on any test DB created before a new helpers
+  # version was authored — EctoEvolver never gets asked to apply it, and the
+  # whole suite silently runs against the OLD helper function bodies. That
+  # surfaces as an inexplicable failure in the new version's tests, so compare
+  # what the database actually has against what the code defines and say so.
+  applied_helpers_version =
+    EctoEvolver.Adapters.Postgres.get_version(
+      PgFlow.TestRepo,
+      "pgflow",
+      {:view, "extensions_version"}
+    )
+
+  if applied_helpers_version != PgFlow.HelpersMigration.current_version() do
+    raise """
+    Test database is at pgflow helpers version #{applied_helpers_version}, but \
+    this checkout defines version #{PgFlow.HelpersMigration.current_version()}.
+
+    Ecto.Migrator will not re-run the helpers migration against an existing
+    database, so recreate it:
+
+        MIX_ENV=test mix ecto.drop && MIX_ENV=test mix ecto.create
+    """
+  end
+
   # Stub `realtime.messages` + `realtime.send()` — the atlas image's
   # pre-baked pgflow.sql used to supply Supabase's realtime schema. Our
   # vendored pgflow SQL intentionally doesn't require it at migration time,
