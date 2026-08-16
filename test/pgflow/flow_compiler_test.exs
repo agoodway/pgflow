@@ -227,23 +227,24 @@ defmodule PgFlow.FlowCompilerTest do
                "SELECT pgflow.add_step('my_flow', 'plain', ARRAY[]::text[], NULL, NULL, NULL, NULL, 'single')"
     end
 
-    test "emits jsonb if and default when_unmet skip" do
+    test "emits required_input_pattern as a named arg and omits when_unmet when unset" do
       step = %Step{slug: :premium, if: %{plan: "premium"}}
       sql = FlowCompiler.add_step_sql(:my_flow, step)
 
-      assert sql =~ "'{\"plan\":\"premium\"}'::jsonb"
-      assert sql =~ "'skip'"
-      assert sql =~ "SELECT pgflow.add_step("
+      assert sql ==
+               "SELECT pgflow.add_step('my_flow', 'premium', ARRAY[]::text[], NULL, NULL, NULL, NULL, 'single', required_input_pattern => '{\"plan\":\"premium\"}'::jsonb)"
+
+      refute sql =~ "when_unmet"
     end
 
     test "encodes skip_cascade as skip-cascade" do
       step = %Step{slug: :branch, if: %{on: true}, when_unmet: :skip_cascade}
       sql = FlowCompiler.add_step_sql(:my_flow, step)
-      assert sql =~ "'skip-cascade'"
+      assert sql =~ "when_unmet => 'skip-cascade'"
       refute sql =~ "skip_cascade"
     end
 
-    test "emits if_not and when_exhausted" do
+    test "emits if_not and when_exhausted as named args" do
       step = %Step{
         slug: :email,
         if_not: %{plan: "premium"},
@@ -252,8 +253,35 @@ defmodule PgFlow.FlowCompilerTest do
       }
 
       sql = FlowCompiler.add_step_sql(:my_flow, step)
-      assert sql =~ "'{\"plan\":\"premium\"}'::jsonb"
-      assert sql =~ "'skip'"
+
+      assert sql ==
+               "SELECT pgflow.add_step('my_flow', 'email', ARRAY[]::text[], NULL, NULL, NULL, NULL, 'single', forbidden_input_pattern => '{\"plan\":\"premium\"}'::jsonb, when_unmet => 'skip', when_exhausted => 'skip')"
+    end
+
+    test "omits when_unmet and when_exhausted entirely when the step doesn't set them" do
+      step = %Step{slug: :branch, if: %{on: true}}
+      sql = FlowCompiler.add_step_sql(:my_flow, step)
+
+      refute sql =~ "when_unmet"
+      refute sql =~ "when_exhausted"
+    end
+
+    test "emits when_exhausted alone (no if/if_not/when_unmet) as a named arg" do
+      step = %Step{slug: :email, when_exhausted: :skip}
+      sql = FlowCompiler.add_step_sql(:my_flow, step)
+
+      assert sql ==
+               "SELECT pgflow.add_step('my_flow', 'email', ARRAY[]::text[], NULL, NULL, NULL, NULL, 'single', when_exhausted => 'skip')"
+    end
+
+    test "unconditional 8-arg positional form is unaffected by named-arg support" do
+      step = %Step{slug: :plain, step_type: :single, depends_on: [:dep_a]}
+      sql = FlowCompiler.add_step_sql(:my_flow, step)
+
+      assert sql ==
+               "SELECT pgflow.add_step('my_flow', 'plain', ARRAY['dep_a']::text[], NULL, NULL, NULL, NULL, 'single')"
+
+      refute sql =~ "=>"
     end
   end
 

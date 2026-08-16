@@ -107,6 +107,28 @@ defmodule Mix.Tasks.Pgflow.Gen.FlowMigrationTest do
       assert migration_content =~ "ARRAY['step_b', 'step_c']::text[]"
     end
 
+    test "generates migration for a flow with a conditional step using named args" do
+      capture_io(fn ->
+        GenFlow.run([
+          "PgFlow.TestFlows.ConditionalStepFlow",
+          "--migrations-path",
+          @test_migrations_path
+        ])
+      end)
+
+      [migration_file] = File.ls!(@test_migrations_path)
+      migration_content = File.read!(Path.join(@test_migrations_path, migration_file))
+
+      assert migration_content =~
+               "SELECT pgflow.add_step('conditional_step_flow', 'gate', ARRAY[]::text[], 3, 1, 30, NULL, 'single', required_input_pattern => '{\\\"plan\\\":\\\"premium\\\"}'::jsonb, when_unmet => 'skip')"
+
+      # The unconditional dependent step keeps the plain 8-arg positional form.
+      assert migration_content =~
+               "SELECT pgflow.add_step('conditional_step_flow', 'finish', ARRAY['gate']::text[], 3, 1, 30, NULL, 'single')"
+
+      refute migration_content =~ "when_exhausted"
+    end
+
     test "raises error when no module argument provided" do
       assert_raise Mix.Error, ~r/Missing flow module argument/, fn ->
         capture_io(fn ->

@@ -117,7 +117,14 @@ defmodule PgFlow.FlowCompiler do
   def add_step_sql(flow_slug, %Step{} = step) do
     # pgflow.add_step(flow_slug, step_slug, deps_slugs[], max_attempts, base_delay, timeout, start_delay, step_type
     #   [, required_input_pattern, forbidden_input_pattern, when_unmet, when_exhausted])
-    args = [
+    #
+    # The condition args are optional columns with SQL-side DEFAULTs (when_unmet
+    # defaults to 'skip', when_exhausted to 'fail'). Postgres only allows mixed
+    # positional/named calls with positional args first, so the 8 required
+    # params stay positional and any condition opts the step actually set are
+    # appended as named args - letting SQL own the defaults instead of us
+    # duplicating them here.
+    positional_args = [
       sql_value(Atom.to_string(flow_slug)),
       sql_value(Atom.to_string(step.slug)),
       sql_array(step.depends_on),
@@ -128,30 +135,16 @@ defmodule PgFlow.FlowCompiler do
       sql_value(Atom.to_string(step.step_type))
     ]
 
-    args =
-      if condition_opts?(step) do
-        # Columns are NOT NULL; binding SQL NULL overrides function DEFAULTs and fails.
-        when_unmet =
-          cond do
-            step.when_unmet -> step.when_unmet
-            step.if || step.if_not -> :skip
-            true -> :skip
-          end
+    named_args =
+      [
+        named_arg("required_input_pattern", step.if, &sql_json/1),
+        named_arg("forbidden_input_pattern", step.if_not, &sql_json/1),
+        named_arg("when_unmet", step.when_unmet, &sql_mode/1),
+        named_arg("when_exhausted", step.when_exhausted, &sql_mode/1)
+      ]
+      |> Enum.reject(&is_nil/1)
 
-        when_exhausted = step.when_exhausted || :fail
-
-        args ++
-          [
-            sql_json(step.if),
-            sql_json(step.if_not),
-            sql_mode(when_unmet),
-            sql_mode(when_exhausted)
-          ]
-      else
-        args
-      end
-
-    "SELECT pgflow.add_step(#{Enum.join(args, ", ")})"
+    "SELECT pgflow.add_step(#{Enum.join(positional_args ++ named_args, ", ")})"
   end
 
   # SQL value encoding helpers
@@ -171,11 +164,14 @@ defmodule PgFlow.FlowCompiler do
     "ARRAY[#{values}]::text[]"
   end
 
-  defp condition_opts?(%Step{} = step) do
-    step.if != nil or step.if_not != nil or step.when_unmet != nil or step.when_exhausted != nil
-  end
+  # Builds a `name => encoded_value` named-arg fragment, or nil when the step
+  # didn't set the value (so it's omitted and the SQL DEFAULT applies).
+  @spec named_arg(String.t(), term(), (term() -> String.t())) :: String.t() | nil
+  defp named_arg(_name, nil, _encode), do: nil
+  defp named_arg(name, value, encode), do: "#{name} => #{encode.(value)}"
 
-  defp sql_json(nil), do: "NULL"
+  # Only called via named_arg/3, which already filters out nil - if/if_not
+  # are always maps here.
   defp sql_json(map) when is_map(map), do: "'#{escape(Jason.encode!(map))}'::jsonb"
 
   # when_unmet / when_exhausted are NOT NULL; never emit SQL NULL for modes.

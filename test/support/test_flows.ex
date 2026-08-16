@@ -264,6 +264,25 @@ defmodule PgFlow.TestFlows do
     end
   end
 
+  defmodule ConditionalStepFlow do
+    @moduledoc """
+    A flow with a conditional step (`if:`/`when_unmet:`) for exercising the
+    compiler's named-argument SQL emission end-to-end, including through
+    `mix pgflow.gen.flow_migration`.
+    """
+    use PgFlow.Flow
+
+    @flow slug: :conditional_step_flow, max_attempts: 3
+
+    step :gate, if: %{"plan" => "premium"}, when_unmet: :skip do
+      fn input, _ctx -> %{allowed: input["plan"]} end
+    end
+
+    step :finish, depends_on: [:gate] do
+      fn deps, _ctx -> %{ok: deps.gate} end
+    end
+  end
+
   defmodule UnloadableFlow do
     @moduledoc """
     Regression target for `PgFlow.Client.resolve_slug/1`. The test purges and
