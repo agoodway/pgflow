@@ -98,9 +98,9 @@ defmodule PgFlow.Flow do
 
   #### Condition Behavior
 
-  - **`:when_unmet`** - Action when condition is not satisfied (default `:skip`):
+  - **`:when_unmet`** - Action when condition is not satisfied (requires `:if` or `:if_not`; default `:skip`):
     - `:skip` - Skip this step; its key is omitted from dependent step inputs
-    - `:skip_cascade` - Skip this step and all steps that depend only on it
+    - `:skip_cascade` - Skip this step and all steps downstream of it (transitively)
     - `:fail` - Fail this step (bypassing handler execution)
 
   - **`:when_exhausted`** - Action when retries exhaust (default `:fail`):
@@ -115,15 +115,15 @@ defmodule PgFlow.Flow do
   from "dependency ran but returned nil":
 
       # If :validate is skipped (non-cascade), deps will be %{}
-      # If :validate ran and returned %{valid: false}, deps will be %{"validate" => %{valid: false}}
+      # If :validate ran and returned %{"valid" => false}, deps will be %{"validate" => %{"valid" => false}}
       step :charge, depends_on: [:validate] do
         fn deps, _ctx ->
           if Map.has_key?(deps, "validate") do
             # validate ran
             %{charged: true}
           else
-            # validate was skipped — skip this too
-            :__skipped__
+            # validate was skipped — this step executes but should handle the missing dep
+            %{charged: false, reason: :dependency_skipped}
           end
         end
       end
@@ -224,7 +224,7 @@ defmodule PgFlow.Flow do
   Map steps accept all step options (see `step/3`), plus:
 
     * `:array` - (optional) step slug whose output array to process. If omitted,
-      the map processes arrays produced inline by the handler block.
+      the map is a root map processing the flow's input array.
 
   Conditional options (`:if`, `:if_not`, `:when_unmet`, `:when_exhausted`) apply
   to the map step itself, not to individual items.

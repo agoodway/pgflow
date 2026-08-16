@@ -89,8 +89,8 @@ step :charge, depends_on: [:validate], if: %{"validate" => %{"valid" => true}} d
 end
 ```
 
-When `:validate` runs and returns `%{valid: true, id: 123}`, the `:charge` step runs because
-its input map `%{"validate" => %{valid: true, id: 123}}` contains the pattern `%{"validate" => %{valid: true}}`.
+When `:validate` runs and returns `%{"valid" => true, "id" => 123}`, the `:charge` step runs because
+its input map `%{"validate" => %{"valid" => true, "id" => 123}}` contains the pattern `%{"validate" => %{"valid" => true}}`.
 
 Non-cascade-skipped dependencies are **omitted** from dependent inputs: if `:validate` is skipped (not cascade),
 `:charge` receives `%{}` instead of `%{"validate" => nil}`.

@@ -331,9 +331,9 @@ Skipped steps are announced via two independent pipelines:
 
 ### SQL Pipeline (realtime.send)
 
-When a step is skipped in PostgreSQL (`start_ready_steps`, `cascade_complete_taskless_steps`, or `fail_task`),
-the database optionally sends a SQL NOTIFY via `realtime.send()` (if configured). This is the TypeScript/Deno
-integration point for real-time dashboard updates.
+When a step is skipped in PostgreSQL (`_cascade_force_skip_steps`, `cascade_resolve_conditions`, or `fail_task`),
+the database optionally broadcasts via `realtime.send()` (if configured). This is the TypeScript/Deno
+integration point for real-time dashboard updates. (Entry points: `pgflow.start_flow/2`, `pgflow.complete_task/3`, `pgflow.fail_task/3`.)
 
 ### Elixir Telemetry Pipeline
 
