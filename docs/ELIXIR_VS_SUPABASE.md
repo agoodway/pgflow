@@ -74,6 +74,27 @@ Both compile to identical SQL: `pgflow.create_flow()` + `pgflow.add_step()`.
 | Unmet mode        | `whenUnmet`     | `when_unmet:`       | `skip` when a pattern is set |
 | Exhausted mode    | `whenExhausted` | `when_exhausted:`   | `fail`                       |
 
+### Conditional Pattern Matching
+
+Both implementations use PostgreSQL's `@>` (JSON contains) operator for pattern matching:
+
+- **Root steps** - Pattern matches against the flow's input map
+- **Dependent steps** - Pattern matches against `%{dep_slug => output, ...}`, a map built from dependencies' outputs
+
+Example (Elixir):
+
+```elixir
+step :charge, depends_on: [:validate], if: %{"validate" => %{"valid" => true}} do
+  fn deps, _ctx -> %{charged: true} end
+end
+```
+
+When `:validate` runs and returns `%{valid: true, id: 123}`, the `:charge` step runs because
+its input map `%{"validate" => %{valid: true, id: 123}}` contains the pattern `%{"validate" => %{valid: true}}`.
+
+Non-cascade-skipped dependencies are **omitted** from dependent inputs: if `:validate` is skipped (not cascade),
+`:charge` receives `%{}` instead of `%{"validate" => nil}`.
+
 ## Handler Context
 
 | Field          | TypeScript                   | Elixir                        |

@@ -54,12 +54,84 @@ defmodule PgFlow.Flow do
     * `:base_delay` - override flow-level base_delay
     * `:timeout` - override flow-level timeout
     * `:start_delay` - seconds to delay before starting this step
-    * `:if` - map pattern that must match for the step to run
-    * `:if_not` - map pattern that must not match for the step to run
-    * `:when_unmet` - when condition is unmet: `:fail`, `:skip`, or `:skip_cascade`
-      (default `:skip` when `:if` or `:if_not` is set)
-    * `:when_exhausted` - when retries are exhausted: `:fail`, `:skip`, or `:skip_cascade`
+    * `:if` - map pattern that must match for the step to run (optional)
+    * `:if_not` - map pattern that must not match for the step to run (optional)
+    * `:when_unmet` - what happens when `:if` or `:if_not` is not satisfied:
+      `:fail`, `:skip`, or `:skip_cascade` (default `:skip` when a condition is set)
+    * `:when_exhausted` - what happens when retries are exhausted: `:fail`, `:skip`, or `:skip_cascade`
       (default `:fail`)
+
+  ### Conditional Step Execution
+
+  Steps can be made conditional using `:if` or `:if_not` options with PostgreSQL `@>` (contains)
+  pattern matching on JSON objects:
+
+  #### Root Steps
+
+  For root steps (those with no dependencies), the pattern is matched against the flow's
+  input map:
+
+      step :process, if: %{"mode" => "active"} do
+        fn input, _ctx ->
+          # Only runs if input contains {"mode" => "active"}
+          %{processed: true}
+        end
+      end
+
+  #### Dependent Steps
+
+  For steps with dependencies, the pattern is matched against a map built from the
+  dependencies' outputs: `%{dep_slug => output}`:
+
+      step :charge, depends_on: [:validate] do
+        fn deps, _ctx ->
+          %{charged: true}
+        end
+      end
+
+      step :send_receipt, depends_on: [:charge], if: %{"charge" => %{"success" => true}} do
+        fn deps, _ctx ->
+          # Only runs if deps.charge contains {"success" => true}
+          %{sent: true}
+        end
+      end
+
+  #### Condition Behavior
+
+  - **`:when_unmet`** - Action when condition is not satisfied (default `:skip`):
+    - `:skip` - Skip this step; its key is omitted from dependent step inputs
+    - `:skip_cascade` - Skip this step and all steps that depend only on it
+    - `:fail` - Fail this step (bypassing handler execution)
+
+  - **`:when_exhausted`** - Action when retries exhaust (default `:fail`):
+    - `:skip` - Skip after max retries
+    - `:skip_cascade` - Skip after max retries and cascade to dependents
+    - `:fail` - Fail after max retries
+
+  #### Omitted-Key Contract
+
+  When a non-cascade-skipped dependency is skipped, its key is **omitted** from the
+  dependent handler's input map. This allows handlers to distinguish "dependency not run"
+  from "dependency ran but returned nil":
+
+      # If :validate is skipped (non-cascade), deps will be %{}
+      # If :validate ran and returned %{valid: false}, deps will be %{"validate" => %{valid: false}}
+      step :charge, depends_on: [:validate] do
+        fn deps, _ctx ->
+          if Map.has_key?(deps, "validate") do
+            # validate ran
+            %{charged: true}
+          else
+            # validate was skipped — skip this too
+            :__skipped__
+          end
+        end
+      end
+
+  #### Type Violation Exception
+
+  Retry exhaustion (`:when_exhausted`) does not apply to TYPE_VIOLATION errors;
+  such errors fail immediately regardless of retry settings.
 
   ## Map Options
 
@@ -76,10 +148,24 @@ defmodule PgFlow.Flow do
     * `__pgflow_steps__/0` - returns the raw step definitions
     * `__pgflow_handler__/1` - pattern-matched functions for each step
 
+  ## Runtime Flow Definition
+
+  For dynamic (runtime-defined) flows, see `PgFlow.Client.upsert_flow/2`, which accepts
+  the same conditional options as the DSL.
+
   """
 
   @doc """
   Defines a single execution step in the workflow.
+
+  ## Options
+
+  See the moduledoc "Step Options" section for the complete list. Notably:
+
+    * `:if` - Map the input/deps must match (JSON `@>` containment)
+    * `:if_not` - Map the input/deps must not match
+    * `:when_unmet` - Action when condition fails (`:fail | :skip | :skip_cascade`, default `:skip`)
+    * `:when_exhausted` - Action when retries exhaust (`:fail | :skip | :skip_cascade`, default `:fail`)
 
   ## Examples
 
@@ -97,6 +183,20 @@ defmodule PgFlow.Flow do
         end
       end
 
+      # Step with conditional execution (matches against input)
+      step :premium_step, if: %{"plan" => "premium"} do
+        fn input, ctx ->
+          %{premium_feature: true}
+        end
+      end
+
+      # Step with conditional execution (matches against dependencies)
+      step :charge, depends_on: [:validate], if: %{"validate" => %{"valid" => true}} do
+        fn deps, ctx ->
+          %{charged: true}
+        end
+      end
+
       # Step with module handler
       step :validate, handler: MyApp.ValidateHandler
 
@@ -107,6 +207,8 @@ defmodule PgFlow.Flow do
         end
       end
 
+  For more on conditional execution, see the "Conditional Step Execution" section in the moduledoc.
+
   """
   defmacro step(slug, opts \\ [], do: block) do
     quote do
@@ -116,6 +218,16 @@ defmodule PgFlow.Flow do
 
   @doc """
   Defines an array processing step that executes a handler for each item.
+
+  ## Options
+
+  Map steps accept all step options (see `step/3`), plus:
+
+    * `:array` - (optional) step slug whose output array to process. If omitted,
+      the map processes arrays produced inline by the handler block.
+
+  Conditional options (`:if`, `:if_not`, `:when_unmet`, `:when_exhausted`) apply
+  to the map step itself, not to individual items.
 
   ## Examples
 
@@ -133,6 +245,13 @@ defmodule PgFlow.Flow do
         end
       end
 
+      # Map with conditional execution (skipped if condition unmet)
+      map :premium_enrichment, array: :items, if: %{"plan" => "premium"} do
+        fn item, ctx ->
+          %{enriched: enrich_premium(item)}
+        end
+      end
+
       # Map with module handler
       map :validate_each, array: :items, handler: MyApp.ValidateItemHandler
 
@@ -142,6 +261,8 @@ defmodule PgFlow.Flow do
           %{result: slow_process(item)}
         end
       end
+
+  For more on conditional execution, see the "Conditional Step Execution" section in the moduledoc.
 
   """
   defmacro map(slug, opts \\ [], do: block) do

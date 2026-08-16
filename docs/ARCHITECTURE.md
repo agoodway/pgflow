@@ -325,12 +325,60 @@ pgmq functions used:
 | `pgmq.enable_notify_insert`       | Enable LISTEN/NOTIFY on queue inserts      |
 | `pgmq.disable_notify_insert`      | Disable LISTEN/NOTIFY on queue             |
 
+## Skip Broadcast Pipelines
+
+Skipped steps are announced via two independent pipelines:
+
+### SQL Pipeline (realtime.send)
+
+When a step is skipped in PostgreSQL (`start_ready_steps`, `cascade_complete_taskless_steps`, or `fail_task`),
+the database optionally sends a SQL NOTIFY via `realtime.send()` (if configured). This is the TypeScript/Deno
+integration point for real-time dashboard updates.
+
+### Elixir Telemetry Pipeline
+
+Elixir workers independently discover skips by polling `step_states` after each `complete_task`/`fail_task`,
+then emit `[:pgflow, :step, :skipped]` telemetry events. This is the Elixir runtime's mechanism.
+
+**Key distinction:** These pipelines are separate. A skip committed in SQL is not automatically announced to
+Elixir — the worker must poll to discover it. Conversely, the Elixir worker's telemetry emissions are not
+sent back to SQL (the database remains the source of truth).
+
+### Delivery Contract (Telemetry)
+
+**Per-emitter exactly-once** — Each Elixir worker maintains a per-run `MapSet` of already-emitted step slugs
+(delta emission via per-worker seen-set). This guarantees that within a single worker's observation of a run,
+each skip is announced exactly once.
+
+**Caveats:**
+
+- This is a per-worker guarantee, not global. Two workers processing the same run each sweep it independently,
+  so a skip can be announced once per worker that touches the run, and once by `Client.start_flow/2` for
+  skips decided at run start.
+- `PgFlow.LiveClient` handles this structurally by treating `[:pgflow, :step, :skipped]` as an idempotent
+  state transition (not a counter), using `{run_id, step_slug}` as the key.
+
+For authoritative per-emitter-exactly-once semantics, see `PgFlow.Telemetry.emit_skipped_steps/4`.
+
+## Task Delivery Guarantee (at-least-once)
+
+Task delivery is at-least-once, even with skipping. See `PgFlow.Worker.Server` moduledoc,
+"Delivery Guarantee (at-least-once)" section.
+
+**Key points:**
+
+- A handler may run for a step the database later reports as skipped, because the step can be skipped
+  microseconds after `start_tasks` hands out a task.
+- Handlers must be idempotent and not treat "my step completed" as guaranteed by the handler having run.
+- Side effects that must not happen for a skipped step need their own guard (idempotency key, conditional write,
+  or check inside a transaction) rather than relying on the worker.
+
 ## Telemetry
 
 PgFlow emits telemetry events for monitoring. Attach handlers via `:telemetry.attach_many/4` or set `attach_default_logger: true` for built-in logging.
 
 Events:
 - `[:pgflow, :flow, :started | :completed | :failed]`
-- `[:pgflow, :step, :started | :completed | :failed]`
+- `[:pgflow, :step, :started | :completed | :failed | :skipped]`
 - `[:pgflow, :task, :started | :completed | :failed]`
 - `[:pgflow, :worker, :started | :stopped | :poll | :error]`
