@@ -224,6 +224,8 @@ The signal strategy only determines *when* to poll (timer backoff vs NOTIFY wake
 
 Skipped steps are decided in SQL (`start_ready_steps` / `fail_task`). Workers never enqueue them. Elixir emits `[:pgflow, :step, :skipped]` after `start_flow`, `complete_task`, and `fail_task` by reading `step_states`.
 
+Workers do not re-check for skips before dispatching: `start_tasks` returns a task only while its step is still `started`, and every skip path archives that step's queued/started messages in the same transaction. Delivery stays at-least-once, so a handler can still be mid-flight when the skip commits — handlers must be idempotent (see `PgFlow.Worker.Server` docs).
+
 ## Task Timeout Enforcement
 
 Each dispatched task gets an OTP-native timeout via `Process.send_after(self(), {:task_timeout, ref}, timeout_ms)`.

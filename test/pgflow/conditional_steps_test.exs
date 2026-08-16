@@ -77,6 +77,48 @@ defmodule PgFlow.ConditionalStepsTest do
     end
   end
 
+  defmodule CondStaleMapFlow do
+    use PgFlow.Flow
+    @flow slug: :cond_stale_map_flow, max_attempts: 1, base_delay: 1
+
+    step :fanout do
+      fn _input, _ctx -> [1, 2, 3] end
+    end
+
+    # One map task per element. The first task to run exhausts its single
+    # attempt, which skips the whole step - while its two siblings still have
+    # live pgmq messages.
+    map :items, array: :fanout, max_attempts: 1, when_exhausted: :skip do
+      fn item, _ctx ->
+        PgFlow.ConditionalStepsTest.report_handler_call({:item_handled, item})
+        raise "item #{item} exploded"
+      end
+    end
+  end
+
+  defmodule CondStaleSingleFlow do
+    use PgFlow.Flow
+    @flow slug: :cond_stale_single_flow, max_attempts: 1
+
+    step :only do
+      fn _input, _ctx ->
+        PgFlow.ConditionalStepsTest.report_handler_call(:only_handled)
+        %{"ok" => true}
+      end
+    end
+  end
+
+  @probe_name :pgflow_stale_skip_probe
+
+  # Handlers run inside Task.Supervisor children, so they report back through a
+  # registered name rather than a captured pid.
+  def report_handler_call(message) do
+    case Process.whereis(@probe_name) do
+      nil -> :ok
+      pid -> send(pid, message)
+    end
+  end
+
   describe "schema" do
     test "steps table has 0.14 condition columns" do
       %{rows: rows} =
@@ -555,19 +597,148 @@ defmodule PgFlow.ConditionalStepsTest do
     end
   end
 
-  describe "late queue message" do
-    test "step_skipped?/3 is true after a skip" do
-      create_flow("cond_stale")
+  describe "stale queue messages for skipped steps" do
+    setup do
+      Sandbox.mode(TestRepo, :auto)
+      TestRepo.query!("SELECT pgflow_tests.reset_db()")
+      :persistent_term.put({PgFlow, :repo}, TestRepo)
+      {:ok, task_supervisor} = Task.Supervisor.start_link()
+      Process.register(self(), @probe_name)
 
-      add_conditional_step("cond_stale", "only",
-        if: %{"plan" => "premium"},
-        when_unmet: "skip"
+      on_exit(fn ->
+        :persistent_term.erase({PgFlow, :repo})
+        Sandbox.mode(TestRepo, :manual)
+      end)
+
+      compile_definition(CondStaleMapFlow)
+      compile_definition(CondStaleSingleFlow)
+      {:ok, task_supervisor: task_supervisor}
+    end
+
+    test "a skip landing on live sibling messages never reaches a handler", %{
+      task_supervisor: task_supervisor
+    } do
+      # `items` fans out to three tasks, so three messages are in the queue when
+      # task 0 exhausts its only attempt. `fail_task` skips the whole step and
+      # archives its siblings' still-queued messages in the same transaction.
+      worker_pid = start_serial_worker(CondStaleMapFlow, task_supervisor)
+      {:ok, run_id} = Client.start_flow(CondStaleMapFlow, %{})
+
+      assert_receive {:item_handled, 1}, 5_000
+      wait_for_run_completion(run_id)
+
+      # The siblings' messages were archived before any worker could read them.
+      refute_received {:item_handled, 2}
+      refute_received {:item_handled, 3}
+
+      states = Map.new(get_step_states(run_id), &{&1.step_slug, &1})
+      assert states["items"].status == "skipped"
+      assert states["items"].skip_reason == "handler_failed"
+
+      assert queued_message_count("cond_stale_map_flow") == 0
+      assert archived_task_indices("cond_stale_map_flow", "items") == [0, 1, 2]
+
+      assert Process.alive?(worker_pid)
+      Server.stop(worker_pid)
+    end
+
+    test "a message read after its step was skipped is refused, not dispatched", %{
+      task_supervisor: task_supervisor
+    } do
+      # Harsher than production: the step is skipped while its message stays
+      # visible, so the worker really does read a message for a skipped step.
+      # (Every SQL skip path archives such messages, so a worker normally holds
+      # this message only for the microseconds between reading it and calling
+      # start_tasks.) `start_tasks` refuses to return a task whose step_state is
+      # not 'started', so nothing is dispatched.
+      {:ok, run_id} = Client.start_flow(CondStaleSingleFlow, %{})
+      wait_until(fn -> queued_message_count("cond_stale_single_flow") == 1 end)
+      skip_step_leaving_message_visible(run_id, "only")
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:pgflow, :worker, :poll, :stop],
+          [:pgflow, :worker, :task, :start]
+        ])
+
+      worker_pid = start_serial_worker(CondStaleSingleFlow, task_supervisor)
+
+      # Three completed poll cycles is more than enough for the worker to have
+      # read the visible message and decided what to do with it.
+      for _ <- 1..3 do
+        assert_receive {[:pgflow, :worker, :poll, :stop], ^ref, _m, _meta}, 5_000
+      end
+
+      refute_received {[:pgflow, :worker, :task, :start], ^ref, _, _}
+      refute_received :only_handled
+      assert message_read_count("cond_stale_single_flow") > 0
+
+      assert Process.alive?(worker_pid)
+      Server.stop(worker_pid)
+    end
+  end
+
+  # max_concurrency 1 makes each poll read exactly one message, so the map
+  # step's tasks are handed out one at a time instead of all in one batch.
+  defp start_serial_worker(flow_module, task_supervisor) do
+    config = %{
+      flow_module: flow_module,
+      repo: TestRepo,
+      task_supervisor: task_supervisor,
+      max_concurrency: 1,
+      batch_size: 1,
+      signal_strategy: :polling,
+      min_poll_interval: 20,
+      max_poll_interval: 100,
+      notify_fallback_interval: 30_000
+    }
+
+    {:ok, pid} = Server.start_link(config)
+    Sandbox.allow(TestRepo, self(), pid)
+    pid
+  end
+
+  # Skips a started step the way SQL does, minus the message archiving, to leave
+  # a stale-but-visible message behind for the worker to read.
+  defp skip_step_leaving_message_visible(run_id, step_slug) do
+    TestRepo.query!(
+      """
+      UPDATE pgflow.step_states
+      SET status = 'skipped',
+          skip_reason = 'condition_unmet',
+          skipped_at = now(),
+          remaining_tasks = NULL
+      WHERE run_id = $1 AND step_slug = $2
+      """,
+      [Ecto.UUID.dump!(run_id), step_slug]
+    )
+  end
+
+  defp queued_message_count(queue_name) do
+    %{rows: [[count]]} = TestRepo.query!("SELECT count(*) FROM pgmq.q_#{queue_name}")
+    count
+  end
+
+  defp message_read_count(queue_name) do
+    %{rows: [[read_ct]]} =
+      TestRepo.query!("SELECT coalesce(max(read_ct), 0) FROM pgmq.q_#{queue_name}")
+
+    read_ct
+  end
+
+  defp archived_task_indices(queue_name, step_slug) do
+    %{rows: rows} =
+      TestRepo.query!(
+        """
+        SELECT (message->>'task_index')::int
+        FROM pgmq.a_#{queue_name}
+        WHERE message->>'step_slug' = $1
+        ORDER BY 1
+        """,
+        [step_slug]
       )
 
-      run_id = start_flow_run("cond_stale", %{"plan" => "free"})
-      assert Flows.step_skipped?(TestRepo, run_id, "only")
-      refute Flows.step_skipped?(TestRepo, run_id, "missing")
-    end
+    Enum.map(rows, &hd/1)
   end
 
   defp compile_definition(module) do

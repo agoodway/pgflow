@@ -9,6 +9,28 @@ defmodule PgFlow.Worker.Server do
   1. pgmq.read() - Reserve messages from pgmq (non-blocking)
   2. start_tasks() - Create step_tasks records and get task details
 
+  ## Delivery Guarantee (at-least-once)
+
+  Task delivery is at-least-once, and skipping does not change that.
+  `pgflow.start_tasks` hands out a task only while its step is still `started`,
+  and any SQL path that skips a step archives that step's queued/started pgmq
+  messages in the same transaction — so a worker cannot start a task for a step
+  that was already skipped. What it *can* do is start a task microseconds before
+  the skip commits: the step is then recorded as `skipped` while the handler is
+  already running, and no worker-side check can prevent that. When the handler
+  finishes, `complete_task`/`fail_task` hit their "late callback" guard (the
+  step is no longer `started`), mutate nothing, and archive the message.
+
+  Consequences for handler authors:
+
+    * A handler may run for a step the database later reports as `skipped`
+      (including retries and stalled-task requeues), so handlers must be
+      idempotent and must not treat "my step completed" as implied by the
+      handler having run.
+    * Side effects that must not happen for a skipped step need their own guard
+      (an idempotency key, a conditional write, or a check inside the same
+      transaction as the effect) rather than relying on the worker.
+
   ## Signal Strategies
 
   The worker supports two signal strategies for detecting new messages:
@@ -674,6 +696,10 @@ defmodule PgFlow.Worker.Server do
         end)
 
       {:error, reason} ->
+        # Fail safe: a failed start_tasks means the state of these messages is
+        # unknown, so dispatch nothing this cycle. The messages were only made
+        # invisible, not consumed, so they redeliver once the visibility timeout
+        # expires - far better than running handlers for tasks SQL never started.
         Logger.error("Failed to start tasks for flow #{state.flow_slug}: #{inspect(reason)}")
         state
     end
@@ -685,24 +711,22 @@ defmodule PgFlow.Worker.Server do
     # - input: step-specific input (raw element for map, {} for root, deps for dependent)
     # - flow_input: original flow input (only for root non-map steps, NULL otherwise)
     # - attempt: 1-indexed, from attempts_count, which start_tasks increments before dispatch
-    %{run_id: run_id_bin, step_slug: step_slug, msg_id: msg_id} =
-      row = TaskRow.decode(task_detail)
+    %{run_id: run_id_bin} = row = TaskRow.decode(task_detail)
 
     # Convert binary UUID to string format
     run_id = Ecto.UUID.load!(run_id_bin)
 
-    # A conditional step can be skipped after its message was already queued.
-    # The handler must not run in that case, so drop the stale message instead.
-    if Flows.step_skipped?(state.repo, run_id, step_slug) do
-      delete_message(state, msg_id)
-      state
-    else
-      dispatch_live_task(state, run_id, row)
-    end
-  end
-
-  @spec dispatch_live_task(state(), String.t(), map()) :: state()
-  defp dispatch_live_task(state, run_id, row) do
+    # No skip check happens here on purpose. `pgflow.start_tasks` only returns a
+    # task whose `step_states` row is still `started`, so a task for a skipped
+    # step is filtered out before it can reach this function, and every SQL path
+    # that skips a step (`_cascade_force_skip_steps`, `fail_task`'s
+    # `when_exhausted` skip, `cascade_resolve_conditions`' fail branch) archives
+    # that step's queued/started pgmq messages in the same transaction. A
+    # per-task `step_skipped?` probe here could therefore only ever observe a
+    # skip that committed in the microseconds between `start_tasks` returning
+    # and the probe's own query - a window it cannot close anyway, since a skip
+    # committing one microsecond later still lets the handler run. See the
+    # at-least-once note in this module's docs.
     %{
       step_slug: step_slug,
       input: input,
