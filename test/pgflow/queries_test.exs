@@ -34,6 +34,18 @@ defmodule PgFlow.QueriesTest do
     end
   end
 
+  defmodule OneShotFlow do
+    use PgFlow.Flow
+
+    @flow slug: :one_shot_query_flow, max_attempts: 1
+
+    step :process do
+      fn input, _ctx ->
+        %{result: input["value"]}
+      end
+    end
+  end
+
   defmodule TwoStepFlow do
     use PgFlow.Flow
 
@@ -166,6 +178,44 @@ defmodule PgFlow.QueriesTest do
     test "returns error for nonexistent flow slug" do
       result = Flows.start_flow(TestRepo, "nonexistent_flow", %{"value" => 1})
       assert {:error, _} = result
+    end
+  end
+
+  # ── start_flow_with_run ──────────────────────────────────────────────
+
+  describe "start_flow_with_run/3" do
+    test "returns the run row start_flow itself produced, started and in progress" do
+      flow_slug = compile_flow(SimpleFlow)
+
+      assert {:ok, run_id, run} = Flows.start_flow_with_run(TestRepo, flow_slug, %{"value" => 1})
+
+      assert run.run_id == run_id
+      assert run.flow_slug == flow_slug
+      assert run.status == "started"
+      assert run.output == nil
+    end
+
+    test "the returned snapshot is unaffected by a real failure that lands right after" do
+      # Reproduces the exact race `emit_post_start` used to be vulnerable to:
+      # a fast worker fails the run's only task in between `start_flow`
+      # returning and any later read. The snapshot handed back by this
+      # function must reflect only what `pgflow.start_flow` itself decided
+      # (still "started" - a task is queued but nothing has run it yet), not
+      # whatever happens afterwards.
+      flow_slug = compile_flow(OneShotFlow)
+
+      assert {:ok, run_id, run} = Flows.start_flow_with_run(TestRepo, flow_slug, %{"value" => 1})
+      assert run.status == "started"
+
+      worker_id = register_worker(flow_slug)
+      {_messages, _task_details} = read_and_start_tasks(flow_slug, worker_id)
+      assert {:ok, _} = Flows.fail_task(TestRepo, run_id, "process", 0, "handler exploded")
+
+      # The live run is now genuinely failed for a real handler error...
+      assert {:ok, %{status: "failed"}} = Flows.get_run(TestRepo, run_id)
+
+      # ...but the snapshot captured at start_flow time never changes underneath us.
+      assert run.status == "started"
     end
   end
 

@@ -37,6 +37,18 @@ defmodule PgFlow.ConditionalStepsTest do
     end
   end
 
+  defmodule CondFailFastFlow do
+    use PgFlow.Flow
+    @flow slug: :cond_fail_fast_flow, max_attempts: 1
+
+    # No conditions anywhere in this flow - the root handler just raises.
+    # Used to prove emit_post_start never mislabels a genuine handler
+    # failure as "condition unmet".
+    step :boom do
+      fn _input, _ctx -> raise "handler exploded" end
+    end
+  end
+
   defmodule CondChainFlow do
     use PgFlow.Flow
     @flow slug: :cond_chain_flow, max_attempts: 1
@@ -384,6 +396,31 @@ defmodule PgFlow.ConditionalStepsTest do
       assert first.step_slug == "zeta"
       assert second.step_slug == "alpha"
     end
+
+    test "when_unmet: :fail decided synchronously still emits run:failed with a truthful reason" do
+      create_flow("cond_client_fail")
+
+      add_conditional_step("cond_client_fail", "need_premium",
+        if: %{"plan" => "premium"},
+        when_unmet: "fail"
+      )
+
+      :persistent_term.put({PgFlow, :repo}, TestRepo)
+      on_exit(fn -> :persistent_term.erase({PgFlow, :repo}) end)
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:pgflow, :run, :failed]
+        ])
+
+      assert {:ok, run_id} = Client.start_flow("cond_client_fail", %{"plan" => "free"})
+
+      assert_receive {[:pgflow, :run, :failed], ^ref, _m, metadata}
+      assert metadata.run_id == run_id
+      assert metadata.flow_slug == "cond_client_fail"
+      assert is_binary(metadata.error)
+      assert metadata.error =~ "condition"
+    end
   end
 
   describe "worker notices skips after complete/fail" do
@@ -471,6 +508,53 @@ defmodule PgFlow.ConditionalStepsTest do
     end
   end
 
+  describe "emit_post_start reports the observed transition, not a re-read" do
+    setup do
+      Sandbox.mode(TestRepo, :auto)
+      TestRepo.query!("SELECT pgflow_tests.reset_db()")
+      :persistent_term.put({PgFlow, :repo}, TestRepo)
+      {:ok, task_supervisor} = Task.Supervisor.start_link()
+
+      on_exit(fn ->
+        :persistent_term.erase({PgFlow, :repo})
+        Sandbox.mode(TestRepo, :manual)
+      end)
+
+      compile_definition(CondFailFastFlow)
+      {:ok, task_supervisor: task_supervisor}
+    end
+
+    test "a root handler failing fast is never mislabeled as condition unmet", %{
+      task_supervisor: task_supervisor
+    } do
+      # Nothing conditional anywhere in this flow. A worker with an
+      # aggressive poll interval is started before the run even exists, so
+      # it is racing to fail the run's only task the instant it becomes
+      # visible - the exact window the old `Flows.get_run` re-read in
+      # `emit_post_start` was vulnerable to.
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:pgflow, :run, :failed]
+        ])
+
+      worker_pid = start_fast_worker(CondFailFastFlow, task_supervisor)
+      {:ok, run_id} = Client.start_flow(CondFailFastFlow, %{})
+      wait_for_run_completion(run_id)
+
+      assert_receive {[:pgflow, :run, :failed], ^ref, _m, metadata}, 5_000
+      assert metadata.run_id == run_id
+      assert is_binary(metadata.error)
+      refute metadata.error == "condition unmet"
+      assert metadata.error =~ "handler exploded"
+
+      # The worker owns this run's terminal event; the client must not have
+      # also emitted one from a racing re-read.
+      refute_received {[:pgflow, :run, :failed], ^ref, _, _}
+
+      Server.stop(worker_pid)
+    end
+  end
+
   describe "late queue message" do
     test "step_skipped?/3 is true after a skip" do
       create_flow("cond_stale")
@@ -502,6 +586,28 @@ defmodule PgFlow.ConditionalStepsTest do
       signal_strategy: :polling,
       min_poll_interval: 50,
       max_poll_interval: 5_000,
+      notify_fallback_interval: 30_000
+    }
+
+    {:ok, pid} = Server.start_link(config)
+    Sandbox.allow(TestRepo, self(), pid)
+    pid
+  end
+
+  # Polls as aggressively as the worker allows, to maximize the odds of
+  # racing a run's task to completion before any other reader of the run
+  # observes it - used to stress the exact window `emit_post_start` used to
+  # be vulnerable to.
+  defp start_fast_worker(flow_module, task_supervisor) do
+    config = %{
+      flow_module: flow_module,
+      repo: TestRepo,
+      task_supervisor: task_supervisor,
+      max_concurrency: 10,
+      batch_size: 10,
+      signal_strategy: :polling,
+      min_poll_interval: 1,
+      max_poll_interval: 5,
       notify_fallback_interval: 30_000
     }
 

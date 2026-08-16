@@ -30,13 +30,58 @@ defmodule PgFlow.Queries.Flows do
   @spec start_flow(Ecto.Repo.t(), String.t(), map() | list()) ::
           {:ok, String.t()} | {:error, term()}
   def start_flow(repo, flow_slug, input) do
+    with {:ok, run_id, _run_snapshot} <- start_flow_with_run(repo, flow_slug, input) do
+      {:ok, run_id}
+    end
+  end
+
+  @doc """
+  Starts a new flow execution and returns the run row `pgflow.start_flow`
+  itself produced, alongside the run id.
+
+  `pgflow.start_flow` runs run creation, condition evaluation
+  (`cascade_resolve_conditions`), taskless-step completion, and initial task
+  enqueuing all inside the one implicit transaction backing this statement.
+  The row this function returns is read back inside that same transaction,
+  so it is the authoritative snapshot of whatever the statement decided —
+  no external worker can have touched the run yet, because nothing about it
+  is visible to another session until this statement commits. Callers that
+  need to know whether `start_flow` itself completed or failed the run
+  synchronously (e.g. a root condition with `when_unmet: :fail`) should use
+  this snapshot instead of issuing a second query, which would race a fast
+  worker and risk mislabeling a genuine handler failure.
+
+  ## Returns
+
+    * `{:ok, run_id, run}` - The run id and a map of the returned run row
+      (`:run_id, :flow_slug, :status, :input, :output, :remaining_steps,
+      :started_at, :completed_at, :failed_at`)
+    * `{:error, reason}` - Error details if the operation fails
+  """
+  @spec start_flow_with_run(Ecto.Repo.t(), String.t(), map() | list()) ::
+          {:ok, String.t(), map()} | {:error, term()}
+  def start_flow_with_run(repo, flow_slug, input) do
     sql = "SELECT * FROM pgflow.start_flow($1, $2::jsonb)"
 
     case SQL.query(repo, sql, [flow_slug, input]) do
-      {:ok, %{rows: [[run_id_bin | _rest]]}} -> {:ok, format_uuid(run_id_bin)}
-      {:ok, %{rows: []}} -> {:error, :no_result}
-      {:error, error} -> {:error, error}
+      {:ok, %{rows: [row], columns: columns}} ->
+        run = row_to_run(columns, row)
+        {:ok, run.run_id, run}
+
+      {:ok, %{rows: []}} ->
+        {:error, :no_result}
+
+      {:error, error} ->
+        {:error, error}
     end
+  end
+
+  defp row_to_run(columns, row) do
+    columns
+    |> Enum.map(&String.to_atom/1)
+    |> Enum.zip(row)
+    |> Map.new()
+    |> Map.update!(:run_id, &format_uuid/1)
   end
 
   @doc """

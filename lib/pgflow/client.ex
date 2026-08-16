@@ -54,14 +54,14 @@ defmodule PgFlow.Client do
   def start_flow(flow_module_or_slug, input) when is_map(input) do
     with {:ok, repo} <- get_repo(),
          {:ok, flow_slug} <- resolve_slug(flow_module_or_slug),
-         {:ok, run_id} <- Flows.start_flow(repo, flow_slug, input) do
+         {:ok, run_id, run_snapshot} <- Flows.start_flow_with_run(repo, flow_slug, input) do
       :telemetry.execute(
         [:pgflow, :run, :started],
         %{system_time: System.system_time()},
         %{flow_slug: flow_slug, run_id: run_id}
       )
 
-      emit_post_start(repo, flow_slug, run_id)
+      emit_post_start(repo, flow_slug, run_id, run_snapshot)
 
       {:ok, run_id}
     end
@@ -383,18 +383,31 @@ defmodule PgFlow.Client do
 
   # Private Functions
 
-  defp emit_post_start(repo, flow_slug, run_id) do
+  # Decides post-start emissions from the run row `start_flow` itself
+  # returned, never from a fresh read. That row is read back inside the same
+  # implicit transaction that created the run, evaluated conditions
+  # (`cascade_resolve_conditions`), completed taskless steps, and enqueued
+  # the initial tasks — so it is exactly what `pgflow.start_flow` decided,
+  # nothing a worker did afterwards. Re-querying after the statement commits
+  # would race a fast worker: it could observe a run the worker had already
+  # failed for a genuine handler error and misreport it as "condition
+  # unmet". Because task execution requires a task row to be visible to a
+  # worker, which can't happen until this statement's transaction commits,
+  # a `"failed"` status on this snapshot can only be the synchronous
+  # `when_unmet: :fail` path inside `cascade_resolve_conditions` — no task
+  # has had a chance to run, let alone fail, yet.
+  defp emit_post_start(repo, flow_slug, run_id, run_snapshot) do
     Telemetry.emit_skipped_steps(repo, flow_slug, run_id)
 
-    case Flows.get_run(repo, run_id) do
-      {:ok, %{status: "completed", output: output}} ->
+    case run_snapshot do
+      %{status: "completed", output: output} ->
         :telemetry.execute(
           [:pgflow, :run, :completed],
           %{system_time: System.system_time()},
           %{flow_slug: flow_slug, run_id: run_id, output: output}
         )
 
-      {:ok, %{status: "failed"}} ->
+      %{status: "failed"} ->
         :telemetry.execute(
           [:pgflow, :run, :failed],
           %{system_time: System.system_time()},
