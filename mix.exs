@@ -65,7 +65,7 @@ defmodule PgFlow.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:doctor, "~> 0.23", only: [:dev, :test], runtime: false},
       {:ex_slop, "~> 0.3", only: [:dev, :test], runtime: false},
-      {:sobelow, "~> 0.14", only: [:dev, :test], runtime: false},
+      {:sobelow, "~> 0.15", only: [:dev, :test], runtime: false},
       {:ex_dna, "~> 1.2", only: [:dev, :test], runtime: false}
     ]
   end
