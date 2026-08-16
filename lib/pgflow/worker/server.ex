@@ -84,6 +84,11 @@ defmodule PgFlow.Worker.Server do
   alias PgFlow.Worker.Lifecycle
   alias PgFlow.Worker.TaskRow
 
+  # Upper bound on runs whose announced skips this worker remembers. Entries are
+  # released as soon as a run goes terminal, so this only ever holds in-flight
+  # runs plus any run this worker touched but never saw finish.
+  @max_tracked_skip_runs 512
+
   @type task_metadata :: %{
           run_id: String.t(),
           step_slug: String.t(),
@@ -116,7 +121,9 @@ defmodule PgFlow.Worker.Server do
           notify_fallback_interval: pos_integer(),
           fallback_timer_ref: reference() | nil,
           flow_def: term(),
-          lifecycle: Lifecycle.t()
+          lifecycle: Lifecycle.t(),
+          emitted_skips: %{String.t() => MapSet.t(String.t())},
+          emitted_skip_runs: [String.t()]
         }
 
   # Client API
@@ -219,7 +226,9 @@ defmodule PgFlow.Worker.Server do
         fallback_timer_ref: nil,
         flow_def: flow_def,
         lifecycle:
-          Lifecycle.new() |> Lifecycle.transition!(:starting) |> Lifecycle.transition!(:running)
+          Lifecycle.new() |> Lifecycle.transition!(:starting) |> Lifecycle.transition!(:running),
+        emitted_skips: %{},
+        emitted_skip_runs: []
       }
 
       # Register worker in database
@@ -301,7 +310,7 @@ defmodule PgFlow.Worker.Server do
       {task_meta, new_active_tasks} ->
         # Cancel the timeout timer
         cancel_task_timeout(task_meta)
-        handle_task_success(task_meta, result, state)
+        state = handle_task_success(task_meta, result, state)
         state = %{state | active_tasks: new_active_tasks}
 
         # Only poll if the completed step has downstream dependents.
@@ -335,7 +344,7 @@ defmodule PgFlow.Worker.Server do
       {task_meta, new_active_tasks} ->
         # Cancel the timeout timer
         cancel_task_timeout(task_meta)
-        handle_task_failure(task_meta, reason, state)
+        state = handle_task_failure(task_meta, reason, state)
         state = %{state | active_tasks: new_active_tasks}
 
         # For failures, always poll if we can accept work - retries get re-queued
@@ -368,11 +377,12 @@ defmodule PgFlow.Worker.Server do
         timeout_seconds = resolve_task_timeout(state, task_meta.step_slug)
 
         # Report failure
-        handle_task_failure(
-          task_meta,
-          "Task timed out after #{timeout_seconds}s",
-          state
-        )
+        state =
+          handle_task_failure(
+            task_meta,
+            "Task timed out after #{timeout_seconds}s",
+            state
+          )
 
         {:noreply, %{state | active_tasks: new_active_tasks}}
     end
@@ -836,7 +846,7 @@ defmodule PgFlow.Worker.Server do
 
   defp cancel_task_timeout(_task_meta), do: :ok
 
-  @spec handle_task_success(task_metadata(), term(), state()) :: :ok
+  @spec handle_task_success(task_metadata(), term(), state()) :: state()
   defp handle_task_success(task_meta, {:ok, output}, state) do
     serialized = serialize_handler_output(output)
 
@@ -848,8 +858,8 @@ defmodule PgFlow.Worker.Server do
            serialized
          ) do
       {:ok, _} ->
-        Telemetry.emit_skipped_steps(state.repo, state.flow_slug, task_meta.run_id)
-        maybe_emit_run_completed(state, task_meta.run_id)
+        state = emit_new_skips(state, task_meta.run_id)
+        state = emit_run_terminal(state, task_meta.run_id, nil)
         # Delete message from queue ONLY after DB state is confirmed updated.
         # If we delete unconditionally (including on the :error branch below),
         # a transient complete_task failure (deadlock, conn hiccup, serializable
@@ -858,6 +868,7 @@ defmodule PgFlow.Worker.Server do
         # can't resurrect it. The step hangs forever waiting on a task that
         # will never run.
         delete_message(state, task_meta.msg_id)
+        state
 
       {:error, reason} ->
         Logger.error(
@@ -868,6 +879,7 @@ defmodule PgFlow.Worker.Server do
         # will expire and the task will be re-delivered. Handlers must be
         # idempotent (the same contract required for pgflow retries on
         # genuine task crashes).
+        state
     end
   end
 
@@ -885,7 +897,7 @@ defmodule PgFlow.Worker.Server do
     )
   end
 
-  @spec handle_task_failure(task_metadata(), term(), state()) :: :ok
+  @spec handle_task_failure(task_metadata(), term(), state()) :: state()
   defp handle_task_failure(task_meta, reason, state) do
     error_message =
       case reason do
@@ -907,6 +919,7 @@ defmodule PgFlow.Worker.Server do
       msg_id: task_meta.msg_id
     }
 
+    # Don't delete the message on failure - let it be retried via visibility timeout
     case Flows.fail_task(
            state.repo,
            task_meta.run_id,
@@ -919,18 +932,18 @@ defmodule PgFlow.Worker.Server do
         # The fail_task function returns step_task record with attempts_count and max_attempts
         retry_info = extract_retry_info(result, state)
         PgLogger.task_failed(log_ctx, error_message, retry_info)
-        Telemetry.emit_skipped_steps(state.repo, state.flow_slug, task_meta.run_id)
-        maybe_emit_run_completed(state, task_meta.run_id)
-        maybe_emit_run_failed(state, task_meta.run_id, error_message)
+
+        state
+        |> emit_new_skips(task_meta.run_id)
+        |> emit_run_terminal(task_meta.run_id, error_message)
 
       {:error, fail_reason} ->
         Logger.error(
           "Failed to mark task as failed: #{task_meta.step_slug}[#{task_meta.task_index}] - #{inspect(fail_reason)}"
         )
-    end
 
-    # Don't delete message on failure - let it be retried via visibility timeout
-    :ok
+        state
+    end
   end
 
   # Extract retry information from fail_task result
@@ -1053,7 +1066,7 @@ defmodule PgFlow.Worker.Server do
 
           {task_meta, new_active_tasks} ->
             cancel_task_timeout(task_meta)
-            handle_task_success(task_meta, result, state)
+            state = handle_task_success(task_meta, result, state)
             wait_for_tasks(%{state | active_tasks: new_active_tasks})
         end
 
@@ -1065,7 +1078,7 @@ defmodule PgFlow.Worker.Server do
 
           {task_meta, new_active_tasks} ->
             cancel_task_timeout(task_meta)
-            handle_task_failure(task_meta, reason, state)
+            state = handle_task_failure(task_meta, reason, state)
             wait_for_tasks(%{state | active_tasks: new_active_tasks})
         end
 
@@ -1083,11 +1096,12 @@ defmodule PgFlow.Worker.Server do
 
             timeout_seconds = resolve_task_timeout(state, task_meta.step_slug)
 
-            handle_task_failure(
-              task_meta,
-              "Task timed out after #{timeout_seconds}s",
-              state
-            )
+            state =
+              handle_task_failure(
+                task_meta,
+                "Task timed out after #{timeout_seconds}s",
+                state
+              )
 
             wait_for_tasks(%{state | active_tasks: new_active_tasks})
         end
@@ -1101,8 +1115,34 @@ defmodule PgFlow.Worker.Server do
     end
   end
 
-  # Checks run status after task completion and emits run:completed telemetry if the run finished
-  defp maybe_emit_run_completed(state, run_id) do
+  # Announces skips this worker has not announced yet for `run_id`.
+  #
+  # Skips are decided in SQL, so the only way a worker learns about one is by
+  # re-reading step_states after each complete_task/fail_task. Without the
+  # per-run seen set, every sweep re-announces every skip on the run, and a
+  # handler that counts (rather than one that assigns state, like LiveClient)
+  # overcounts by a factor of the number of tasks left in the run.
+  @spec emit_new_skips(state(), String.t()) :: state()
+  defp emit_new_skips(state, run_id) do
+    seen = Map.get(state.emitted_skips, run_id, MapSet.new())
+    updated = Telemetry.emit_skipped_steps(state.repo, state.flow_slug, run_id, seen)
+
+    if MapSet.size(updated) == 0 do
+      # Runs without skips - the overwhelming majority - stay out of the map.
+      state
+    else
+      remember_skips(state, run_id, updated)
+    end
+  end
+
+  # Checks the run's status after a task settled and emits the matching run
+  # lifecycle event. `error` is nil on the completion path, which is what keeps
+  # a run that failed on complete_task (e.g. a map step's TYPE_VIOLATION) from
+  # emitting a run:failed with no error to report; that path stays silent, as
+  # it was before. Terminal statuses are mutually exclusive, so at most one
+  # event fires and a single get_run serves both checks.
+  @spec emit_run_terminal(state(), String.t(), String.t() | nil) :: state()
+  defp emit_run_terminal(state, run_id, error) do
     case Flows.get_run(state.repo, run_id) do
       {:ok, %{status: "completed", output: output}} ->
         :telemetry.execute(
@@ -1111,23 +1151,55 @@ defmodule PgFlow.Worker.Server do
           %{flow_slug: state.flow_slug, run_id: run_id, output: output}
         )
 
+        forget_skips(state, run_id)
+
+      {:ok, %{status: "failed"}} ->
+        if error do
+          :telemetry.execute(
+            [:pgflow, :run, :failed],
+            %{system_time: System.system_time()},
+            %{flow_slug: state.flow_slug, run_id: run_id, error: error}
+          )
+        end
+
+        forget_skips(state, run_id)
+
       _ ->
-        :ok
+        state
     end
   end
 
-  # Checks run status after task failure and emits run:failed telemetry if the run failed
-  defp maybe_emit_run_failed(state, run_id, error) do
-    case Flows.get_run(state.repo, run_id) do
-      {:ok, %{status: "failed"}} ->
-        :telemetry.execute(
-          [:pgflow, :run, :failed],
-          %{system_time: System.system_time()},
-          %{flow_slug: state.flow_slug, run_id: run_id, error: error}
-        )
+  # Bounds the seen set. Entries are normally dropped the moment the run goes
+  # terminal, but a worker in a pool may never process a partially-handled
+  # run's final task, so tracked runs are also capped and evicted oldest-first.
+  # Evicting a still-live run costs at most a repeat announcement of its skips.
+  @spec remember_skips(state(), String.t(), MapSet.t(String.t())) :: state()
+  defp remember_skips(state, run_id, seen) do
+    if Map.has_key?(state.emitted_skips, run_id) do
+      %{state | emitted_skips: Map.put(state.emitted_skips, run_id, seen)}
+    else
+      runs = [run_id | state.emitted_skip_runs]
+      emitted = Map.put(state.emitted_skips, run_id, seen)
 
-      _ ->
-        :ok
+      if length(runs) > @max_tracked_skip_runs do
+        {kept, evicted} = Enum.split(runs, @max_tracked_skip_runs)
+        %{state | emitted_skip_runs: kept, emitted_skips: Map.drop(emitted, evicted)}
+      else
+        %{state | emitted_skip_runs: runs, emitted_skips: emitted}
+      end
+    end
+  end
+
+  @spec forget_skips(state(), String.t()) :: state()
+  defp forget_skips(state, run_id) do
+    if Map.has_key?(state.emitted_skips, run_id) do
+      %{
+        state
+        | emitted_skips: Map.delete(state.emitted_skips, run_id),
+          emitted_skip_runs: List.delete(state.emitted_skip_runs, run_id)
+      }
+    else
+      state
     end
   end
 

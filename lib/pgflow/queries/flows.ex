@@ -107,7 +107,14 @@ defmodule PgFlow.Queries.Flows do
   end
 
   @doc """
-  Lists skipped steps for a flow run, ordered by skip time.
+  Lists skipped steps for a flow run in dependency order.
+
+  Ordered by skip time, ties broken by `pgflow.steps.step_index`. A cascade
+  stamps every step in the chain with the same `skipped_at = now()`, so ties
+  are the rule rather than the exception; `step_index` is assigned in
+  `add_step` order, which is topological (a step's deps must already exist),
+  and is what core SQL itself uses to walk a cascade. Breaking ties by slug
+  would announce a child before its parent.
 
   ## Parameters
 
@@ -123,10 +130,13 @@ defmodule PgFlow.Queries.Flows do
           {:ok, [%{step_slug: String.t(), skip_reason: String.t()}]} | {:error, term()}
   def list_skipped_steps(repo, run_id) do
     sql = """
-    SELECT step_slug, skip_reason
-    FROM pgflow.step_states
-    WHERE run_id = $1 AND status = 'skipped'
-    ORDER BY skipped_at ASC NULLS LAST, step_slug
+    SELECT step_states.step_slug, step_states.skip_reason
+    FROM pgflow.step_states AS step_states
+    JOIN pgflow.steps AS steps
+      ON steps.flow_slug = step_states.flow_slug
+     AND steps.step_slug = step_states.step_slug
+    WHERE step_states.run_id = $1 AND step_states.status = 'skipped'
+    ORDER BY step_states.skipped_at ASC NULLS LAST, steps.step_index ASC
     """
 
     case SQL.query(repo, sql, [parse_uuid(run_id)]) do

@@ -124,28 +124,73 @@ defmodule PgFlow.Telemetry do
   end
 
   @doc """
-  Emits `[:pgflow, :step, :skipped]` for each skipped step on a run.
+  Emits `[:pgflow, :step, :skipped]` for every skipped step on a run.
 
-  Looks up skipped steps via `Flows.list_skipped_steps/2`. Query errors
-  are swallowed so callers can treat this as fire-and-forget.
-
-  Re-emitting the same skip is OK (LiveView is idempotent).
+  One-shot form, for callers that observe a run exactly once (such as
+  `PgFlow.Client.start_flow/2`, which sees the skips the run was born with).
+  Callers that sweep the same run repeatedly must use
+  `emit_skipped_steps/4` instead, or they will re-announce every skip on
+  every sweep.
   """
   @spec emit_skipped_steps(Ecto.Repo.t(), String.t(), String.t()) :: :ok
   def emit_skipped_steps(repo, flow_slug, run_id) do
+    emit_skipped_steps(repo, flow_slug, run_id, MapSet.new())
+    :ok
+  end
+
+  @doc """
+  Emits `[:pgflow, :step, :skipped]` for skips not already announced.
+
+  Looks up skipped steps via `Flows.list_skipped_steps/2` (dependency
+  ordered, so a parent's skip is always emitted before its cascaded
+  children). `already_emitted` is a `MapSet` of step slugs this caller has
+  already announced for `run_id`; the union of it and the slugs emitted by
+  this call is returned, ready to be passed back in on the next sweep.
+
+  Query errors are swallowed so callers can treat this as fire-and-forget;
+  the set is returned unchanged in that case and the skips are picked up on
+  a later sweep.
+
+  ## Delivery contract
+
+  Skips are decided in PostgreSQL, and PgFlow discovers them by polling
+  `step_states` after each `complete_task`/`fail_task`. Passing the returned
+  set back in makes a single emitter announce each skip exactly once — the
+  guarantee non-idempotent handlers need.
+
+  It is a per-emitter guarantee, not a global one. Two workers processing
+  the same run each sweep it independently, so a skip can be announced once
+  per worker that touches the run (and once by `Client.start_flow/2` for
+  skips decided at run start). Handlers that must be globally exactly-once
+  should dedupe on `{run_id, step_slug}`; `PgFlow.LiveClient` does this
+  structurally by treating `step:skipped` as an idempotent state transition
+  rather than a counter. Closing the gap properly means having the SQL
+  return newly transitioned rows, which is a core pgflow change.
+  """
+  @spec emit_skipped_steps(Ecto.Repo.t(), String.t(), String.t(), MapSet.t(String.t())) ::
+          MapSet.t(String.t())
+  def emit_skipped_steps(repo, flow_slug, run_id, already_emitted) do
     case Flows.list_skipped_steps(repo, run_id) do
       {:ok, skipped} ->
-        Enum.each(skipped, fn %{step_slug: slug, skip_reason: reason} ->
-          emit_step_skipped(%{
-            flow_slug: flow_slug,
-            run_id: run_id,
-            step_slug: slug,
-            skip_reason: reason
-          })
-        end)
+        Enum.reduce(skipped, already_emitted, &emit_unseen_skip(&1, &2, flow_slug, run_id))
 
       {:error, _} ->
-        :ok
+        already_emitted
+    end
+  end
+
+  defp emit_unseen_skip(%{step_slug: slug, skip_reason: reason}, seen, flow_slug, run_id) do
+    if MapSet.member?(seen, slug) do
+      seen
+    else
+      emit_step_skipped(%{
+        flow_slug: flow_slug,
+        run_id: run_id,
+        step_slug: slug,
+        skip_reason: reason
+      })
+
+      MapSet.put(seen, slug)
     end
   end
 

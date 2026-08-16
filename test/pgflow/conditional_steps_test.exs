@@ -3,6 +3,7 @@ defmodule PgFlow.ConditionalStepsTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.Client
+  alias PgFlow.Queries.Flows
   alias PgFlow.Worker.Server
 
   @moduletag :integration
@@ -33,6 +34,34 @@ defmodule PgFlow.ConditionalStepsTest do
 
     step :finish, depends_on: [:email] do
       fn _deps, _ctx -> %{"ok" => true} end
+    end
+  end
+
+  defmodule CondChainFlow do
+    use PgFlow.Flow
+    @flow slug: :cond_chain_flow, max_attempts: 1
+
+    step :analyze do
+      fn _input, _ctx -> %{"flag" => false} end
+    end
+
+    step :moderate,
+      depends_on: [:analyze],
+      if: %{analyze: %{flag: true}},
+      when_unmet: :skip do
+      fn deps, _ctx -> deps end
+    end
+
+    step :one, depends_on: [:analyze] do
+      fn _deps, _ctx -> %{"ok" => 1} end
+    end
+
+    step :two, depends_on: [:one] do
+      fn _deps, _ctx -> %{"ok" => 2} end
+    end
+
+    step :three, depends_on: [:two] do
+      fn _deps, _ctx -> %{"ok" => 3} end
     end
   end
 
@@ -265,7 +294,26 @@ defmodule PgFlow.ConditionalStepsTest do
       run_id = start_flow_run("cond_list_skip", %{"plan" => "free"})
 
       assert {:ok, [%{step_slug: "only", skip_reason: "condition_unmet"}]} =
-               PgFlow.Queries.Flows.list_skipped_steps(TestRepo, run_id)
+               Flows.list_skipped_steps(TestRepo, run_id)
+    end
+
+    test "orders cascade ties topologically, not alphabetically" do
+      create_flow("cond_list_order")
+
+      # A cascade writes one `skipped_at = now()` for every step in the chain,
+      # so skipped_at always ties. Names are deliberately reverse-alphabetical
+      # to the dependency order: parent "zeta" -> child "alpha".
+      add_conditional_step("cond_list_order", "zeta",
+        if: %{"go" => true},
+        when_unmet: "skip-cascade"
+      )
+
+      add_step("cond_list_order", "alpha", deps: ["zeta"])
+
+      run_id = start_flow_run("cond_list_order", %{"go" => false})
+
+      assert {:ok, [%{step_slug: "zeta"}, %{step_slug: "alpha"}]} =
+               Flows.list_skipped_steps(TestRepo, run_id)
     end
   end
 
@@ -293,7 +341,7 @@ defmodule PgFlow.ConditionalStepsTest do
       on_exit(fn -> :telemetry.detach("cond-client-skip") end)
 
       assert {:ok, run_id} =
-               PgFlow.Client.start_flow("cond_client_skip", %{"plan" => "free"})
+               Client.start_flow("cond_client_skip", %{"plan" => "free"})
 
       assert_receive {[:pgflow, :step, :skipped], meta}
       assert meta.step_slug == "premium"
@@ -301,6 +349,40 @@ defmodule PgFlow.ConditionalStepsTest do
       assert meta.run_id == run_id
 
       assert_receive {[:pgflow, :run, :completed], %{run_id: ^run_id}}
+    end
+
+    test "cascade skips arrive parent before child" do
+      create_flow("cond_order_skip")
+
+      add_conditional_step("cond_order_skip", "zeta",
+        if: %{"go" => true},
+        when_unmet: "skip-cascade"
+      )
+
+      add_step("cond_order_skip", "alpha", deps: ["zeta"])
+
+      :persistent_term.put({PgFlow, :repo}, TestRepo)
+      on_exit(fn -> :persistent_term.erase({PgFlow, :repo}) end)
+
+      self = self()
+
+      :telemetry.attach(
+        "cond-order-skip",
+        [:pgflow, :step, :skipped],
+        fn event, _m, meta, _ -> send(self, {event, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach("cond-order-skip") end)
+
+      assert {:ok, run_id} = Client.start_flow("cond_order_skip", %{"go" => false})
+
+      assert_receive {[:pgflow, :step, :skipped], first}
+      assert_receive {[:pgflow, :step, :skipped], second}
+
+      assert first.run_id == run_id
+      assert first.step_slug == "zeta"
+      assert second.step_slug == "alpha"
     end
   end
 
@@ -318,7 +400,36 @@ defmodule PgFlow.ConditionalStepsTest do
 
       compile_definition(CondAnalyzeFlow)
       compile_definition(CondEmailFlow)
+      compile_definition(CondChainFlow)
       {:ok, task_supervisor: task_supervisor}
+    end
+
+    test "emits step:skipped once, not once per later completion", %{
+      task_supervisor: task_supervisor
+    } do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:pgflow, :step, :skipped],
+          [:pgflow, :run, :completed]
+        ])
+
+      worker_pid = start_worker(CondChainFlow, task_supervisor)
+      {:ok, run_id} = Client.start_flow(CondChainFlow, %{})
+      wait_for_run_completion(run_id)
+
+      assert_receive {[:pgflow, :step, :skipped], ^ref, _m,
+                      %{step_slug: "moderate", run_id: ^run_id}},
+                     5_000
+
+      # `analyze` skips `moderate`; `one`/`two`/`three` then complete in sequence.
+      # Every one of those completions re-lists the run's skipped steps, so a
+      # non-delta emitter re-announces `moderate` three more times. run:completed
+      # is emitted after the final completion's skip sweep, so by the time it
+      # arrives any duplicate is already in the mailbox.
+      assert_receive {[:pgflow, :run, :completed], ^ref, _m, %{run_id: ^run_id}}, 5_000
+      refute_received {[:pgflow, :step, :skipped], ^ref, _, %{step_slug: "moderate"}}
+
+      Server.stop(worker_pid)
     end
 
     test "emits step:skipped when a dependent is skipped after complete", %{
@@ -370,8 +481,8 @@ defmodule PgFlow.ConditionalStepsTest do
       )
 
       run_id = start_flow_run("cond_stale", %{"plan" => "free"})
-      assert PgFlow.Queries.Flows.step_skipped?(TestRepo, run_id, "only")
-      refute PgFlow.Queries.Flows.step_skipped?(TestRepo, run_id, "missing")
+      assert Flows.step_skipped?(TestRepo, run_id, "only")
+      refute Flows.step_skipped?(TestRepo, run_id, "missing")
     end
   end
 
