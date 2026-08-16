@@ -594,13 +594,17 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
       "failed" ->
         duration = elapsed_ms(run)
-        {error_message, error_step} = run_failure_details(run, steps_config)
+        error_message = run_failure_message(run)
 
+        # :error_step stays nil here, same as the live run_failed handler
+        # (see the Task 3 carried fix) — a run-level failure banner must
+        # not be dismissable by a later step_skipped for any one step,
+        # whether the banner came from a live event or from reconciliation.
         socket
         |> assign(:run_status, :failed)
         |> assign(:duration, duration)
         |> assign(:error, "Flow failed: #{error_message}")
-        |> assign(:error_step, error_step)
+        |> assign(:error_step, nil)
         |> assign(:active_edges, MapSet.new())
         |> add_log(:error, "Flow Failed", error_message)
 
@@ -640,19 +644,15 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end)
   end
 
-  # Finds the failed step_state (if any) to recover the error message and
-  # the step that should own the error banner, mirroring what a live
-  # task_failed event would have set via :error_step.
-  defp run_failure_details(run, steps_config) do
+  # Finds the failed step_state (if any) to recover a run-failure error
+  # message. Deliberately does not resolve/return a step atom: :error_step
+  # stays nil for a reconciled failure, matching the live run_failed
+  # handler (see the Task 3 carried fix) — a run-level failure banner must
+  # not be tied to one step's later step_skipped.
+  defp run_failure_message(run) do
     case Enum.find(run.step_states, &(&1.status == "failed")) do
-      nil ->
-        {"condition unmet", nil}
-
-      %{step_slug: step_slug, error_message: message} ->
-        error_message =
-          if is_binary(message) and message != "", do: message, else: "condition unmet"
-
-        {error_message, to_step_atom(step_slug, steps_config)}
+      %{error_message: message} when is_binary(message) and message != "" -> message
+      _ -> "condition unmet"
     end
   end
 

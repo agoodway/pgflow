@@ -178,7 +178,12 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
       refute socket.assigns.run_status == :running
       assert socket.assigns.run_status == :failed
       assert socket.assigns.error =~ "boom"
-      assert socket.assigns.error_step == :fetch_article
+      # :error_step stays nil here, same as the live run_failed handler
+      # (Task 3's carried fix) — a run-level failure banner must not be
+      # dismissable by a later step_skipped for any one step, regardless
+      # of whether the banner came from a live event or from reconciling
+      # a run that had already failed before we could subscribe.
+      assert socket.assigns.error_step == nil
       assert socket.assigns.steps[:fetch_article] == :failed
     end
 
