@@ -13,6 +13,7 @@ defmodule PgFlow.IntegrationCase do
   use ExUnit.CaseTemplate
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias PgFlow.Worker.TaskRow
 
   using do
     quote do
@@ -271,9 +272,13 @@ defmodule PgFlow.IntegrationCase do
   Reads and starts tasks from the queue for processing.
   Uses the pgflow_tests.read_and_start helper.
 
-  Returns a list of maps with task details.
-  The step_task_record type has 7 fields:
-  (flow_slug, run_id, step_slug, input, msg_id, task_index, flow_input)
+  Returns a list of maps with task details, with `run_id` converted to its
+  string form.
+
+  Row decoding is shared with the worker via `PgFlow.Worker.TaskRow`, so both
+  the seven-column `step_task_record`
+  (flow_slug, run_id, step_slug, input, msg_id, task_index, flow_input) and the
+  eight-column shape that appends `attempts_count` are accepted.
   """
   def read_and_start(flow_slug, opts \\ []) do
     vt = Keyword.get(opts, :vt, 1)
@@ -285,36 +290,16 @@ defmodule PgFlow.IntegrationCase do
         [flow_slug, vt, qty]
       )
 
-    # Parse rows into maps with named fields
-    # step_task_record: (flow_slug, run_id, step_slug, input, msg_id, task_index, flow_input)
     Enum.map(rows, fn row ->
-      case row do
-        # 7-element list format (current schema)
-        [flow_slug, run_id, step_slug, input, msg_id, task_index, flow_input] ->
-          %{
-            flow_slug: flow_slug,
-            run_id: uuid_to_string(run_id),
-            step_slug: step_slug,
-            input: input,
-            msg_id: msg_id,
-            task_index: task_index,
-            flow_input: flow_input
-          }
-
-        # 7-element tuple format
-        {flow_slug, run_id, step_slug, input, msg_id, task_index, flow_input} ->
-          %{
-            flow_slug: flow_slug,
-            run_id: uuid_to_string(run_id),
-            step_slug: step_slug,
-            input: input,
-            msg_id: msg_id,
-            task_index: task_index,
-            flow_input: flow_input
-          }
-      end
+      row
+      |> to_task_row_columns()
+      |> TaskRow.decode()
+      |> Map.update!(:run_id, &uuid_to_string/1)
     end)
   end
+
+  defp to_task_row_columns(row) when is_list(row), do: row
+  defp to_task_row_columns(row) when is_tuple(row), do: Tuple.to_list(row)
 
   @doc """
   Polls and completes tasks for a flow.
