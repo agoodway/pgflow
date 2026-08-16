@@ -27,6 +27,8 @@ defmodule PgFlow.Client do
   alias PgFlow.Telemetry
 
   @allowed_step_types ["single", "map"]
+  @skip_modes [:fail, :skip, :skip_cascade]
+  @skip_mode_strings ~w(fail skip skip_cascade skip-cascade)
 
   @doc """
   Starts a flow run with the given input.
@@ -265,6 +267,21 @@ defmodule PgFlow.Client do
       * `:base_delay` - Step-level delay override (optional)
       * `:timeout` - Step-level timeout override (optional)
       * `:start_delay` - Delay before step starts in seconds (optional)
+      * `:if` - Map (JSON-encodable) the run's input must match for the step
+        to execute. When unmet, the step is skipped (or fails/cascades,
+        depending on `:when_unmet`) instead of running (optional)
+      * `:if_not` - Map the run's input must **not** match for the step to
+        execute; mutually exclusive intent with `:if` but not mutually
+        validated (optional)
+      * `:when_unmet` - What happens when `:if`/`:if_not` is not satisfied:
+        `:fail`, `:skip`, or `:skip_cascade` (atoms or their string
+        equivalents, including `"skip-cascade"`). Requires `:if` or
+        `:if_not` to be set. Defaults to `:skip` at the database layer when
+        omitted (optional)
+      * `:when_exhausted` - What happens when the step exhausts its retries:
+        `:fail`, `:skip`, or `:skip_cascade` (same accepted forms as
+        `:when_unmet`). Defaults to `:fail` at the database layer when
+        omitted (optional)
 
   ## Examples
 
@@ -273,6 +290,18 @@ defmodule PgFlow.Client do
         steps: [
           %{slug: "reshape", deps: []},
           %{slug: "create_contact", deps: ["reshape"]}
+        ]
+      )
+      # => {:ok, %{"status" => "compiled", "differences" => []}}
+
+      PgFlow.Client.upsert_flow("acct_123_hubspot_sync_v1",
+        steps: [
+          %{
+            slug: "premium_only",
+            if: %{"plan" => "premium"},
+            when_unmet: :skip_cascade,
+            when_exhausted: :skip
+          }
         ]
       )
       # => {:ok, %{"status" => "compiled", "differences" => []}}
@@ -476,17 +505,21 @@ defmodule PgFlow.Client do
          :ok <- validate_runtime_slug(repo, slug),
          {:ok, deps} <- normalize_step_deps(step),
          {:ok, step_type} <- normalize_step_type(step),
-         :ok <- validate_optional_deps(repo, deps) do
+         :ok <- validate_optional_deps(repo, deps),
+         {:ok, condition_opts} <- normalize_step_conditions(step, slug) do
       {:ok,
-       %{
-         "slug" => slug,
-         "deps" => deps,
-         "step_type" => step_type,
-         "max_attempts" => get_step_value(step, :max_attempts),
-         "base_delay" => get_step_value(step, :base_delay),
-         "timeout" => get_step_value(step, :timeout),
-         "start_delay" => get_step_value(step, :start_delay)
-       }}
+       Map.merge(
+         %{
+           "slug" => slug,
+           "deps" => deps,
+           "step_type" => step_type,
+           "max_attempts" => get_step_value(step, :max_attempts),
+           "base_delay" => get_step_value(step, :base_delay),
+           "timeout" => get_step_value(step, :timeout),
+           "start_delay" => get_step_value(step, :start_delay)
+         },
+         condition_opts
+       )}
     end
   end
 
@@ -554,6 +587,65 @@ defmodule PgFlow.Client do
       {:ok, normalized_step_type}
     else
       {:error, {:invalid_step_type, normalized_step_type}}
+    end
+  end
+
+  # Carries `if`/`if_not`/`when_unmet`/`when_exhausted` through to the step
+  # map, mirroring the compile-time validation rules in
+  # `PgFlow.DSL.Validation.validate_step_opts!/2`. Only present keys are
+  # included in the result, so steps without conditions keep hitting the
+  # cheaper 8-arg `add_step` path in `PgFlow.Queries.Flows`.
+  defp normalize_step_conditions(step, slug) do
+    has_if = step_has_key?(step, :if)
+    has_if_not = step_has_key?(step, :if_not)
+    has_when_unmet = step_has_key?(step, :when_unmet)
+
+    with {:ok, if_opts} <- normalize_condition_pattern(step, :if, has_if),
+         {:ok, if_not_opts} <- normalize_condition_pattern(step, :if_not, has_if_not),
+         :ok <- validate_when_unmet_requires_condition(has_when_unmet, has_if, has_if_not, slug),
+         {:ok, when_unmet_opts} <- normalize_condition_mode(step, :when_unmet),
+         {:ok, when_exhausted_opts} <- normalize_condition_mode(step, :when_exhausted) do
+      {:ok,
+       if_opts
+       |> Map.merge(if_not_opts)
+       |> Map.merge(when_unmet_opts)
+       |> Map.merge(when_exhausted_opts)}
+    end
+  end
+
+  defp step_has_key?(step, key) do
+    Map.has_key?(step, key) or Map.has_key?(step, Atom.to_string(key))
+  end
+
+  defp normalize_condition_pattern(_step, _key, false), do: {:ok, %{}}
+
+  defp normalize_condition_pattern(step, key, true) do
+    value = get_step_value(step, key)
+
+    if is_map(value) do
+      {:ok, %{Atom.to_string(key) => value}}
+    else
+      {:error, {:invalid_condition_pattern, key, value}}
+    end
+  end
+
+  defp validate_when_unmet_requires_condition(true, false, false, slug),
+    do: {:error, {:when_unmet_requires_condition, slug}}
+
+  defp validate_when_unmet_requires_condition(_has_when_unmet, _has_if, _has_if_not, _slug),
+    do: :ok
+
+  defp normalize_condition_mode(step, key) do
+    if step_has_key?(step, key) do
+      value = get_step_value(step, key)
+
+      if value in @skip_modes or value in @skip_mode_strings do
+        {:ok, %{Atom.to_string(key) => value}}
+      else
+        {:error, {:invalid_condition_mode, key, value}}
+      end
+    else
+      {:ok, %{}}
     end
   end
 

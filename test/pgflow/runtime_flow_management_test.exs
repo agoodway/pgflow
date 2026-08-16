@@ -191,6 +191,119 @@ defmodule PgFlow.RuntimeFlowManagementTest do
     end
   end
 
+  # ── Client-level condition passthrough ──────────────────────────
+
+  describe "upsert_flow/2 condition options" do
+    test "passes if/when_unmet/when_exhausted through to persisted step" do
+      {:ok, _} =
+        Client.upsert_flow("test_client_conditions",
+          steps: [
+            %{
+              "slug" => "premium_only",
+              "if" => %{"plan" => "premium"},
+              "when_unmet" => :skip_cascade,
+              "when_exhausted" => :skip
+            }
+          ]
+        )
+
+      %{rows: [[pattern, when_unmet, when_exhausted]]} =
+        TestRepo.query!(
+          """
+          SELECT required_input_pattern, when_unmet, when_exhausted
+          FROM pgflow.steps
+          WHERE flow_slug = $1 AND step_slug = $2
+          """,
+          ["test_client_conditions", "premium_only"]
+        )
+
+      assert pattern == %{"plan" => "premium"}
+      assert when_unmet == "skip-cascade"
+      assert when_exhausted == "skip"
+    end
+
+    test "accepts atom-keyed step maps with condition options" do
+      {:ok, _} =
+        Client.upsert_flow("test_client_conditions_atom_keys",
+          steps: [
+            %{slug: :guarded, if: %{"ready" => true}, when_unmet: :skip}
+          ]
+        )
+
+      %{rows: [[pattern, when_unmet, when_exhausted]]} =
+        TestRepo.query!(
+          """
+          SELECT required_input_pattern, when_unmet, when_exhausted
+          FROM pgflow.steps
+          WHERE flow_slug = $1 AND step_slug = $2
+          """,
+          ["test_client_conditions_atom_keys", "guarded"]
+        )
+
+      assert pattern == %{"ready" => true}
+      assert when_unmet == "skip"
+      assert when_exhausted == "fail"
+    end
+
+    test "accepts string mode equivalents including skip-cascade" do
+      {:ok, _} =
+        Client.upsert_flow("test_client_conditions_string_modes",
+          steps: [
+            %{
+              slug: "step_a",
+              if: %{"x" => 1},
+              when_unmet: "skip-cascade",
+              when_exhausted: "fail"
+            }
+          ]
+        )
+
+      %{rows: [[when_unmet, when_exhausted]]} =
+        TestRepo.query!(
+          "SELECT when_unmet, when_exhausted FROM pgflow.steps WHERE flow_slug = $1 AND step_slug = $2",
+          ["test_client_conditions_string_modes", "step_a"]
+        )
+
+      assert when_unmet == "skip-cascade"
+      assert when_exhausted == "fail"
+    end
+
+    test "rejects non-map :if" do
+      assert {:error, {:invalid_condition_pattern, :if, "premium"}} =
+               Client.upsert_flow("test_invalid_if",
+                 steps: [%{slug: "step_a", if: "premium"}]
+               )
+    end
+
+    test "rejects non-map :if_not" do
+      assert {:error, {:invalid_condition_pattern, :if_not, "x"}} =
+               Client.upsert_flow("test_invalid_if_not",
+                 steps: [%{slug: "step_a", if_not: "x"}]
+               )
+    end
+
+    test "rejects when_unmet without if or if_not" do
+      assert {:error, {:when_unmet_requires_condition, "step_a"}} =
+               Client.upsert_flow("test_when_unmet_orphan",
+                 steps: [%{slug: "step_a", when_unmet: :skip}]
+               )
+    end
+
+    test "rejects invalid when_unmet mode" do
+      assert {:error, {:invalid_condition_mode, :when_unmet, "bogus"}} =
+               Client.upsert_flow("test_invalid_when_unmet",
+                 steps: [%{slug: "step_a", if: %{"x" => 1}, when_unmet: "bogus"}]
+               )
+    end
+
+    test "rejects invalid when_exhausted mode" do
+      assert {:error, {:invalid_condition_mode, :when_exhausted, :bogus}} =
+               Client.upsert_flow("test_invalid_when_exhausted",
+                 steps: [%{slug: "step_a", when_exhausted: :bogus}]
+               )
+    end
+  end
+
   # ── delete_flow ──────────────────────────────────────────────────
 
   describe "delete_flow/1" do
