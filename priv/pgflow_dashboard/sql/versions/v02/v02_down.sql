@@ -1,7 +1,24 @@
 -- PgFlowDashboard Version 2 - Down Migration
--- Restores v01 definitions of objects replaced in v02
+-- Restores v01 definitions of objects replaced in v02.
+--
+-- v02_up.sql only ever touches: runs_with_progress, runs_view,
+-- step_states_with_tasks (all via CREATE OR REPLACE VIEW, append-only), and
+-- list_runs/get_run/list_step_states (DROP + CREATE, because their
+-- RETURNS TABLE shape grew a column - Postgres doesn't allow
+-- CREATE OR REPLACE FUNCTION to change the return type). count_runs and
+-- get_run_history_grid are never touched by v02_up.sql, so down must not
+-- drop or recreate them either - this mirrors v02_up.sql exactly rather
+-- than re-deriving v01 from scratch.
+--
+-- Dropping the 3 views below (needed to shrink them back to their v01 column
+-- set, which CREATE OR REPLACE VIEW cannot do) does NOT require dropping
+-- count_runs/get_run_history_grid first: plain LANGUAGE sql functions do not
+-- register a hard pg_depend dependency on views referenced in their body, so
+-- DROP VIEW succeeds even while those functions still exist (they simply
+-- fail if called before the view is recreated below, which happens
+-- immediately after).
 
--- Drop functions whose signatures or view dependencies changed
+-- Drop functions whose signatures changed (RETURNS TABLE shape grew a column)
 DROP FUNCTION IF EXISTS $SCHEMA$.list_runs(timestamptz, text, text, integer, uuid, text);
 
 --SPLIT--
@@ -10,15 +27,7 @@ DROP FUNCTION IF EXISTS $SCHEMA$.get_run(uuid);
 
 --SPLIT--
 
-DROP FUNCTION IF EXISTS $SCHEMA$.count_runs(timestamptz, text, text, text);
-
---SPLIT--
-
 DROP FUNCTION IF EXISTS $SCHEMA$.list_step_states(uuid);
-
---SPLIT--
-
-DROP FUNCTION IF EXISTS $SCHEMA$.get_run_history_grid(text, integer);
 
 --SPLIT--
 
@@ -167,28 +176,6 @@ $$;
 
 --SPLIT--
 
--- Restore v01: count_runs
-CREATE FUNCTION $SCHEMA$.count_runs(
-  p_time_range_start timestamptz DEFAULT (NOW() - INTERVAL '24 hours'),
-  p_flow_slug text DEFAULT NULL,
-  p_status text DEFAULT NULL,
-  p_flow_type text DEFAULT NULL
-)
-RETURNS bigint
-LANGUAGE sql
-STABLE
-AS $$
-  SELECT COUNT(*)
-  FROM $SCHEMA$.runs_with_progress r
-  JOIN pgflow.flows f ON r.flow_slug = f.flow_slug
-  WHERE r.started_at > p_time_range_start
-    AND (p_flow_slug IS NULL OR r.flow_slug = p_flow_slug)
-    AND (p_status IS NULL OR r.status = p_status)
-    AND (p_flow_type IS NULL OR COALESCE(f.flow_type, 'flow') = p_flow_type)
-$$;
-
---SPLIT--
-
 -- Restore v01: get_run
 CREATE FUNCTION $SCHEMA$.get_run(p_run_id uuid)
 RETURNS TABLE (
@@ -250,45 +237,6 @@ AS $$
   FROM $SCHEMA$.step_states_with_tasks s
   WHERE s.run_id = p_run_id
   ORDER BY s.started_at ASC NULLS LAST
-$$;
-
---SPLIT--
-
--- Restore v01: get_run_history_grid
-CREATE FUNCTION $SCHEMA$.get_run_history_grid(
-  p_flow_slug text,
-  p_limit integer DEFAULT 50
-)
-RETURNS TABLE (
-  run_id uuid,
-  started_at timestamptz,
-  step_slug text,
-  status text,
-  duration_ms numeric
-)
-LANGUAGE sql
-STABLE
-AS $$
-  WITH recent_runs AS (
-    SELECT r.run_id, r.started_at
-    FROM pgflow.runs r
-    WHERE r.flow_slug = p_flow_slug
-    ORDER BY r.started_at DESC
-    LIMIT p_limit
-  ),
-  step_results AS (
-    SELECT
-      rr.run_id,
-      rr.started_at,
-      ss.step_slug,
-      ss.status,
-      ss.duration_ms
-    FROM recent_runs rr
-    LEFT JOIN $SCHEMA$.step_states_with_tasks ss ON rr.run_id = ss.run_id
-  )
-  SELECT sr.run_id, sr.started_at, sr.step_slug, sr.status, sr.duration_ms
-  FROM step_results sr
-  ORDER BY sr.started_at DESC, sr.step_slug
 $$;
 
 --SPLIT--

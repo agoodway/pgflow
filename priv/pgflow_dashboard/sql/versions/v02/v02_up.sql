@@ -18,7 +18,7 @@ SELECT
   COALESCE(progress.failed_steps, 0) AS failed_steps,
   CASE
     WHEN progress.total_steps > 0
-    THEN ROUND((progress.completed_steps::numeric / progress.total_steps) * 100, 1)
+    THEN ROUND(((progress.completed_steps + progress.skipped_steps)::numeric / progress.total_steps) * 100, 1)
     ELSE 0
   END AS progress_percent,
   COALESCE(progress.skipped_steps, 0) AS skipped_steps
@@ -70,7 +70,7 @@ SELECT
   ss.remaining_tasks,
   ss.started_at,
   ss.completed_at,
-  EXTRACT(EPOCH FROM (COALESCE(ss.completed_at, NOW()) - ss.started_at)) * 1000 AS duration_ms,
+  EXTRACT(EPOCH FROM (COALESCE(ss.completed_at, ss.skipped_at, ss.failed_at, NOW()) - ss.started_at)) * 1000 AS duration_ms,
   COALESCE(tasks.total_tasks, 0) AS total_tasks,
   COALESCE(tasks.completed_tasks, 0) AS completed_tasks,
   COALESCE(tasks.failed_tasks, 0) AS failed_tasks,

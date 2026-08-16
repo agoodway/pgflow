@@ -298,6 +298,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
               completed={@run.completed_steps}
               total={@run.total_steps}
               failed={@run.failed_steps}
+              skipped={@run.skipped_steps}
             />
           </div>
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">

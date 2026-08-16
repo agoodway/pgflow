@@ -291,6 +291,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
                     completed={run.completed_steps}
                     total={run.total_steps}
                     failed={run.failed_steps}
+                    skipped={run.skipped_steps}
                     size={:sm}
                   />
                 <% end %>

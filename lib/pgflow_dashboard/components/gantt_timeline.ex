@@ -110,52 +110,108 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
               />
 
               <!-- Step bar -->
-              <%= if step.started_at do %>
-                <%
-                  bar_start = calc_position(step.started_at, @run_start, @total_duration_ms, @chart_width)
-                  bar_end = calc_position(step.completed_at || DateTime.utc_now(), @run_start, @total_duration_ms, @chart_width)
-                  bar_width = max(bar_end - bar_start, 4)
-                %>
-                <rect
-                  x={@label_width + @padding + bar_start}
-                  y="6"
-                  width={bar_width}
-                  height={@row_height - 12}
-                  rx="3"
-                  class={bar_color(step.status)}
-                />
+              <%= cond do %>
+                <% step.started_at && step.status == "skipped" -> %>
+                  <%
+                    bar_start = calc_position(step.started_at, @run_start, @total_duration_ms, @chart_width)
+                    bar_end = calc_position(step.skipped_at || step.started_at, @run_start, @total_duration_ms, @chart_width)
+                    bar_width = max(bar_end - bar_start, 4)
+                  %>
+                  <rect
+                    x={@label_width + @padding + bar_start}
+                    y="6"
+                    width={bar_width}
+                    height={@row_height - 12}
+                    rx="3"
+                    class={bar_color(step.status)}
+                  />
 
-                <!-- Duration label - centered in bar if wide, or to the right if narrow -->
-                <%= if bar_width > 45 do %>
+                  <!-- Duration label - centered in bar if wide, or to the right if narrow -->
+                  <%= if bar_width > 45 do %>
+                    <text
+                      x={@label_width + @padding + bar_start + bar_width / 2}
+                      y={@row_height / 2 + 4}
+                      class="fill-white text-xs font-medium"
+                      text-anchor="middle"
+                    >
+                      {format_duration(step.duration_ms || 0)}
+                    </text>
+                  <% else %>
+                    <text
+                      x={@label_width + @padding + bar_start + bar_width + 4}
+                      y={@row_height / 2 + 4}
+                      class="fill-current text-xs"
+                      text-anchor="start"
+                    >
+                      {format_duration(step.duration_ms || 0)}
+                    </text>
+                  <% end %>
+
+                <% step.started_at -> %>
+                  <%
+                    bar_start = calc_position(step.started_at, @run_start, @total_duration_ms, @chart_width)
+                    bar_end = calc_position(step.completed_at || DateTime.utc_now(), @run_start, @total_duration_ms, @chart_width)
+                    bar_width = max(bar_end - bar_start, 4)
+                  %>
+                  <rect
+                    x={@label_width + @padding + bar_start}
+                    y="6"
+                    width={bar_width}
+                    height={@row_height - 12}
+                    rx="3"
+                    class={bar_color(step.status)}
+                  />
+
+                  <!-- Duration label - centered in bar if wide, or to the right if narrow -->
+                  <%= if bar_width > 45 do %>
+                    <text
+                      x={@label_width + @padding + bar_start + bar_width / 2}
+                      y={@row_height / 2 + 4}
+                      class="fill-white text-xs font-medium"
+                      text-anchor="middle"
+                    >
+                      {format_duration(step.duration_ms || 0)}
+                    </text>
+                  <% else %>
+                    <text
+                      x={@label_width + @padding + bar_start + bar_width + 4}
+                      y={@row_height / 2 + 4}
+                      class="fill-current text-xs"
+                      text-anchor="start"
+                    >
+                      {format_duration(step.duration_ms || 0)}
+                    </text>
+                  <% end %>
+
+                <% step.status == "skipped" -> %>
+                  <!-- Never-started skipped step: ghost/zero-width marker, not the
+                       dashed "pending" bar - it never had a chance to run. -->
+                  <circle
+                    class="gantt-skip-ghost fill-amber-400 dark:fill-amber-500"
+                    cx={@label_width + @padding + 2}
+                    cy={@row_height / 2 - 2}
+                    r="3"
+                  />
                   <text
-                    x={@label_width + @padding + bar_start + bar_width / 2}
-                    y={@row_height / 2 + 4}
-                    class="fill-white text-xs font-medium"
-                    text-anchor="middle"
-                  >
-                    {format_duration(step.duration_ms || 0)}
-                  </text>
-                <% else %>
-                  <text
-                    x={@label_width + @padding + bar_start + bar_width + 4}
-                    y={@row_height / 2 + 4}
+                    x={@label_width + @padding + 10}
+                    y={@row_height / 2 + 2}
                     class="fill-current text-xs"
                     text-anchor="start"
                   >
-                    {format_duration(step.duration_ms || 0)}
+                    Skipped
                   </text>
-                <% end %>
-              <% else %>
-                <!-- Pending indicator -->
-                <rect
-                  x={@label_width + @padding}
-                  y={@row_height / 2 - 2}
-                  width={@chart_width}
-                  height="4"
-                  rx="2"
-                  class="fill-slate-200 dark:fill-slate-600"
-                  stroke-dasharray="4,4"
-                />
+
+                <% true -> %>
+                  <!-- Pending indicator -->
+                  <rect
+                    x={@label_width + @padding}
+                    y={@row_height / 2 - 2}
+                    width={@chart_width}
+                    height="4"
+                    rx="2"
+                    class="fill-slate-200 dark:fill-slate-600"
+                    stroke-dasharray="4,4"
+                  />
               <% end %>
             </g>
           <% end %>
@@ -203,6 +259,10 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
           <span class="text-slate-600 dark:text-slate-400">Failed</span>
         </div>
         <div class="flex items-center gap-1.5">
+          <span class="w-3 h-3 rounded bg-amber-400 dark:bg-amber-500"></span>
+          <span class="text-slate-600 dark:text-slate-400">Skipped</span>
+        </div>
+        <div class="flex items-center gap-1.5">
           <span class="w-3 h-3 rounded bg-slate-300 dark:bg-slate-600"></span>
           <span class="text-slate-600 dark:text-slate-400">Pending</span>
         </div>
@@ -220,6 +280,7 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
   defp bar_color("completed"), do: "fill-emerald-500"
   defp bar_color("started"), do: "fill-blue-500"
   defp bar_color("failed"), do: "fill-red-500"
+  defp bar_color("skipped"), do: "fill-amber-400 dark:fill-amber-500"
   defp bar_color(_), do: "fill-slate-300 dark:fill-slate-600"
 
   defp format_duration(ms) when is_number(ms) do

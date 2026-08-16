@@ -14,6 +14,9 @@ defmodule PgFlowDashboard.Components.ProgressBar do
     * `:completed` - Number of completed steps
     * `:total` - Total number of steps
     * `:failed` - Number of failed steps (optional)
+    * `:skipped` - Number of skipped steps (optional). Skipped is a terminal
+      state, so it renders as its own segment alongside completed/failed
+      rather than being folded into either.
     * `:size` - Bar size (:sm, :md, :lg). Default: :md
 
   """
@@ -21,6 +24,7 @@ defmodule PgFlowDashboard.Components.ProgressBar do
   attr(:completed, :integer, default: 0)
   attr(:total, :integer, default: 0)
   attr(:failed, :integer, default: 0)
+  attr(:skipped, :integer, default: 0)
   attr(:size, :atom, default: :md)
 
   def progress_bar(assigns) do
@@ -37,6 +41,11 @@ defmodule PgFlowDashboard.Components.ProgressBar do
             style={"width: #{success_width(@completed, @failed, @total)}%"}
           />
           <div
+            :if={@skipped > 0}
+            class="h-full bg-amber-400 dark:bg-amber-500"
+            style={"width: #{skipped_width(@skipped, @total)}%"}
+          />
+          <div
             :if={@failed > 0}
             class="h-full bg-rose-500 dark:bg-rose-400"
             style={"width: #{failed_width(@failed, @total)}%"}
@@ -44,7 +53,7 @@ defmodule PgFlowDashboard.Components.ProgressBar do
         </div>
       </div>
       <div :if={@total > 0} class="mt-1 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-        <span>{@completed}/{@total} steps</span>
+        <span>{@completed}/{@total} steps<span :if={@skipped > 0}> &middot; {@skipped} skipped</span></span>
         <span>{@progress_pct}%</span>
       </div>
     </div>
@@ -82,6 +91,13 @@ defmodule PgFlowDashboard.Components.ProgressBar do
   end
 
   defp failed_width(_, _), do: 0.0
+
+  defp skipped_width(skipped, total) when total > 0 do
+    (skipped / total * 100)
+    |> Float.round(1)
+  end
+
+  defp skipped_width(_, _), do: 0.0
 
   defp height_class(:sm), do: "h-1"
   defp height_class(:md), do: "h-2"
