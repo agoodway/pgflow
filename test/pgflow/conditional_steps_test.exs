@@ -191,6 +191,42 @@ defmodule PgFlow.ConditionalStepsTest do
     end
   end
 
+  describe "non-cascade skip feeding a running dependent" do
+    test "dependent runs and its input omits the skipped dep's key entirely" do
+      create_flow("cond_omit_key")
+
+      add_conditional_step("cond_omit_key", "a",
+        if: %{"go" => true},
+        when_unmet: "skip"
+      )
+
+      add_step("cond_omit_key", "b", deps: ["a"])
+
+      run_id = start_flow_run("cond_omit_key", %{"go" => false})
+
+      states = Map.new(get_step_states(run_id), &{&1.step_slug, &1})
+      assert states["a"].status == "skipped"
+      assert states["a"].skip_reason == "condition_unmet"
+      # A plain (non-cascade) skip only satisfies the dependency edge - it
+      # does not propagate the skip to "b". "b" must actually run.
+      assert states["b"].status == "started"
+
+      [task] = read_and_start("cond_omit_key", vt: 1, qty: 1)
+      assert task.step_slug == "b"
+
+      # Upstream (dsl.ts) semantics: a skipped, non-cascade dependency's key
+      # is OMITTED from the dependent's input map - not present, and
+      # specifically not present-with-null. Verified directly against the
+      # vendored SQL's start_tasks: the `deps` CTE inner-joins step_states on
+      # `status = 'completed'`, so a skipped dep never contributes a key to
+      # jsonb_object_agg, and coalesce(..., '{}'::jsonb) is what "b" actually
+      # receives here - confirming the vendored SQL matches upstream (no
+      # divergence to pin).
+      refute Map.has_key?(task.input, "a")
+      assert task.input == %{}
+    end
+  end
+
   describe "when_unmet modes" do
     test "fail fails the run" do
       create_flow("cond_fail")
@@ -222,6 +258,30 @@ defmodule PgFlow.ConditionalStepsTest do
       assert states["perk"].status == "skipped"
       assert states["perk"].skip_reason == "dependency_skipped"
       assert states["finish"].status != "skipped"
+    end
+
+    test "skip-cascade fans out to every direct dependent" do
+      create_flow("cond_cascade_fanout")
+
+      add_conditional_step("cond_cascade_fanout", "load",
+        if: %{"plan" => "premium"},
+        when_unmet: "skip-cascade"
+      )
+
+      add_step("cond_cascade_fanout", "perk_a", deps: ["load"])
+      add_step("cond_cascade_fanout", "perk_b", deps: ["load"])
+
+      run_id = start_flow_run("cond_cascade_fanout", %{"plan" => "free"})
+      states = Map.new(get_step_states(run_id), &{&1.step_slug, &1})
+
+      assert states["load"].status == "skipped"
+      assert states["load"].skip_reason == "condition_unmet"
+      assert states["perk_a"].status == "skipped"
+      assert states["perk_a"].skip_reason == "dependency_skipped"
+      assert states["perk_b"].status == "skipped"
+      assert states["perk_b"].skip_reason == "dependency_skipped"
+
+      assert get_run_status(run_id) == "completed"
     end
 
     test "skip-cascade walks multiple levels" do
@@ -333,6 +393,81 @@ defmodule PgFlow.ConditionalStepsTest do
       assert get_step_tasks_for_step(run_id, "each") == []
       states = Map.new(get_step_states(run_id), &{&1.step_slug, &1})
       assert states["each"].status == "skipped"
+    end
+
+    test "condition met + empty-array input completes with 0 items (not skipped, not hung)" do
+      create_flow("cond_map_empty_met")
+      add_step("cond_map_empty_met", "items")
+
+      add_conditional_step("cond_map_empty_met", "each",
+        type: "map",
+        deps: ["items"],
+        if: %{"items" => []},
+        when_unmet: "skip"
+      )
+
+      run_id = start_flow_run("cond_map_empty_met", %{})
+      poll_and_complete_with_output("cond_map_empty_met", [])
+
+      states = Map.new(get_step_states(run_id), &{&1.step_slug, &1})
+      assert states["each"].status == "completed"
+      refute states["each"].skip_reason
+      assert get_step_output(run_id, "each") == []
+      assert get_step_tasks_for_step(run_id, "each") == []
+      assert get_run_status(run_id) == "completed"
+    end
+
+    test "condition unmet + empty-array input skips (distinguishable from the completed case)" do
+      create_flow("cond_map_empty_unmet")
+      add_step("cond_map_empty_unmet", "items")
+
+      add_conditional_step("cond_map_empty_unmet", "each",
+        type: "map",
+        deps: ["items"],
+        if: %{"other" => true},
+        when_unmet: "skip"
+      )
+
+      run_id = start_flow_run("cond_map_empty_unmet", %{})
+      poll_and_complete_with_output("cond_map_empty_unmet", [])
+
+      states = Map.new(get_step_states(run_id), &{&1.step_slug, &1})
+      assert states["each"].status == "skipped"
+      assert states["each"].skip_reason == "condition_unmet"
+      assert get_step_output(run_id, "each") == nil
+      assert get_step_tasks_for_step(run_id, "each") == []
+      assert get_run_status(run_id) == "completed"
+    end
+  end
+
+  describe "all-skipped multi-step run" do
+    test "run completes when every step is skipped via mixed unmet-if and cascade" do
+      create_flow("cond_all_skipped")
+
+      add_conditional_step("cond_all_skipped", "solo",
+        if: %{"plan" => "premium"},
+        when_unmet: "skip"
+      )
+
+      add_conditional_step("cond_all_skipped", "load",
+        if: %{"plan" => "premium"},
+        when_unmet: "skip-cascade"
+      )
+
+      add_step("cond_all_skipped", "perk", deps: ["load"])
+
+      run_id = start_flow_run("cond_all_skipped", %{"plan" => "free"})
+      states = Map.new(get_step_states(run_id), &{&1.step_slug, &1})
+
+      assert states["solo"].status == "skipped"
+      assert states["solo"].skip_reason == "condition_unmet"
+      assert states["load"].status == "skipped"
+      assert states["load"].skip_reason == "condition_unmet"
+      assert states["perk"].status == "skipped"
+      assert states["perk"].skip_reason == "dependency_skipped"
+
+      assert get_run_status(run_id) == "completed"
+      assert get_step_tasks(run_id) == []
     end
   end
 
@@ -712,6 +847,16 @@ defmodule PgFlow.ConditionalStepsTest do
       """,
       [Ecto.UUID.dump!(run_id), step_slug]
     )
+  end
+
+  defp get_step_output(run_id, step_slug) do
+    %{rows: [[output]]} =
+      TestRepo.query!(
+        "SELECT output FROM pgflow.step_states WHERE run_id = $1 AND step_slug = $2",
+        [Ecto.UUID.dump!(run_id), step_slug]
+      )
+
+    output
   end
 
   defp queued_message_count(queue_name) do

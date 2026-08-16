@@ -337,5 +337,16 @@ defmodule PgFlow.DSL.ValidationTest do
         Validation.validate_step_opts!([iff: %{}], fake_env())
       end
     end
+
+    test "accepts valid when_exhausted atom without if or if_not" do
+      assert :ok ==
+               Validation.validate_step_opts!([when_exhausted: :skip], fake_env())
+    end
+
+    test "rejects unknown when_exhausted" do
+      assert_raise CompileError, ~r/when_exhausted/, fn ->
+        Validation.validate_step_opts!([when_exhausted: :maybe], fake_env())
+      end
+    end
   end
 end
