@@ -134,7 +134,8 @@ defmodule PgFlow.DSL.Validation do
   defp validate_mode!(_key, val, _env) when val in @skip_modes, do: :ok
 
   defp validate_mode!(key, val, env),
-    do: compile_error!(env, ":#{key} must be :fail, :skip, or :skip_cascade, got: #{inspect(val)}")
+    do:
+      compile_error!(env, ":#{key} must be :fail, :skip, or :skip_cascade, got: #{inspect(val)}")
 
   @cron_valid_keys [:schedule, :input]
 

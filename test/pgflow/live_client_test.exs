@@ -286,8 +286,7 @@ defmodule PgFlow.LiveClientTest do
       socket =
         LiveClient.handle_info(
           {:pgflow, run.run_id,
-           {:step_skipped,
-            %{step_slug: "step_a", skip_reason: "condition_unmet", timestamp: now}}},
+           {:step_skipped, %{step_slug: "step_a", skip_reason: "condition_unmet", timestamp: now}}},
           socket
         )
 
