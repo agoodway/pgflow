@@ -71,6 +71,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:steps, initial_steps(article.steps))
       |> assign(:step_outputs, %{})
       |> assign(:error, nil)
+      |> assign(:error_step, nil)
       |> assign(:duration, nil)
       |> assign(:start_time, nil)
       |> assign(:elapsed_ms, 0)
@@ -386,6 +387,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
           |> assign(:steps, steps)
           |> assign(:active_edges, MapSet.new())
           |> assign(:error, "Step #{step_slug} failed: #{inspect(error)}")
+          |> assign(:error_step, step_atom)
           |> add_log(
             :error,
             "Failed",
@@ -412,6 +414,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         {:noreply,
          socket
          |> assign(:steps, steps)
+         |> clear_error_banner_for_step(step_atom)
          |> add_log(:info, "Skipped", "#{format_step_label(step_atom)} (#{reason})", step_atom)}
     end
   end
@@ -437,6 +440,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:duration, elapsed_ms)
       |> assign(:active_edges, MapSet.new())
       |> assign(:timer_ref, nil)
+      |> assign(:error, nil)
+      |> assign(:error_step, nil)
       |> add_log(:success, "Flow Complete", "Total: #{elapsed_ms}ms")
 
     {:noreply, socket}
@@ -472,6 +477,22 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp flow_config(key), do: Map.fetch!(@flows, key)
   defp flow_module(key), do: Map.fetch!(@flow_modules, key)
 
+  # Clears the global error banner when a DB-confirmed `step_skipped` arrives
+  # for the same step that set it. A worker's task-failure event can race
+  # ahead of a `when_exhausted: :skip` decision and raise the banner before
+  # the DB decides to skip; once the skip is confirmed, the failure banner
+  # is stale and must be cleared so a fail-soft run doesn't display as an
+  # error.
+  defp clear_error_banner_for_step(socket, step_atom) do
+    if socket.assigns.error_step == step_atom do
+      socket
+      |> assign(:error, nil)
+      |> assign(:error_step, nil)
+    else
+      socket
+    end
+  end
+
   defp parse_flow_key("article"), do: :article
   defp parse_flow_key("onboarding"), do: :onboarding
   defp parse_flow_key(_), do: nil
@@ -491,6 +512,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
           |> assign(:run_id, run_id)
           |> assign(:run_status, :running)
           |> assign(:error, nil)
+          |> assign(:error_step, nil)
           |> assign(:steps, initial_steps(socket.assigns.steps_config))
           |> assign(:step_outputs, %{})
           |> assign(:duration, nil)
@@ -537,6 +559,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     |> assign(:steps, initial_steps(socket.assigns.steps_config))
     |> assign(:step_outputs, %{})
     |> assign(:error, nil)
+    |> assign(:error_step, nil)
     |> assign(:duration, nil)
     |> assign(:start_time, nil)
     |> assign(:elapsed_ms, 0)

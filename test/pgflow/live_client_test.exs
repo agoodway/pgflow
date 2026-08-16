@@ -319,6 +319,61 @@ defmodule PgFlow.LiveClientTest do
       assert find_step(socket.assigns[:flow_run], "step_a").status == "completed"
     end
 
+    test "step_skipped supersedes a locally-inferred task_failed", %{pubsub: pubsub} do
+      socket = build_socket() |> LiveClient.init(pubsub: pubsub)
+      {:ok, socket} = LiveClient.start_flow(socket, LiveClientTestFlow, %{"value" => 1})
+      run = socket.assigns[:flow_run]
+      now = DateTime.utc_now()
+
+      # Worker reports task failure before the DB decides to skip (when_exhausted: :skip)
+      socket =
+        LiveClient.handle_info(
+          {:pgflow, run.run_id,
+           {:task_failed, %{step_slug: "step_a", error: "boom", timestamp: now}}},
+          socket
+        )
+
+      assert find_step(socket.assigns[:flow_run], "step_a").status == "failed"
+
+      # DB authoritatively decides to skip the step
+      socket =
+        LiveClient.handle_info(
+          {:pgflow, run.run_id,
+           {:step_skipped, %{step_slug: "step_a", skip_reason: "condition_unmet", timestamp: now}}},
+          socket
+        )
+
+      step_a = find_step(socket.assigns[:flow_run], "step_a")
+      assert step_a.status == "skipped"
+      assert step_a.skip_reason == "condition_unmet"
+      assert step_a.skipped_at == now
+    end
+
+    test "does not overwrite skipped with a later task_failed retry event", %{pubsub: pubsub} do
+      socket = build_socket() |> LiveClient.init(pubsub: pubsub)
+      {:ok, socket} = LiveClient.start_flow(socket, LiveClientTestFlow, %{"value" => 1})
+      run = socket.assigns[:flow_run]
+      now = DateTime.utc_now()
+
+      socket =
+        LiveClient.handle_info(
+          {:pgflow, run.run_id,
+           {:step_skipped, %{step_slug: "step_a", skip_reason: "condition_unmet", timestamp: now}}},
+          socket
+        )
+
+      socket =
+        LiveClient.handle_info(
+          {:pgflow, run.run_id,
+           {:task_failed, %{step_slug: "step_a", error: "boom", timestamp: now}}},
+          socket
+        )
+
+      step_a = find_step(socket.assigns[:flow_run], "step_a")
+      assert step_a.status == "skipped"
+      assert step_a.skip_reason == "condition_unmet"
+    end
+
     test "ignores events for untracked run_ids", %{pubsub: pubsub} do
       socket = build_socket() |> LiveClient.init(pubsub: pubsub)
       {:ok, socket} = LiveClient.start_flow(socket, LiveClientTestFlow, %{"value" => 1})

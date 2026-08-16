@@ -219,7 +219,13 @@ defmodule PgFlow.LiveClient do
 
   defp apply_event(%Run{} = run, {:step_skipped, %{step_slug: step_slug} = payload}) do
     update_step(run, step_slug, fn step ->
-      if status_advances?(step.status, "skipped") do
+      # The DB is authoritative for `step_skipped`: it is only emitted once
+      # `pgflow.fail_task` (or its condition-check equivalent) has decided
+      # to skip the step. A worker's task-failure event can race ahead of
+      # that decision and mark the step "failed" locally first, so a
+      # DB-confirmed skip is allowed to supersede a locally-inferred
+      # failure even though both sit at the same terminal precedence.
+      if status_advances?(step.status, "skipped") or step.status == "failed" do
         %{
           step
           | status: "skipped",
