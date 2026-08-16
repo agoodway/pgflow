@@ -462,6 +462,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:run_status, :failed)
       |> assign(:duration, elapsed_ms)
       |> assign(:error, "Flow failed: #{error}")
+      |> assign(:error_step, nil)
       |> assign(:active_edges, MapSet.new())
       |> assign(:timer_ref, nil)
       |> add_log(:error, "Flow Failed", error)
@@ -501,11 +502,23 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     case Client.start_flow(flow_slug, input) do
       {:ok, run_id} ->
         socket = cleanup_subscription(socket)
+
+        # `Client.start_flow/2` can synchronously emit `step:skipped` and
+        # `run:completed`/`run:failed` telemetry for a root-only skip that
+        # resolves before any worker gets involved — that broadcast happens
+        # *inside* start_flow, before this function ever sees a run_id.
+        # Subscribing here (immediately once the run_id — and therefore the
+        # topic name — exists) is as early as this LiveView can possibly
+        # subscribe, but it can still be too late for that synchronous
+        # broadcast, which already went out to zero subscribers and is gone
+        # for good. `reconcile_run_state/2` below reads the run's current
+        # DB state right after subscribing so any event that fired (and was
+        # missed) before the subscription existed still lands in the UI —
+        # this is the same subscribe-then-load-snapshot order used by
+        # `PgFlow.LiveClient.subscribe_and_load/3`.
         Phoenix.PubSub.subscribe(PgflowDemo.PubSub, "pgflow:run:#{run_id}")
 
         cancel_timer(socket.assigns.timer_ref)
-
-        timer_ref = maybe_start_tick_timer(socket)
 
         socket =
           socket
@@ -522,15 +535,133 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             log_entry(:info, "Flow started", "Run ID: #{short_id(run_id)}")
           ])
           |> assign(:active_edges, MapSet.new())
-          |> assign(:timer_ref, timer_ref)
+          |> assign(:timer_ref, nil)
           |> assign(:output_step, nil)
           |> assign(:output_content, nil)
           |> assign(:output_loading, false)
+          |> reconcile_run_state(run_id)
 
-        {:noreply, socket}
+        # Only tick the elapsed-time clock if the run is (still) actually
+        # running — reconcile_run_state/2 may have already resolved it to
+        # :completed/:failed above.
+        timer_ref =
+          if socket.assigns.run_status == :running, do: maybe_start_tick_timer(socket)
+
+        {:noreply, assign(socket, :timer_ref, timer_ref)}
 
       {:error, reason} ->
         {:noreply, assign(socket, :error, format_user_error(reason))}
+    end
+  end
+
+  # Reads the run's current state from the DB and merges it into the socket.
+  # Called right after subscribing in start_selected_flow/3 so a run that
+  # already finished (or partially progressed) before the subscription
+  # existed is still reflected in the UI instead of leaving it stuck on
+  # "running". Exposed (not `defp`) so it can be exercised directly in
+  # tests without needing to reproduce the exact synchronous-broadcast race
+  # through the full LiveView start_flow event.
+  @doc false
+  def reconcile_run_state(socket, run_id) do
+    case Client.get_run_with_states(run_id) do
+      {:ok, run} -> apply_run_snapshot(socket, run)
+      {:error, _reason} -> socket
+    end
+  end
+
+  defp apply_run_snapshot(socket, run) do
+    steps_config = socket.assigns.steps_config
+
+    socket =
+      socket
+      |> assign(:steps, merge_step_statuses(socket.assigns.steps, run.step_states, steps_config))
+      |> assign(
+        :step_outputs,
+        merge_step_outputs(socket.assigns.step_outputs, run.step_states, steps_config)
+      )
+
+    case run.status do
+      "completed" ->
+        duration = elapsed_ms(run)
+
+        socket
+        |> assign(:run_status, :completed)
+        |> assign(:duration, duration)
+        |> assign(:active_edges, MapSet.new())
+        |> assign(:error, nil)
+        |> assign(:error_step, nil)
+        |> add_log(:success, "Flow Complete", "Total: #{duration}ms")
+
+      "failed" ->
+        duration = elapsed_ms(run)
+        {error_message, error_step} = run_failure_details(run, steps_config)
+
+        socket
+        |> assign(:run_status, :failed)
+        |> assign(:duration, duration)
+        |> assign(:error, "Flow failed: #{error_message}")
+        |> assign(:error_step, error_step)
+        |> assign(:active_edges, MapSet.new())
+        |> add_log(:error, "Flow Failed", error_message)
+
+      _ ->
+        socket
+    end
+  end
+
+  defp merge_step_statuses(steps, step_states, steps_config) do
+    Enum.reduce(step_states, steps, fn step_state, acc ->
+      case to_step_atom(step_state.step_slug, steps_config) do
+        nil -> acc
+        step_atom -> Map.put(acc, step_atom, step_state_status(step_state.status))
+      end
+    end)
+  end
+
+  defp step_state_status("completed"), do: :completed
+  defp step_state_status("failed"), do: :failed
+  defp step_state_status("skipped"), do: :skipped
+  defp step_state_status("started"), do: :running
+  defp step_state_status(_), do: :pending
+
+  defp merge_step_outputs(step_outputs, step_states, steps_config) do
+    Enum.reduce(step_states, step_outputs, fn step_state, acc ->
+      case to_step_atom(step_state.step_slug, steps_config) do
+        nil ->
+          acc
+
+        step_atom ->
+          if step_state.status == "completed" and not is_nil(step_state.output) do
+            Map.put(acc, step_atom, true)
+          else
+            acc
+          end
+      end
+    end)
+  end
+
+  # Finds the failed step_state (if any) to recover the error message and
+  # the step that should own the error banner, mirroring what a live
+  # task_failed event would have set via :error_step.
+  defp run_failure_details(run, steps_config) do
+    case Enum.find(run.step_states, &(&1.status == "failed")) do
+      nil ->
+        {"condition unmet", nil}
+
+      %{step_slug: step_slug, error_message: message} ->
+        error_message =
+          if is_binary(message) and message != "", do: message, else: "condition unmet"
+
+        {error_message, to_step_atom(step_slug, steps_config)}
+    end
+  end
+
+  defp elapsed_ms(run) do
+    end_time = run.completed_at || run.failed_at
+
+    case {run.started_at, end_time} do
+      {%DateTime{} = started, %DateTime{} = ended} -> DateTime.diff(ended, started, :millisecond)
+      _ -> 0
     end
   end
 
