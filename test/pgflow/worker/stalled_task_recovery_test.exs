@@ -148,6 +148,86 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
     Enum.any?(rows, fn [m | _] -> m in msg_ids end)
   end
 
+  defp run_status(run_id_bin) do
+    %{rows: [[status]]} =
+      TestRepo.query!("SELECT status FROM pgflow.runs WHERE run_id = $1", [run_id_bin])
+
+    status
+  end
+
+  defp step_status(run_id_bin, step) do
+    %{rows: [[status]]} =
+      TestRepo.query!(
+        "SELECT status FROM pgflow.step_states WHERE run_id = $1 AND step_slug = $2",
+        [run_id_bin, step]
+      )
+
+    status
+  end
+
+  defp task_statuses(run_id_bin, step) do
+    %{rows: rows} =
+      TestRepo.query!(
+        "SELECT status FROM pgflow.step_tasks WHERE run_id = $1 AND step_slug = $2 ORDER BY task_index",
+        [run_id_bin, step]
+      )
+
+    List.flatten(rows)
+  end
+
+  # Builds `fanout -> items` where `items` is a 3-task map step whose
+  # `when_exhausted` mode skips the whole step. Drives it to the moment right
+  # after task 0 exhausts its single attempt: `items` is `skipped`, the run is
+  # terminal, the two sibling messages are archived — and the sibling TASK rows
+  # are still sitting in `started`, which is what a stalled sweep would see.
+  defp setup_skipped_map(when_exhausted) do
+    flow_slug = "skip_map_#{System.unique_integer([:positive])}"
+
+    TestRepo.query!("SELECT pgflow.create_flow($1, 1, 1, 30)", [flow_slug])
+    TestRepo.query!("SELECT pgflow.add_step($1, 'fanout', ARRAY[]::text[])", [flow_slug])
+
+    TestRepo.query!(
+      """
+      SELECT pgflow.add_step(
+        $1, 'items', ARRAY['fanout']::text[], 1, null, null, null, 'map',
+        null, null, 'skip', $2
+      )
+      """,
+      [flow_slug, when_exhausted]
+    )
+
+    run_id = start_flow_run(flow_slug, %{})
+    {:ok, run_id_bin} = Ecto.UUID.dump(run_id)
+
+    worker_id = Ecto.UUID.generate()
+    {:ok, _} = WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+
+    # fanout emits three elements, which fans `items` out to three tasks.
+    start_all(flow_slug, worker_id)
+    {:ok, _} = Flows.complete_task(TestRepo, run_id, "fanout", 0, [1, 2, 3])
+
+    item_msg_ids = start_all(flow_slug, worker_id)
+    assert task_statuses(run_id_bin, "items") == ~w(started started started)
+
+    # Task 0 burns its only attempt: the step skips and its siblings' messages
+    # are archived in the same transaction.
+    {:ok, _} = Flows.fail_task(TestRepo, run_id, "items", 0, "item 1 exploded")
+
+    %{
+      flow_slug: flow_slug,
+      run_id: run_id,
+      run_id_bin: run_id_bin,
+      item_msg_ids: item_msg_ids
+    }
+  end
+
+  defp start_all(flow_slug, worker_id) do
+    {:ok, messages} = Flows.read(TestRepo, flow_slug, 30, 10)
+    msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
+    {:ok, _} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
+    msg_ids
+  end
+
   # --- detection & basic requeue ---
 
   describe "recover_stalled_tasks/2 — detection & basic requeue" do
@@ -378,6 +458,47 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
       assert {:ok, 2} = Flows.recover_stalled_tasks(TestRepo, 60)
       assert task(rid, "status", "process", 0) == ["queued"]
       assert task(rid, "status", "process", 1) == ["queued"]
+    end
+  end
+
+  # --- skipped steps ---
+  #
+  # `fail_task`'s when_exhausted skip archives the sibling MESSAGES but leaves
+  # the sibling `step_tasks` rows in 'started' forever — nothing in the vendored
+  # core ever terminalizes them. A stalled sweep must not mistake those orphans
+  # for a crashed worker's work and hand them back to the queue.
+
+  describe "recover_stalled_tasks/2 — skipped steps" do
+    for mode <- ["skip", "skip-cascade"] do
+      test "leaves the stranded siblings of a #{mode}ped map step alone" do
+        %{flow_slug: slug, run_id_bin: rid, item_msg_ids: msg_ids} =
+          setup_skipped_map(unquote(mode))
+
+        assert step_status(rid, "items") == "skipped"
+        assert run_status(rid) == "completed"
+        # The premise: siblings are left non-terminal by the skip.
+        assert task_statuses(rid, "items") == ~w(failed started started)
+
+        backdate(rid, 120)
+        assert {:ok, 0} = Flows.recover_stalled_tasks(TestRepo, 60)
+
+        refute "queued" in task_statuses(rid, "items")
+        assert run_status(rid) == "completed"
+        assert step_status(rid, "items") == "skipped"
+        refute message_in_queue?(slug, msg_ids)
+      end
+    end
+
+    test "still recovers a genuinely stalled task on a live step in the same sweep" do
+      %{run_id_bin: skipped_rid} = setup_skipped_map("skip")
+      %{run_id_bin: live_rid} = setup_started()
+
+      backdate(skipped_rid, 120)
+      backdate(live_rid, 120)
+
+      assert {:ok, 1} = Flows.recover_stalled_tasks(TestRepo, 60)
+      assert task(live_rid, "status") == ["queued"]
+      refute "queued" in task_statuses(skipped_rid, "items")
     end
   end
 

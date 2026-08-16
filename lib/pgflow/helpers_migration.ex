@@ -26,7 +26,8 @@ defmodule PgFlow.HelpersMigration do
     versions: [
       PgFlow.Migrations.Versions.V01,
       PgFlow.Migrations.Versions.V02,
-      PgFlow.Migrations.Versions.V03
+      PgFlow.Migrations.Versions.V03,
+      PgFlow.Migrations.Versions.V04
     ],
     tracking_object: {:view, "extensions_version"}
 end

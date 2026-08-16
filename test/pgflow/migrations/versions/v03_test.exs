@@ -16,8 +16,11 @@ defmodule PgFlow.Migrations.Versions.V03Test do
   defp down_sql, do: File.read!(@down_path)
 
   describe "registration" do
-    test "v03 is the current helpers version" do
-      assert PgFlow.HelpersMigration.current_version() == 3
+    # EctoEvolver derives `current_version` from the length of the registered
+    # list, so "at least 3" is what proves v03 is still in the chain. The
+    # newest version pins the exact number — see V04Test.
+    test "v03 is registered in the helpers migration chain" do
+      assert PgFlow.HelpersMigration.current_version() >= 3
     end
   end
 
