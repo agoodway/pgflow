@@ -718,10 +718,11 @@ defmodule PgFlow.Worker.Server do
 
     # No skip check happens here on purpose. `pgflow.start_tasks` only returns a
     # task whose `step_states` row is still `started`, so a task for a skipped
-    # step is filtered out before it can reach this function, and every SQL path
-    # that skips a step (`_cascade_force_skip_steps`, `fail_task`'s
-    # `when_exhausted` skip, `cascade_resolve_conditions`' fail branch) archives
-    # that step's queued/started pgmq messages in the same transaction. A
+    # step is filtered out before it can reach this function, and every SQL skip
+    # path (`_cascade_force_skip_steps`, `fail_task`'s `when_exhausted`) archives
+    # that step's queued/started pgmq messages in the same transaction (note:
+    # `cascade_resolve_conditions`' condition-skip branch only marks steps never-
+    # started, so there are no messages to archive). A
     # per-task `step_skipped?` probe here could therefore only ever observe a
     # skip that committed in the microseconds between `start_tasks` returning
     # and the probe's own query - a window it cannot close anyway, since a skip

@@ -231,7 +231,7 @@ defmodule PgFlow.Flow do
 
   ## Examples
 
-      # Map over inline array
+      # Root map over the flow's input array
       map :process_users do
         fn user, ctx ->
           %{processed: process_user(user)}

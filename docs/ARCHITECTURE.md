@@ -222,7 +222,7 @@ The signal strategy only determines *when* to poll (timer backoff vs NOTIFY wake
 
 **Completion-triggered polling:** When a step with downstream dependents completes, an immediate poll is scheduled. This ensures continuation tasks are picked up promptly regardless of NOTIFY throttling. Terminal steps (no dependents) skip the poll.
 
-Skipped steps are decided in SQL (`start_ready_steps` / `fail_task`). Workers never enqueue them. Elixir emits `[:pgflow, :step, :skipped]` after `start_flow`, `complete_task`, and `fail_task` by reading `step_states`.
+Skipped steps are decided in SQL (`cascade_resolve_conditions`, `_cascade_force_skip_steps` / `fail_task`). Workers never enqueue them. Elixir emits `[:pgflow, :step, :skipped]` after `start_flow`, `complete_task`, and `fail_task` by reading `step_states`.
 
 Workers do not re-check for skips before dispatching: `start_tasks` returns a task only while its step is still `started`, and every skip path archives that step's queued/started messages in the same transaction. Delivery stays at-least-once, so a handler can still be mid-flight when the skip commits — handlers must be idempotent (see `PgFlow.Worker.Server` docs).
 
