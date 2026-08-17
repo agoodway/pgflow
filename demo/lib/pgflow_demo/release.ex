@@ -5,6 +5,10 @@ defmodule PgflowDemo.Release do
   """
   @app :pgflow_demo
 
+  @doc """
+  Runs all pending migrations for every configured repo.
+  """
+  @spec migrate() :: [{:ok, term(), term()}]
   def migrate do
     load_app()
 
@@ -13,6 +17,10 @@ defmodule PgflowDemo.Release do
     end
   end
 
+  @doc """
+  Loads `priv/repo/seeds.exs` (when present) for every configured repo.
+  """
+  @spec seed() :: [{:ok, term(), term()}]
   def seed do
     load_app()
 
@@ -21,6 +29,10 @@ defmodule PgflowDemo.Release do
     end
   end
 
+  @doc """
+  Rolls the given repo back to `version`.
+  """
+  @spec rollback(module(), integer()) :: {:ok, term(), term()}
   def rollback(repo, version) do
     load_app()
     {:ok, _, _} = Ecto.Migrator.with_repo(repo, &Ecto.Migrator.run(&1, :down, to: version))

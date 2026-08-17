@@ -672,19 +672,17 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   defp merge_step_outputs(step_outputs, step_states, steps_config) do
     Enum.reduce(step_states, step_outputs, fn step_state, acc ->
-      case to_step_atom(step_state.step_slug, steps_config) do
-        nil ->
-          acc
-
-        step_atom ->
-          if step_state.status == "completed" and not is_nil(step_state.output) do
-            Map.put(acc, step_atom, true)
-          else
-            acc
-          end
-      end
+      put_step_output(acc, to_step_atom(step_state.step_slug, steps_config), step_state)
     end)
   end
+
+  defp put_step_output(acc, nil, _step_state), do: acc
+
+  defp put_step_output(acc, step_atom, %{status: "completed", output: output})
+       when not is_nil(output),
+       do: Map.put(acc, step_atom, true)
+
+  defp put_step_output(acc, _step_atom, _step_state), do: acc
 
   # Finds the failed step_state (if any) to recover a run-failure error
   # message. Deliberately does not resolve/return a step atom: :error_step
@@ -1032,8 +1030,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </a>
           </div>
         </div>
-        
-    <!-- GitHub link (top right) -->
+
+        <!-- GitHub link (top right) -->
         <a
           href="https://github.com/agoodway/pgflow"
           target="_blank"
@@ -1048,8 +1046,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             />
           </svg>
         </a>
-        
-    <!-- Header -->
+
+        <!-- Header -->
         <div class="text-center mb-8">
           <h1 class="text-4xl font-bold text-white mb-2">
             <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400">
@@ -1062,8 +1060,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
           </p>
           <PoweredBy.powered_by size={:md} class="mt-1" />
         </div>
-        
-    <!-- Interactive tip -->
+
+        <!-- Interactive tip -->
         <div class="mb-6 px-4 py-3 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center gap-3">
           <span class="text-purple-400 text-lg" title="Tip">ⓘ</span>
           <p class="text-purple-300/80 text-sm">
@@ -1088,8 +1086,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             >Step Output</a>.
           </p>
         </div>
-        
-    <!-- Input -->
+
+        <!-- Input -->
         <div class="backdrop-blur-xl bg-white/5 rounded-2xl p-6 mb-6 border border-white/10">
           <div class="flex gap-2 mb-4">
             <button
@@ -1218,8 +1216,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <p class="text-red-300 text-sm">{@error}</p>
           </div>
         </div>
-        
-    <!-- Main Grid - Side by side on md+ screens, stacked on mobile -->
+
+        <!-- Main Grid - Side by side on md+ screens, stacked on mobile -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <!-- Workflow -->
           <div
@@ -1256,8 +1254,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                   <polygon points="0 0, 6 2, 0 4" fill="#10B981" />
                 </marker>
               </defs>
-              
-    <!-- Edges -->
+
+              <!-- Edges -->
               <%= for {from, to} <- @edges do %>
                 <% {x1, y1} = get_step_coords(from, @steps_config) %>
                 <% {x2, y2} = get_step_coords(to, @steps_config) %>
@@ -1301,8 +1299,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                   }
                 />
               <% end %>
-              
-    <!-- Nodes -->
+
+              <!-- Nodes -->
               <%= for step <- @steps_config do %>
                 <% status = Map.get(@steps, step.slug, :pending) %>
                 <% highlighted = step.slug == @highlighted_step %>
@@ -1404,8 +1402,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               <% end %>
             </svg>
           </div>
-          
-    <!-- Event Log -->
+
+          <!-- Event Log -->
           <div
             id="event-log"
             class="backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 flex flex-col scroll-mt-4"
@@ -1447,8 +1445,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </div>
           </div>
         </div>
-        
-    <!-- Flow DSL -->
+
+        <!-- Flow DSL -->
         <div
           id="flow-dsl"
           class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
@@ -1493,8 +1491,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </div>
           <% end %>
         </div>
-        
-    <!-- Step Output -->
+
+        <!-- Step Output -->
         <div
           id="step-output"
           class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
@@ -1529,8 +1527,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <% end %>
           </div>
         </div>
-        
-    <!-- Cron DSL -->
+
+        <!-- Cron DSL -->
         <div
           id="cron-dsl"
           class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
@@ -1556,8 +1554,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </a>
           </p>
         </div>
-        
-    <!-- Footer -->
+
+        <!-- Footer -->
         <footer class="mt-8 text-center max-w-2xl mx-auto">
           <div class="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
             <PoweredBy.powered_by size={:sm} />

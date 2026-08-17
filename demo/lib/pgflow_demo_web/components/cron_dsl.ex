@@ -93,8 +93,8 @@ defmodule PgflowDemoWeb.Components.CronDSL do
           <span class="text-xs text-emerald-400">Active</span>
         </div>
       </div>
-      
-    <!-- Cron Source Code -->
+
+      <!-- Cron Source Code -->
       <div class="font-mono text-xs leading-relaxed">
         {Phoenix.HTML.raw(@highlighted_source)}
       </div>

@@ -34,50 +34,35 @@ defmodule PgflowDemoWeb.Components.FlowDSL do
     %{id: :finish, lines: 66..71, clickable: true}
   ]
 
-  @processed_article_segments (
-                                flow_lines =
-                                  @article_source_path |> File.read!() |> String.split("\n")
+  # Slices each segment's line range out of the flow source and attaches the
+  # highlighted HTML. Runs at compile time, so it can't be a defp (the module
+  # isn't compiled yet when the attributes below are evaluated) — a module-body
+  # anonymous function is the shared form both attributes can call.
+  process_segments = fn source_path, segment_defs ->
+    flow_lines = source_path |> File.read!() |> String.split("\n")
 
-                                Enum.map(@article_segment_defs, fn segment ->
-                                  code_lines =
-                                    Enum.slice(
-                                      flow_lines,
-                                      (segment.lines.first - 1)..(segment.lines.last - 1)
-                                    )
+    Enum.map(segment_defs, fn segment ->
+      code_lines =
+        Enum.slice(
+          flow_lines,
+          (segment.lines.first - 1)..(segment.lines.last - 1)
+        )
 
-                                  code = Enum.join(code_lines, "\n")
-                                  html = Makeup.highlight(code, lexer: Makeup.Lexers.ElixirLexer)
+      code = Enum.join(code_lines, "\n")
+      html = Makeup.highlight(code, lexer: Makeup.Lexers.ElixirLexer)
 
-                                  Map.merge(segment, %{
-                                    code: code,
-                                    html: html,
-                                    line_count: length(code_lines)
-                                  })
-                                end)
-                              )
+      Map.merge(segment, %{
+        code: code,
+        html: html,
+        line_count: length(code_lines)
+      })
+    end)
+  end
 
-  @processed_onboarding_segments (
-                                   flow_lines =
-                                     @onboarding_source_path |> File.read!() |> String.split("\n")
-
-                                   Enum.map(@onboarding_segment_defs, fn segment ->
-                                     code_lines =
-                                       Enum.slice(
-                                         flow_lines,
-                                         (segment.lines.first - 1)..(segment.lines.last - 1)
-                                       )
-
-                                     code = Enum.join(code_lines, "\n")
-
-                                     html =
-                                       Makeup.highlight(code, lexer: Makeup.Lexers.ElixirLexer)
-
-                                     Map.merge(segment, %{
-                                       code: code,
-                                       html: html,
-                                       line_count: length(code_lines)
-                                     })
-                                   end)
+  @processed_article_segments process_segments.(@article_source_path, @article_segment_defs)
+  @processed_onboarding_segments process_segments.(
+                                   @onboarding_source_path,
+                                   @onboarding_segment_defs
                                  )
 
   @doc """
