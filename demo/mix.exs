@@ -41,9 +41,9 @@ defmodule PgflowDemo.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
-      {:pgflow, "~> 0.1.0"},
-      # {:pgflow, path: ".."},
-      {:livefilter, "~> 0.1.8"},
+      # {:pgflow, "~> 0.1.0"},
+      {:pgflow, path: ".."},
+      {:livefilter, "~> 0.2.0"},
 
       # Tz - required by PgFlowDashboard for time_zone support
       {:tz, "~> 0.28"},
