@@ -330,22 +330,32 @@ defmodule PgFlow.Worker.Server do
         {:noreply, state}
 
       {task_meta, new_active_tasks} ->
+        # This completion message doubles as the worker's slot-freed signal
+        # (the OTP analogue of upstream edge-worker's waitForSlot/notify
+        # mechanism) — capture fullness before the task leaves the ledger.
+        was_at_capacity = map_size(state.active_tasks) >= state.max_concurrency
+
         # Cancel the timeout timer
         cancel_task_timeout(task_meta)
         state = handle_task_success(task_meta, result, state)
         state = %{state | active_tasks: new_active_tasks}
 
-        # Only poll if the completed step has downstream dependents.
-        # This optimizes the :notify strategy by avoiding unnecessary polls
-        # when a terminal step completes (no downstream work to pick up).
-        # For steps with dependents, we poll immediately because:
-        # 1. complete_task may enqueue downstream tasks via start_ready_steps
-        # 2. The NOTIFY for those inserts may be throttled (pgmq throttle_interval_ms)
-        # 3. Without immediate poll, worker would wait for fallback_poll (30s)
+        # Poll immediately when either:
+        # a) the completed step has downstream dependents — complete_task may
+        #    enqueue downstream tasks via start_ready_steps, and the NOTIFY
+        #    for those inserts may be throttled (pgmq throttle_interval_ms),
+        #    so without this the worker would wait for fallback_poll (30s);
+        # b) this completion freed a slot on a full worker — queued sibling
+        #    tasks (e.g. a map step wider than max_concurrency) sent their
+        #    NOTIFYs at enqueue time, so nothing else picks them up before
+        #    the fallback timer.
+        # A terminal-step completion on a non-full worker still skips the
+        # poll: there is no downstream work and no starving sibling.
         has_dependents = step_has_dependents?(state.flow_module, task_meta.step_slug)
 
         state =
-          if has_dependents and Lifecycle.can_accept_work?(state.lifecycle) do
+          if (has_dependents or was_at_capacity) and
+               Lifecycle.can_accept_work?(state.lifecycle) do
             schedule_immediate_poll(state)
           else
             state
@@ -406,7 +416,21 @@ defmodule PgFlow.Worker.Server do
             state
           )
 
-        {:noreply, %{state | active_tasks: new_active_tasks}}
+        state = %{state | active_tasks: new_active_tasks}
+
+        # Same rationale as the :DOWN clause: the timeout freed a slot and
+        # fail_task may have requeued a retry — poll promptly instead of
+        # waiting for the next timer. (The killed task's :DOWN can't cover
+        # this: by the time it arrives, its ref is already out of
+        # active_tasks and is ignored.)
+        state =
+          if Lifecycle.can_accept_work?(state.lifecycle) do
+            schedule_immediate_poll(state)
+          else
+            state
+          end
+
+        {:noreply, state}
     end
   end
 

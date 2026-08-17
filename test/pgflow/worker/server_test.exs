@@ -2168,6 +2168,67 @@ defmodule PgFlow.Worker.ServerTest do
     end
   end
 
+  describe "eager slot refill" do
+    # Ports upstream pgflow's slot-aware polling (edge-worker PR #620) the OTP
+    # way: the task-completion message the GenServer already receives IS the
+    # slot-freed signal, so no waiter registry is needed — the handler just
+    # schedules an immediate poll when a slot frees on a full worker. In
+    # :notify mode the only other wake-ups are NOTIFYs (already lost below —
+    # they fired before the worker existed) and the fallback timer, so
+    # without the refill, queued sibling work starves until the fallback.
+    test "a freed slot immediately picks up a queued sibling task", %{
+      task_supervisor: task_supervisor
+    } do
+      flow_slug = compile_flow(StringMapFlow)
+
+      # Both map tasks are queued before the worker exists, so their enqueue
+      # NOTIFYs went to no one. echo_items is terminal (no dependents), so
+      # the completed-step-has-dependents poll doesn't apply either.
+      run_id = start_flow_run(flow_slug, ["a", "b"])
+
+      worker_pid =
+        start_worker(StringMapFlow, task_supervisor,
+          max_concurrency: 1,
+          batch_size: 1,
+          signal_strategy: :notify,
+          notify_fallback_interval: 60_000
+        )
+
+      # max_concurrency 1 + batch_size 1: the initial poll dispatches one
+      # sibling and fills the worker. Completing it must refill the slot and
+      # poll again, or the second sibling waits out the 60s fallback.
+      assert {:ok, "completed"} = wait_for_run_completion(run_id, 5_000)
+
+      Server.stop(worker_pid)
+    end
+
+    test "a task timeout frees the slot and triggers an immediate poll", %{
+      task_supervisor: task_supervisor
+    } do
+      flow_slug = compile_flow(TimeoutTestFlow)
+
+      ref = :telemetry_test.attach_event_handlers(self(), [[:pgflow, :worker, :poll, :stop]])
+
+      # Queued before the worker exists — same NOTIFY-less setup as above.
+      _run_id = start_flow_run(flow_slug, %{"sleep_ms" => 60_000})
+
+      worker_pid =
+        start_worker(TimeoutTestFlow, task_supervisor,
+          signal_strategy: :notify,
+          notify_fallback_interval: 60_000
+        )
+
+      # Initial poll dispatches the hanging task.
+      assert_receive {[:pgflow, :worker, :poll, :stop], ^ref, _, _}, 5_000
+
+      # The 2s task timeout frees the slot; the refill must poll again long
+      # before the 60s fallback would.
+      assert_receive {[:pgflow, :worker, :poll, :stop], ^ref, _, _}, 5_000
+
+      Server.stop(worker_pid)
+    end
+  end
+
   defp queue_count(flow_slug, msg_id) do
     %{rows: [[count]]} =
       TestRepo.query!("SELECT count(*) FROM pgmq.q_#{flow_slug} WHERE msg_id = $1", [msg_id])
