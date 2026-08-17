@@ -27,11 +27,19 @@ config :pgflow_demo, PgflowDemoWeb.Endpoint,
   live_view: [signing_salt: "ylwnJwFD"]
 
 # Configure esbuild (the version is required)
+pgflow_dashboard_hooks =
+  if config_env() == :prod do
+    Path.expand("../deps/pgflow/priv/static/pgflow_dashboard/hooks/index.js", __DIR__)
+  else
+    Path.expand("../../priv/static/pgflow_dashboard/hooks/index.js", __DIR__)
+  end
+
 config :esbuild,
   version: "0.25.4",
   pgflow_demo: [
     args:
-      ~w(js/app.ts --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.),
+      ~w(js/app.ts --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.) ++
+        ["--alias:pgflow-dashboard-hooks=#{pgflow_dashboard_hooks}"],
     cd: Path.expand("../assets", __DIR__),
     env: %{"NODE_PATH" => [Path.expand("../deps", __DIR__), Mix.Project.build_path()]}
   ]

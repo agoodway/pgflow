@@ -6,6 +6,7 @@
 @source "../js";
 @source "../../lib/pgflow_demo_web";
 @source "../../../lib/pgflow_dashboard";
+@source "../../deps/pgflow/lib/pgflow_dashboard";
 @source "../../deps/daisy_ui_components";
 @source "../../deps/livefilter";
 

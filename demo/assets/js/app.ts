@@ -26,7 +26,14 @@ import { hooks as colocatedHooks } from "phoenix-colocated/pgflow_demo"
 import topbar from "../vendor/topbar"
 
 // PgFlow Dashboard hooks
-import { CopyToClipboard, DarkMode, GraphNodeKeyboard, KeyboardShortcuts, ShortcutsModal, MobileMenu } from "../../../priv/static/pgflow_dashboard/hooks/index.js"
+import {
+  CopyToClipboard,
+  DarkMode,
+  GraphNodeKeyboard,
+  KeyboardShortcuts,
+  ShortcutsModal,
+  MobileMenu,
+} from "pgflow-dashboard-hooks"
 
 // LiveFilter hooks for filter UI
 import { hooks as liveFilterHooks } from "livefilter/priv/static/live_filter.js"
