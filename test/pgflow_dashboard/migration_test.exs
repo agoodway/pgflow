@@ -1,7 +1,8 @@
 defmodule PgFlowDashboard.MigrationTest do
   @moduledoc """
   End-to-end tests for the dashboard schema migration (EctoEvolver-backed),
-  focused on the v02 "skipped is a terminal state" changes.
+  focused on the v02 "skipped is a terminal state" changes and the v03
+  "a failed run's duration stops at failed_at" fix.
 
   `test/test_helper.exs` does not apply `PgFlowDashboard.Migration` (only the
   core `PgFlow.Migration` + `PgFlow.HelpersMigration` are bootstrapped there),
@@ -35,8 +36,26 @@ defmodule PgFlowDashboard.MigrationTest do
     def change, do: PgFlowDashboard.Migration.down(version: 1)
   end
 
+  defmodule DownToV02Migration do
+    @moduledoc false
+    use Ecto.Migration
+    def change, do: PgFlowDashboard.Migration.down(version: 2)
+  end
+
+  defmodule UninstallMigration do
+    @moduledoc false
+    use Ecto.Migration
+    # Full teardown, exercising v01_down.sql (which ends in a bare DROP SCHEMA
+    # and therefore fails if any object was left behind).
+    def change, do: PgFlowDashboard.Migration.down(version: 0)
+  end
+
   @up_version 1_100_000_000_001
   @down_version 1_100_000_000_002
+  @down_v02_version 1_100_000_000_003
+  @uninstall_version 1_100_000_000_004
+
+  @migration_versions [@up_version, @down_version, @down_v02_version, @uninstall_version]
 
   @flow_slug "dashboard_v02_smoke"
 
@@ -69,28 +88,30 @@ defmodule PgFlowDashboard.MigrationTest do
     on_exit(fn ->
       cleanup_flow()
       TestRepo.query!("DROP SCHEMA IF EXISTS pgflow_dashboard CASCADE")
-
-      TestRepo.query!(
-        "DELETE FROM schema_migrations WHERE version IN ($1, $2)",
-        [@up_version, @down_version]
-      )
+      cleanup_schema_migrations()
 
       Sandbox.mode(TestRepo, :manual)
     end)
 
     cleanup_flow()
     TestRepo.query!("DROP SCHEMA IF EXISTS pgflow_dashboard CASCADE")
-
-    TestRepo.query!(
-      "DELETE FROM schema_migrations WHERE version IN ($1, $2)",
-      [@up_version, @down_version]
-    )
+    cleanup_schema_migrations()
 
     :ok
   end
 
+  defp cleanup_schema_migrations do
+    TestRepo.query!("DELETE FROM schema_migrations WHERE version = ANY($1)", [@migration_versions])
+  end
+
   defp run_up!, do: Ecto.Migrator.up(TestRepo, @up_version, UpMigration, log: false)
   defp run_down!, do: Ecto.Migrator.up(TestRepo, @down_version, DownMigration, log: false)
+
+  defp run_down_to_v02!,
+    do: Ecto.Migrator.up(TestRepo, @down_v02_version, DownToV02Migration, log: false)
+
+  defp run_uninstall!,
+    do: Ecto.Migrator.up(TestRepo, @uninstall_version, UninstallMigration, log: false)
 
   defp cleanup_flow do
     TestRepo.query!("DELETE FROM pgflow.step_tasks WHERE flow_slug = $1", [@flow_slug])
@@ -258,6 +279,166 @@ defmodule PgFlowDashboard.MigrationTest do
       assert run["skipped_steps"] == 1
       assert Decimal.equal?(run["progress_percent"], Decimal.new("100.0"))
     end
+  end
+
+  # Inserts a bare run (no steps) with started_at an hour in the past, so a
+  # NOW()-bounded duration (~3_600_000ms) is unmistakably distinct from a
+  # correctly terminalized one (a few seconds).
+  defp insert_run!(status, terminal_offset_seconds \\ nil) do
+    run_id = Ecto.UUID.generate()
+    run_id_bin = Ecto.UUID.dump!(run_id)
+
+    started_at =
+      DateTime.utc_now() |> DateTime.add(-3600, :second) |> DateTime.truncate(:microsecond)
+
+    terminal_at =
+      terminal_offset_seconds && DateTime.add(started_at, terminal_offset_seconds, :second)
+
+    {completed_at, failed_at} =
+      case status do
+        "completed" -> {terminal_at, nil}
+        "failed" -> {nil, terminal_at}
+        "started" -> {nil, nil}
+      end
+
+    TestRepo.query!(
+      """
+      INSERT INTO pgflow.runs
+        (run_id, flow_slug, status, input, remaining_steps, started_at, completed_at, failed_at)
+      VALUES ($1, $2, $3, '{}'::jsonb, 0, $4, $5, $6)
+      """,
+      [run_id_bin, @flow_slug, status, started_at, completed_at, failed_at]
+    )
+
+    run_id
+  end
+
+  defp run_duration_ms(run_id) do
+    %{rows: [[duration_ms]]} =
+      TestRepo.query!(
+        "SELECT duration_ms FROM pgflow_dashboard.runs_with_progress WHERE run_id = $1",
+        [Ecto.UUID.dump!(run_id)]
+      )
+
+    Decimal.to_float(duration_ms)
+  end
+
+  describe "up/0 (v03)" do
+    setup do
+      run_up!()
+      TestRepo.query!("INSERT INTO pgflow.flows (flow_slug) VALUES ($1)", [@flow_slug])
+      :ok
+    end
+
+    test "a failed run's duration is fixed at failed_at, not NOW()" do
+      run_id = insert_run!("failed", 7)
+
+      # Correct: failed_at - started_at ~= 7_000ms.
+      # Buggy (pre-v03): NOW() - started_at ~= 3_600_000ms, and climbing.
+      assert_in_delta run_duration_ms(run_id), 7_000, 2_000
+    end
+
+    test "the failed run's duration does not move between reads" do
+      run_id = insert_run!("failed", 7)
+
+      first = run_duration_ms(run_id)
+      Process.sleep(1_100)
+      second = run_duration_ms(run_id)
+
+      assert first == second
+    end
+
+    test "a still-running run keeps measuring against NOW()" do
+      run_id = insert_run!("started")
+
+      assert_in_delta run_duration_ms(run_id), 3_600_000, 60_000
+    end
+
+    test "a completed run is still bounded by completed_at" do
+      run_id = insert_run!("completed", 12)
+
+      assert_in_delta run_duration_ms(run_id), 12_000, 2_000
+    end
+
+    test "get_run() and runs_view surface the same terminalized duration" do
+      run_id = insert_run!("failed", 7)
+      run_id_bin = Ecto.UUID.dump!(run_id)
+
+      %{rows: [run_row], columns: columns} =
+        TestRepo.query!("SELECT * FROM pgflow_dashboard.get_run($1)", [run_id_bin])
+
+      run = columns |> Enum.zip(run_row) |> Map.new()
+      assert_in_delta Decimal.to_float(run["duration_ms"]), 7_000, 2_000
+
+      %{rows: [[view_duration]]} =
+        TestRepo.query!(
+          "SELECT duration_ms FROM pgflow_dashboard.runs_view WHERE run_id = $1",
+          [run_id_bin]
+        )
+
+      assert_in_delta Decimal.to_float(view_duration), 7_000, 2_000
+    end
+  end
+
+  describe "down/0 (v03 -> v02)" do
+    test "restores the v02 NOW()-bounded duration formula" do
+      run_up!()
+      TestRepo.query!("INSERT INTO pgflow.flows (flow_slug) VALUES ($1)", [@flow_slug])
+      run_id = insert_run!("failed", 7)
+
+      assert_in_delta run_duration_ms(run_id), 7_000, 2_000
+
+      run_down_to_v02!()
+
+      assert_in_delta run_duration_ms(run_id), 3_600_000, 60_000
+
+      %{rows: [[comment]]} =
+        TestRepo.query!("""
+        SELECT obj_description(('pgflow_dashboard.runs_with_progress')::regclass, 'pg_class')
+        """)
+
+      assert comment =~ ~r/version=2\b/
+    end
+
+    test "runs_view and get_run() survive the round trip" do
+      run_up!()
+      TestRepo.query!("INSERT INTO pgflow.flows (flow_slug) VALUES ($1)", [@flow_slug])
+      run_id = insert_run!("failed", 7)
+      run_down_to_v02!()
+
+      assert {:ok, %{rows: [_]}} =
+               TestRepo.query("SELECT * FROM pgflow_dashboard.get_run($1)", [
+                 Ecto.UUID.dump!(run_id)
+               ])
+
+      assert {:ok, %{rows: [_]}} =
+               TestRepo.query("SELECT * FROM pgflow_dashboard.runs_view WHERE run_id = $1", [
+                 Ecto.UUID.dump!(run_id)
+               ])
+    end
+  end
+
+  describe "down(version: 0) (full uninstall)" do
+    test "removes the pgflow_dashboard schema entirely" do
+      run_up!()
+      assert schema_exists?()
+
+      # v01_down.sql ends in a bare `DROP SCHEMA IF EXISTS` (no CASCADE), so
+      # this only succeeds if every object v01_up.sql created was dropped by a
+      # signature-matching DROP first.
+      run_uninstall!()
+
+      refute schema_exists?()
+    end
+  end
+
+  defp schema_exists? do
+    %{rows: [[exists]]} =
+      TestRepo.query!(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'pgflow_dashboard')"
+      )
+
+    exists
   end
 
   describe "down/0 (v02 -> v01)" do

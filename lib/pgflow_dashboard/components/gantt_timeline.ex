@@ -111,77 +111,26 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
 
               <!-- Step bar -->
               <%= cond do %>
-                <% step.started_at && step.status == "skipped" -> %>
-                  <%
-                    bar_start = calc_position(step.started_at, @run_start, @total_duration_ms, @chart_width)
-                    bar_end = calc_position(step.skipped_at || step.started_at, @run_start, @total_duration_ms, @chart_width)
-                    bar_width = max(bar_end - bar_start, 4)
-                  %>
-                  <rect
-                    x={@label_width + @padding + bar_start}
-                    y="6"
-                    width={bar_width}
-                    height={@row_height - 12}
-                    rx="3"
-                    class={bar_color(step.status)}
-                  />
-
-                  <!-- Duration label - centered in bar if wide, or to the right if narrow -->
-                  <%= if bar_width > 45 do %>
-                    <text
-                      x={@label_width + @padding + bar_start + bar_width / 2}
-                      y={@row_height / 2 + 4}
-                      class="fill-white text-xs font-medium"
-                      text-anchor="middle"
-                    >
-                      {format_duration(step.duration_ms || 0)}
-                    </text>
-                  <% else %>
-                    <text
-                      x={@label_width + @padding + bar_start + bar_width + 4}
-                      y={@row_height / 2 + 4}
-                      class="fill-current text-xs"
-                      text-anchor="start"
-                    >
-                      {format_duration(step.duration_ms || 0)}
-                    </text>
-                  <% end %>
-
                 <% step.started_at -> %>
                   <%
+                    bar_end_at =
+                      if step.status == "skipped" do
+                        step.skipped_at || step.started_at
+                      else
+                        step.completed_at || DateTime.utc_now()
+                      end
+
                     bar_start = calc_position(step.started_at, @run_start, @total_duration_ms, @chart_width)
-                    bar_end = calc_position(step.completed_at || DateTime.utc_now(), @run_start, @total_duration_ms, @chart_width)
+                    bar_end = calc_position(bar_end_at, @run_start, @total_duration_ms, @chart_width)
                     bar_width = max(bar_end - bar_start, 4)
                   %>
-                  <rect
+                  <.step_bar
                     x={@label_width + @padding + bar_start}
-                    y="6"
                     width={bar_width}
-                    height={@row_height - 12}
-                    rx="3"
-                    class={bar_color(step.status)}
+                    row_height={@row_height}
+                    status={step.status}
+                    duration_ms={step.duration_ms}
                   />
-
-                  <!-- Duration label - centered in bar if wide, or to the right if narrow -->
-                  <%= if bar_width > 45 do %>
-                    <text
-                      x={@label_width + @padding + bar_start + bar_width / 2}
-                      y={@row_height / 2 + 4}
-                      class="fill-white text-xs font-medium"
-                      text-anchor="middle"
-                    >
-                      {format_duration(step.duration_ms || 0)}
-                    </text>
-                  <% else %>
-                    <text
-                      x={@label_width + @padding + bar_start + bar_width + 4}
-                      y={@row_height / 2 + 4}
-                      class="fill-current text-xs"
-                      text-anchor="start"
-                    >
-                      {format_duration(step.duration_ms || 0)}
-                    </text>
-                  <% end %>
 
                 <% step.status == "skipped" -> %>
                   <!-- Never-started skipped step: ghost/zero-width marker, not the
@@ -268,6 +217,51 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
         </div>
       </div>
     </div>
+    """
+  end
+
+  @doc false
+  # Shared bar markup for any step that has a start time (completed, running,
+  # failed, or skipped-after-starting). States differ only in bar color
+  # (via `bar_color/1`) and the timestamp used to compute `width` upstream -
+  # the rect/label structure itself is identical across states.
+  attr(:x, :float, required: true)
+  attr(:width, :float, required: true)
+  attr(:row_height, :integer, required: true)
+  attr(:status, :string, required: true)
+  attr(:duration_ms, :any, required: true)
+
+  defp step_bar(assigns) do
+    ~H"""
+    <rect
+      x={@x}
+      y="6"
+      width={@width}
+      height={@row_height - 12}
+      rx="3"
+      class={bar_color(@status)}
+    />
+
+    <!-- Duration label - centered in bar if wide, or to the right if narrow -->
+    <%= if @width > 45 do %>
+      <text
+        x={@x + @width / 2}
+        y={@row_height / 2 + 4}
+        class="fill-white text-xs font-medium"
+        text-anchor="middle"
+      >
+        {format_duration(@duration_ms || 0)}
+      </text>
+    <% else %>
+      <text
+        x={@x + @width + 4}
+        y={@row_height / 2 + 4}
+        class="fill-current text-xs"
+        text-anchor="start"
+      >
+        {format_duration(@duration_ms || 0)}
+      </text>
+    <% end %>
     """
   end
 

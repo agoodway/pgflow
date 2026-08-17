@@ -14,11 +14,22 @@ DROP FUNCTION IF EXISTS $SCHEMA$.get_job(text);
 
 --SPLIT--
 
-DROP FUNCTION IF EXISTS $SCHEMA$.list_jobs();
+-- Signatures below must match v01_up.sql exactly: a DROP naming arguments the
+-- CREATE never used is a silent no-op that leaves the function installed, and
+-- the bare DROP SCHEMA at the bottom of this file (no CASCADE) then fails.
+DROP FUNCTION IF EXISTS $SCHEMA$.list_jobs(integer, text);
 
 --SPLIT--
 
-DROP FUNCTION IF EXISTS $SCHEMA$.list_crons();
+DROP FUNCTION IF EXISTS $SCHEMA$.count_jobs();
+
+--SPLIT--
+
+DROP FUNCTION IF EXISTS $SCHEMA$.list_crons(integer, text);
+
+--SPLIT--
+
+DROP FUNCTION IF EXISTS $SCHEMA$.count_crons();
 
 --SPLIT--
 
@@ -30,7 +41,11 @@ DROP FUNCTION IF EXISTS $SCHEMA$.get_flow(text);
 
 --SPLIT--
 
-DROP FUNCTION IF EXISTS $SCHEMA$.list_flows();
+DROP FUNCTION IF EXISTS $SCHEMA$.list_flows(integer, text);
+
+--SPLIT--
+
+DROP FUNCTION IF EXISTS $SCHEMA$.count_flows();
 
 --SPLIT--
 

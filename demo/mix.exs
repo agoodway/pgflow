@@ -54,9 +54,9 @@ defmodule PgflowDemo.MixProject do
       {:postgrex, ">= 0.0.0"},
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.7", only: :dev},
-      {:phoenix_live_view, "~> 1.1.0"},
+      {:phoenix_live_view, "~> 1.2"},
       {:lazy_html, ">= 0.1.0", only: :test},
-      {:phoenix_live_dashboard, "~> 0.8.3"},
+      {:phoenix_live_dashboard, "~> 0.9.0"},
       {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
       {:tailwind, "~> 0.5", runtime: Mix.env() == :dev},
       {:heroicons,
@@ -83,10 +83,10 @@ defmodule PgflowDemo.MixProject do
       {:dotenvy, "~> 1.1"},
 
       # Syntax highlighting for code display
-      {:makeup_elixir, "~> 0.16"},
+      {:makeup_elixir, "~> 1.0"},
 
       # Development tools
-      {:tidewave, "~> 0.5.4", only: :dev},
+      {:tidewave, "~> 0.8.0", only: :dev},
 
       # Code quality
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
