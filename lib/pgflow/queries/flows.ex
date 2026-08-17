@@ -52,7 +52,7 @@ defmodule PgFlow.Queries.Flows do
   worker and risk mislabeling a genuine handler failure.
 
   This snapshot only covers the run's own `status`/`output` — it does not
-  extend to skipped steps. `PgFlow.Client.emit_post_start/4` still calls
+  extend to skipped steps. The private `emit_post_start` client helper still calls
   `PgFlow.Telemetry.emit_skipped_steps/3` as a separate, post-commit query,
   which can race a worker sweeping the same run; see the delivery contract on
   `PgFlow.Telemetry.emit_skipped_steps/4` for what that guarantees.
