@@ -268,6 +268,26 @@ defmodule PgFlow.RuntimeFlowManagementTest do
       assert when_exhausted == "fail"
     end
 
+    test "persists when_exhausted alone, without if/if_not" do
+      {:ok, _} =
+        Client.upsert_flow("test_client_when_exhausted_alone",
+          steps: [%{slug: "step_a", when_exhausted: :skip}]
+        )
+
+      %{rows: [[pattern, when_unmet, when_exhausted]]} =
+        TestRepo.query!(
+          """
+          SELECT required_input_pattern, when_unmet, when_exhausted
+          FROM pgflow.steps WHERE flow_slug = $1 AND step_slug = $2
+          """,
+          ["test_client_when_exhausted_alone", "step_a"]
+        )
+
+      assert pattern == nil
+      assert when_unmet == "skip"
+      assert when_exhausted == "skip"
+    end
+
     test "rejects non-map :if" do
       assert {:error, {:invalid_condition_pattern, :if, "premium"}} =
                Client.upsert_flow("test_invalid_if",

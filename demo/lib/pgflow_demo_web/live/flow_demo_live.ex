@@ -5,6 +5,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   use PgflowDemoWeb, :live_view
 
+  require Logger
+
   alias PgFlow.Client
   alias PgflowDemoWeb.Components.{CronDSL, FlowDSL, PoweredBy}
 
@@ -424,6 +426,29 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     {:noreply, assign(socket, :run_status, :running)}
   end
 
+  # A run that reconcile_run_state/2 already resolved to a terminal status can
+  # still have its run_completed/run_failed PubSub message sitting in the
+  # mailbox (delivered between subscribe and the reconcile read). Without
+  # these guards that late message would log "Flow Complete"/"Flow Failed" a
+  # second time and re-run the terminal bookkeeping.
+  @impl true
+  def handle_info(
+        {:pgflow, _run_id, {:run_completed, _payload}},
+        %{assigns: %{run_status: status}} = socket
+      )
+      when status in [:completed, :failed] do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info(
+        {:pgflow, _run_id, {:run_failed, _payload}},
+        %{assigns: %{run_status: status}} = socket
+      )
+      when status in [:completed, :failed] do
+    {:noreply, socket}
+  end
+
   @impl true
   def handle_info({:pgflow, _run_id, {:run_completed, _payload}}, socket) do
     cancel_timer(socket.assigns.timer_ref)
@@ -564,8 +589,19 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   @doc false
   def reconcile_run_state(socket, run_id) do
     case Client.get_run_with_states(run_id) do
-      {:ok, run} -> apply_run_snapshot(socket, run)
-      {:error, _reason} -> socket
+      {:ok, run} ->
+        apply_run_snapshot(socket, run)
+
+      {:error, reason} ->
+        # Deliberately non-fatal — live PubSub events still drive the UI, so
+        # a failed reconcile read only risks missing events from before the
+        # subscription existed. But say so, or a stuck-on-running UI caused
+        # by this read failing is undebuggable.
+        Logger.warning(
+          "FlowDemoLive: failed to reconcile run #{run_id} after subscribe: #{inspect(reason)}"
+        )
+
+        socket
     end
   end
 
@@ -584,7 +620,12 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       "completed" ->
         duration = elapsed_ms(run)
 
+        # Unsubscribe on a reconciled terminal state, mirroring the live
+        # run_completed/run_failed handlers — the run is over, so the
+        # subscription has nothing left to deliver. (A terminal message
+        # already in the mailbox is dropped by the guards on those handlers.)
         socket
+        |> cleanup_subscription()
         |> assign(:run_status, :completed)
         |> assign(:duration, duration)
         |> assign(:active_edges, MapSet.new())
@@ -601,6 +642,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         # not be dismissable by a later step_skipped for any one step,
         # whether the banner came from a live event or from reconciliation.
         socket
+        |> cleanup_subscription()
         |> assign(:run_status, :failed)
         |> assign(:duration, duration)
         |> assign(:error, "Flow failed: #{error_message}")

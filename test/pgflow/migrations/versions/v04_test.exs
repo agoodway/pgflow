@@ -55,7 +55,17 @@ defmodule PgFlow.Migrations.Versions.V04Test do
   # Everything from the CREATE onward — the leading comment block differs by
   # design (each file explains its own direction).
   defp body(sql) do
-    [_comment, create] = String.split(sql, "CREATE OR REPLACE FUNCTION", parts: 2)
-    create
+    case String.split(sql, "CREATE OR REPLACE FUNCTION", parts: 2) do
+      [_comment, create] ->
+        create
+
+      _ ->
+        flunk("""
+        Expected the SQL file to contain a CREATE OR REPLACE FUNCTION statement,
+        but none was found. First 200 bytes:
+
+        #{String.slice(sql, 0, 200)}
+        """)
+    end
   end
 end

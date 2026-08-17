@@ -777,15 +777,16 @@ defmodule PgFlow.ConditionalStepsTest do
       Server.stop(worker_pid)
     end
 
-    test "a message read after its step was skipped is refused, not dispatched", %{
-      task_supervisor: task_supervisor
-    } do
+    test "a message read after its step was skipped is refused, archived, and never dispatched",
+         %{task_supervisor: task_supervisor} do
       # Harsher than production: the step is skipped while its message stays
       # visible, so the worker really does read a message for a skipped step.
       # (Every SQL skip path archives such messages, so a worker normally holds
       # this message only for the microseconds between reading it and calling
       # start_tasks.) `start_tasks` refuses to return a task whose step_state is
-      # not 'started', so nothing is dispatched.
+      # not 'started', so nothing is dispatched — and the archive-invariant
+      # tripwire then archives the orphaned message itself, instead of leaving
+      # it to redeliver and be refused again forever.
       {:ok, run_id} = Client.start_flow(CondStaleSingleFlow, %{})
       wait_until(fn -> queued_message_count("cond_stale_single_flow") == 1 end)
       skip_step_leaving_message_visible(run_id, "only")
@@ -806,7 +807,12 @@ defmodule PgFlow.ConditionalStepsTest do
 
       refute_received {[:pgflow, :worker, :task, :start], ^ref, _, _}
       refute_received :only_handled
-      assert message_read_count("cond_stale_single_flow") > 0
+
+      # The tripwire moved the orphan out of the live queue; its read_ct in
+      # the archive proves the worker read it (rather than SQL archiving an
+      # unread message).
+      assert queued_message_count("cond_stale_single_flow") == 0
+      assert archived_message_read_count("cond_stale_single_flow") > 0
 
       assert Process.alive?(worker_pid)
       Server.stop(worker_pid)
@@ -864,9 +870,9 @@ defmodule PgFlow.ConditionalStepsTest do
     count
   end
 
-  defp message_read_count(queue_name) do
+  defp archived_message_read_count(queue_name) do
     %{rows: [[read_ct]]} =
-      TestRepo.query!("SELECT coalesce(max(read_ct), 0) FROM pgmq.q_#{queue_name}")
+      TestRepo.query!("SELECT coalesce(max(read_ct), 0) FROM pgmq.a_#{queue_name}")
 
     read_ct
   end

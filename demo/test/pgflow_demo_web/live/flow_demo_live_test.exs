@@ -73,6 +73,33 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
     refute html =~ "Step fetch_article failed"
   end
 
+  # A terminal event can arrive twice: once applied from the DB by
+  # reconcile_run_state/2 and once from the PubSub message that was already
+  # in the mailbox when the reconcile read ran. The guards on the
+  # run_completed/run_failed handlers must drop the late duplicate.
+  test "a second run_completed after the run is already terminal does not double-log", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, "/")
+
+    send(view.pid, {:pgflow, "fake-run-id", {:run_completed, %{output: %{}}}})
+    send(view.pid, {:pgflow, "fake-run-id", {:run_completed, %{output: %{}}}})
+
+    html = render(view)
+    assert length(String.split(html, "Flow Complete")) - 1 == 1
+  end
+
+  test "a late run_failed after the run already completed is ignored", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    send(view.pid, {:pgflow, "fake-run-id", {:run_completed, %{output: %{}}}})
+    send(view.pid, {:pgflow, "fake-run-id", {:run_failed, %{error: "too late"}}})
+
+    html = render(view)
+    refute html =~ "Flow failed: too late"
+    assert html =~ "Completed"
+  end
+
   # Carried finding from Task 3's review: run_failed set :error but left a
   # stale :error_step from an earlier task_failed. A late (or, pre-fix,
   # even a same-run) step_skipped for that stale step would then wrongly

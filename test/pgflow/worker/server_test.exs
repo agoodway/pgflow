@@ -2112,4 +2112,86 @@ defmodule PgFlow.Worker.ServerTest do
       Server.stop(worker_pid)
     end
   end
+
+  describe "archive-invariant tripwire" do
+    # Every SQL skip path archives the skipped step's queued pgmq messages in
+    # the same transaction, so `start_tasks` declining a polled message
+    # normally means the message is already gone (see the no-skip-check note
+    # in dispatch_task/2). If a future SQL bundle ever breaks that invariant,
+    # the orphaned message would redeliver forever — polled each cycle,
+    # declined each cycle, never archived. The worker must detect the decline,
+    # probe the queue, archive messages whose step is terminal, and name the
+    # invariant violation in the log, instead of spinning silently.
+    test "archives a message whose step was skipped without archiving, instead of spinning",
+         %{task_supervisor: task_supervisor} do
+      flow_slug = compile_flow(SimpleWorkerFlow)
+      run_id = start_flow_run(flow_slug, %{"value" => 1})
+
+      # Break the invariant by hand: the step goes terminal but its queued
+      # message is left behind, exactly what a regressed skip path would do.
+      TestRepo.query!(
+        "UPDATE pgflow.step_states SET status = 'skipped', skipped_at = now(), remaining_tasks = NULL, skip_reason = 'condition_unmet' WHERE run_id = $1 AND step_slug = 'process'",
+        [Ecto.UUID.dump!(run_id)]
+      )
+
+      %{rows: [[msg_id]]} =
+        TestRepo.query!(
+          "SELECT message_id FROM pgflow.step_tasks WHERE run_id = $1 AND step_slug = 'process'",
+          [Ecto.UUID.dump!(run_id)]
+        )
+
+      assert queue_count(flow_slug, msg_id) == 1, "sanity: message must start out queued"
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          worker_pid = start_worker(SimpleWorkerFlow, task_supervisor)
+
+          assert wait_until(fn -> archive_count(flow_slug, msg_id) == 1 end),
+                 "expected the orphaned message to be archived by the tripwire"
+
+          Server.stop(worker_pid)
+        end)
+
+      assert queue_count(flow_slug, msg_id) == 0
+      assert log =~ "archive invariant"
+      assert log =~ Integer.to_string(msg_id)
+
+      # The tripwire must clean up without ever running the handler: the step
+      # stays skipped and the run gains no output for it.
+      %{rows: [[step_status]]} =
+        TestRepo.query!(
+          "SELECT status FROM pgflow.step_states WHERE run_id = $1 AND step_slug = 'process'",
+          [Ecto.UUID.dump!(run_id)]
+        )
+
+      assert step_status == "skipped"
+    end
+  end
+
+  defp queue_count(flow_slug, msg_id) do
+    %{rows: [[count]]} =
+      TestRepo.query!("SELECT count(*) FROM pgmq.q_#{flow_slug} WHERE msg_id = $1", [msg_id])
+
+    count
+  end
+
+  defp archive_count(flow_slug, msg_id) do
+    %{rows: [[count]]} =
+      TestRepo.query!("SELECT count(*) FROM pgmq.a_#{flow_slug} WHERE msg_id = $1", [msg_id])
+
+    count
+  end
+
+  defp wait_until(fun, timeout_ms \\ 5000) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    wait_until_loop(fun, deadline)
+  end
+
+  defp wait_until_loop(fun, deadline) do
+    cond do
+      fun.() -> true
+      System.monotonic_time(:millisecond) > deadline -> false
+      true -> Process.sleep(50) && wait_until_loop(fun, deadline)
+    end
+  end
 end

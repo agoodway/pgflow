@@ -82,11 +82,25 @@ defmodule PgFlow.Queries.Flows do
     end
   end
 
+  # The columns pgflow.start_flow's run row is documented (and consumed) as.
+  # Mapped through a fixed table instead of String.to_atom/1 so column names
+  # arriving from the database can never mint new atoms; a column a newer SQL
+  # bundle adds is simply dropped from the snapshot until it is added here.
+  @run_row_columns Map.new(
+                     ~w(run_id flow_slug status input output remaining_steps
+                        started_at completed_at failed_at)a,
+                     &{Atom.to_string(&1), &1}
+                   )
+
   defp row_to_run(columns, row) do
     columns
-    |> Enum.map(&String.to_atom/1)
     |> Enum.zip(row)
-    |> Map.new()
+    |> Enum.reduce(%{}, fn {column, value}, acc ->
+      case Map.fetch(@run_row_columns, column) do
+        {:ok, key} -> Map.put(acc, key, value)
+        :error -> acc
+      end
+    end)
     |> Map.update!(:run_id, &format_uuid/1)
   end
 
@@ -322,6 +336,67 @@ defmodule PgFlow.Queries.Flows do
 
     case SQL.query(repo, sql, [flow_slug, msg_ids, parse_uuid(worker_id)]) do
       {:ok, %{rows: rows}} -> {:ok, rows}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  @doc """
+  Diagnoses messages `pgflow.start_tasks` declined to convert into tasks.
+
+  Under the archive invariant (every SQL path that ends a step — skip,
+  completion, permanent failure — archives that step's queued pgmq messages
+  in the same transaction), a declined message has normally already left the
+  queue. This probe returns the declined messages still present in the live
+  queue, each with the status of the step it belongs to, so the worker can
+  tell a benign race (message already archived) from a broken invariant
+  (message still queued for a terminal step, doomed to redeliver forever).
+
+  Each returned orphan is `%{msg_id:, step_slug:, step_status:}`; the step
+  fields are `nil` when the message has no matching `step_tasks` row.
+  """
+  @spec orphaned_queue_messages(Ecto.Repo.t(), String.t(), [pos_integer()]) ::
+          {:ok,
+           [%{msg_id: integer(), step_slug: String.t() | nil, step_status: String.t() | nil}]}
+          | {:error, term()}
+  def orphaned_queue_messages(repo, flow_slug, msg_ids) do
+    # The queue table name derives from the flow slug, which pgflow validates
+    # as an identifier — same interpolation precedent as ensure_queue_dropped/2.
+    sql = """
+    SELECT q.msg_id, st.step_slug, ss.status
+    FROM pgmq.q_#{flow_slug} AS q
+    LEFT JOIN pgflow.step_tasks AS st
+      ON st.flow_slug = $1 AND st.message_id = q.msg_id
+    LEFT JOIN pgflow.step_states AS ss
+      ON ss.run_id = st.run_id AND ss.step_slug = st.step_slug
+    WHERE q.msg_id = ANY($2::bigint[])
+    """
+
+    case SQL.query(repo, sql, [flow_slug, msg_ids]) do
+      {:ok, %{rows: rows}} ->
+        {:ok,
+         Enum.map(rows, fn [msg_id, step_slug, status] ->
+           %{msg_id: msg_id, step_slug: step_slug, step_status: status}
+         end)}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  @doc """
+  Archives messages out of a flow's live queue.
+
+  Returns `{:ok, archived_msg_ids}` — pgmq reports only the ids it actually
+  archived, so ids already absent from the live queue are missing from the
+  result rather than raising.
+  """
+  @spec archive_messages(Ecto.Repo.t(), String.t(), [pos_integer()]) ::
+          {:ok, [integer()]} | {:error, term()}
+  def archive_messages(repo, flow_slug, msg_ids) do
+    sql = "SELECT pgmq.archive($1::text, $2::bigint[])"
+
+    case SQL.query(repo, sql, [flow_slug, msg_ids]) do
+      {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, fn [msg_id] -> msg_id end)}
       {:error, error} -> {:error, error}
     end
   end

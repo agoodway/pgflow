@@ -691,9 +691,13 @@ defmodule PgFlow.Worker.Server do
     case Flows.start_tasks(state.repo, state.flow_slug, msg_ids, state.worker_id) do
       {:ok, task_details} ->
         # Dispatch each task
-        Enum.reduce(task_details, state, fn task_detail, acc_state ->
-          dispatch_task(acc_state, task_detail)
-        end)
+        state =
+          Enum.reduce(task_details, state, fn task_detail, acc_state ->
+            dispatch_task(acc_state, task_detail)
+          end)
+
+        reap_undispatched_messages(state, msg_ids, task_details)
+        state
 
       {:error, reason} ->
         # Fail safe: a failed start_tasks means the state of these messages is
@@ -703,6 +707,90 @@ defmodule PgFlow.Worker.Server do
         Logger.error("Failed to start tasks for flow #{state.flow_slug}: #{inspect(reason)}")
         state
     end
+  end
+
+  # `pgflow.start_tasks` declining a polled message is normally the benign
+  # half of a race: the step went terminal between `pgmq.read` and
+  # `start_tasks`, and the same SQL transaction that ended the step archived
+  # the message (the archive invariant dispatch_task/2 relies on). This is
+  # the tripwire for the day a SQL bundle regresses that invariant: a
+  # declined message still queued for a terminal step would otherwise
+  # redeliver — and be declined — forever, silently. Archive it and say so.
+  @spec reap_undispatched_messages(state(), [integer()], [list()]) :: :ok
+  defp reap_undispatched_messages(state, polled_msg_ids, task_details) do
+    started_ids = MapSet.new(task_details, &TaskRow.decode(&1).msg_id)
+
+    case Enum.reject(polled_msg_ids, &MapSet.member?(started_ids, &1)) do
+      [] -> :ok
+      declined -> reap_orphaned_messages(state, declined)
+    end
+  end
+
+  defp reap_orphaned_messages(state, declined_msg_ids) do
+    case Flows.orphaned_queue_messages(state.repo, state.flow_slug, declined_msg_ids) do
+      {:ok, []} ->
+        # Benign race: the messages were archived in the same transaction
+        # that ended their steps — exactly what the invariant promises.
+        :ok
+
+      {:ok, orphans} ->
+        {terminal, in_flight} =
+          Enum.split_with(orphans, &(&1.step_status in ["skipped", "completed", "failed"]))
+
+        archive_terminal_orphans(state, terminal)
+        warn_in_flight_orphans(state, in_flight)
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "Failed to probe undispatched messages for flow #{state.flow_slug}: " <>
+            "#{inspect(reason)}; leaving them to redeliver"
+        )
+
+        :ok
+    end
+  end
+
+  defp archive_terminal_orphans(_state, []), do: :ok
+
+  defp archive_terminal_orphans(state, orphans) do
+    msg_ids = Enum.map(orphans, & &1.msg_id)
+    steps = Enum.map(orphans, &{&1.step_slug, &1.step_status})
+
+    Logger.error(
+      "pgflow archive invariant violated for flow #{state.flow_slug}: " <>
+        "messages #{inspect(msg_ids)} are still queued for terminal steps " <>
+        "#{inspect(steps)}; archiving them so they stop redelivering"
+    )
+
+    case Flows.archive_messages(state.repo, state.flow_slug, msg_ids) do
+      {:ok, _archived} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "Failed to archive orphaned messages #{inspect(msg_ids)} for flow " <>
+            "#{state.flow_slug}: #{inspect(reason)}; they will redeliver"
+        )
+
+        :ok
+    end
+  end
+
+  defp warn_in_flight_orphans(_state, []), do: :ok
+
+  defp warn_in_flight_orphans(state, orphans) do
+    # A still-queued message for a non-terminal step usually means a
+    # redelivered message for a task another worker is still executing (its
+    # visibility timeout lapsed mid-run). Not ours to archive — the running
+    # attempt's complete/fail path owns the message — but worth a warning,
+    # since recurring hits mean the visibility timeout is too short.
+    details = Enum.map(orphans, &{&1.msg_id, &1.step_slug, &1.step_status})
+
+    Logger.warning(
+      "start_tasks declined still-queued messages for flow #{state.flow_slug}: " <>
+        "#{inspect(details)}; leaving them to redeliver"
+    )
   end
 
   @spec dispatch_task(state(), list()) :: state()
@@ -727,7 +815,9 @@ defmodule PgFlow.Worker.Server do
     # skip that committed in the microseconds between `start_tasks` returning
     # and the probe's own query - a window it cannot close anyway, since a skip
     # committing one microsecond later still lets the handler run. See the
-    # at-least-once note in this module's docs.
+    # at-least-once note in this module's docs. If the archive half of that
+    # invariant ever regresses in a future SQL bundle,
+    # `reap_undispatched_messages/3` catches the fallout at the batch level.
     %{
       step_slug: step_slug,
       input: input,

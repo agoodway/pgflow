@@ -22,6 +22,8 @@ defmodule PgFlow.Client do
 
   import Ecto.Query
 
+  require Logger
+
   alias PgFlow.Queries.Flows
   alias PgFlow.Schema.Run
   alias PgFlow.Telemetry
@@ -425,7 +427,20 @@ defmodule PgFlow.Client do
           %{flow_slug: flow_slug, run_id: run_id, error: "condition unmet"}
         )
 
-      _ ->
+      %{status: "started"} ->
+        # The normal case: workers will drive the run from here, and they own
+        # the eventual run:completed/run:failed emission.
+        :ok
+
+      other ->
+        # An unrecognized status can only come from a newer/changed SQL bundle.
+        # Emit nothing (the decision table above is exhaustive for the bundle
+        # this code ships with) but say so, rather than silently swallowing it.
+        Logger.warning(
+          "pgflow: unexpected run status #{inspect(other[:status])} on start_flow " <>
+            "snapshot for run #{run_id} (flow #{flow_slug}); no post-start event emitted"
+        )
+
         :ok
     end
   end
@@ -624,8 +639,8 @@ defmodule PgFlow.Client do
     has_if_not = step_has_key?(step, :if_not)
     has_when_unmet = step_has_key?(step, :when_unmet)
 
-    with {:ok, if_opts} <- normalize_condition_pattern(step, :if, has_if),
-         {:ok, if_not_opts} <- normalize_condition_pattern(step, :if_not, has_if_not),
+    with {:ok, if_opts} <- normalize_condition_pattern(step, :if),
+         {:ok, if_not_opts} <- normalize_condition_pattern(step, :if_not),
          :ok <- validate_when_unmet_requires_condition(has_when_unmet, has_if, has_if_not, slug),
          {:ok, when_unmet_opts} <- normalize_condition_mode(step, :when_unmet),
          {:ok, when_exhausted_opts} <- normalize_condition_mode(step, :when_exhausted) do
@@ -638,18 +653,14 @@ defmodule PgFlow.Client do
   end
 
   defp step_has_key?(step, key) do
-    Map.has_key?(step, key) or Map.has_key?(step, Atom.to_string(key))
+    match?({:ok, _}, fetch_step_value(step, key))
   end
 
-  defp normalize_condition_pattern(_step, _key, false), do: {:ok, %{}}
-
-  defp normalize_condition_pattern(step, key, true) do
-    value = get_step_value(step, key)
-
-    if is_map(value) do
-      {:ok, %{Atom.to_string(key) => value}}
-    else
-      {:error, {:invalid_condition_pattern, key, value}}
+  defp normalize_condition_pattern(step, key) do
+    case fetch_step_value(step, key) do
+      :error -> {:ok, %{}}
+      {:ok, value} when is_map(value) -> {:ok, %{Atom.to_string(key) => value}}
+      {:ok, value} -> {:error, {:invalid_condition_pattern, key, value}}
     end
   end
 
@@ -660,16 +671,15 @@ defmodule PgFlow.Client do
     do: :ok
 
   defp normalize_condition_mode(step, key) do
-    if step_has_key?(step, key) do
-      value = get_step_value(step, key)
+    case fetch_step_value(step, key) do
+      :error ->
+        {:ok, %{}}
 
-      if value in @skip_modes or value in @skip_mode_strings do
+      {:ok, value} when value in @skip_modes or value in @skip_mode_strings ->
         {:ok, %{Atom.to_string(key) => value}}
-      else
+
+      {:ok, value} ->
         {:error, {:invalid_condition_mode, key, value}}
-      end
-    else
-      {:ok, %{}}
     end
   end
 
@@ -692,10 +702,20 @@ defmodule PgFlow.Client do
     end)
   end
 
-  defp get_step_value(step, key, default \\ nil) do
+  # Single source of truth for the atom-key-or-string-key step-map shape;
+  # step_has_key?/2, get_step_value/3, and the condition normalizers all
+  # derive from it. Atom key wins when both are present.
+  defp fetch_step_value(step, key) do
     case Map.fetch(step, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> Map.fetch(step, Atom.to_string(key))
+    end
+  end
+
+  defp get_step_value(step, key, default \\ nil) do
+    case fetch_step_value(step, key) do
       {:ok, value} -> value
-      :error -> Map.get(step, to_string(key), default)
+      :error -> default
     end
   end
 
