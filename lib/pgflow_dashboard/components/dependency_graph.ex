@@ -8,9 +8,11 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
   use Phoenix.Component
 
   @node_radius 24
-  @node_spacing_x 160
-  @node_spacing_y 80
+  @node_spacing_y 96
+  @level_gap 48
   @padding 40
+  @padding_top 64
+  @label_char_width 8
 
   @doc """
   Renders a dependency graph for a flow.
@@ -23,9 +25,11 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
 
   """
   attr(:steps, :list, required: true)
+  attr(:id, :string, default: "flow-dependency-graph")
   attr(:step_states, :map, default: %{})
   attr(:highlighted_step, :any, default: nil)
   attr(:on_click, :any, default: nil)
+  attr(:on_keydown, :any, default: nil)
 
   def dependency_graph(assigns) do
     {nodes, edges, width, height} = layout_graph(assigns.steps)
@@ -39,41 +43,59 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
       |> assign(:node_radius, @node_radius)
 
     ~H"""
-    <svg
-      viewBox={"0 0 #{@width} #{@height}"}
-      class="w-full h-auto max-w-2xl mx-auto"
-      role="img"
-      aria-label="Flow dependency graph"
-    >
-      <defs>
-        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-          <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8" />
-        </marker>
-        <marker id="arrowhead-active" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-          <polygon points="0 0, 10 3.5, 0 7" fill="#8b5cf6" />
-        </marker>
-      </defs>
+    <%= if @nodes == [] do %>
+      <div class="rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-400">
+        No workflow steps
+      </div>
+    <% else %>
+      <div
+        id={@id}
+        phx-hook={@on_click && "GraphNodeKeyboard"}
+        class="overflow-x-auto"
+        role="region"
+        tabindex="0"
+        aria-label="Scrollable flow dependency graph"
+      >
+        <svg
+          width={@width}
+          height={@height}
+          viewBox={"0 0 #{@width} #{@height}"}
+          class="block h-auto max-w-none mx-auto"
+          role="group"
+          aria-label="Flow dependency graph"
+        >
+          <defs>
+            <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8" />
+            </marker>
+            <marker id="arrowhead-active" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#8b5cf6" />
+            </marker>
+          </defs>
 
-      <!-- Edges -->
-      <%= for edge <- @edges do %>
-        <.edge
-          edge={edge}
-          step_states={@step_states}
-          node_radius={@node_radius}
-        />
-      <% end %>
+          <!-- Edges -->
+          <%= for edge <- @edges do %>
+            <.edge
+              edge={edge}
+              step_states={@step_states}
+              node_radius={@node_radius}
+            />
+          <% end %>
 
-      <!-- Nodes -->
-      <%= for graph_node <- @nodes do %>
-        <.graph_node
-          node={graph_node}
-          status={Map.get(@step_states, graph_node.slug)}
-          highlighted={@highlighted_step == graph_node.slug}
-          node_radius={@node_radius}
-          on_click={@on_click}
-        />
-      <% end %>
-    </svg>
+          <!-- Nodes -->
+          <%= for graph_node <- @nodes do %>
+            <.graph_node
+              node={graph_node}
+              status={Map.get(@step_states, graph_node.slug)}
+              highlighted={@highlighted_step == graph_node.slug}
+              node_radius={@node_radius}
+              on_click={@on_click}
+              on_keydown={@on_keydown}
+            />
+          <% end %>
+        </svg>
+      </div>
+    <% end %>
     """
   end
 
@@ -132,16 +154,35 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
   attr(:highlighted, :boolean, default: false)
   attr(:node_radius, :integer, required: true)
   attr(:on_click, :any, default: nil)
+  attr(:on_keydown, :any, default: nil)
 
   defp graph_node(assigns) do
+    assigns =
+      assigns
+      |> assign(:status_text, status_label(assigns.status))
+      |> assign(:tooltip_width, max(String.length(status_label(assigns.status)) * 7 + 24, 64))
+
     ~H"""
     <g
-      class="cursor-pointer"
-      role="button"
-      aria-label={"Step: #{@node.label}"}
+      class={[@on_click && "group cursor-pointer focus:outline-none"]}
+      role={@on_click && "button"}
+      tabindex={@on_click && "0"}
+      aria-label={"Step: #{@node.label}, #{status_label(@status)}"}
+      aria-pressed={aria_pressed(@on_click, @highlighted)}
       phx-click={@on_click}
+      phx-keydown={@on_keydown}
       phx-value-step={@node.slug}
     >
+      <circle
+        :if={@on_click}
+        cx={@node.x}
+        cy={@node.y}
+        r={@node_radius + 5}
+        fill="none"
+        stroke-width="3"
+        class="stroke-transparent group-focus-visible:stroke-purple-500"
+      />
+
       <!-- Highlight ring -->
       <circle
         :if={@highlighted}
@@ -158,20 +199,41 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
         cx={@node.x}
         cy={@node.y}
         r={@node_radius}
-        fill={node_fill(@status)}
-        stroke={node_stroke(@status)}
         stroke-width="2"
-        class={node_animation(@status)}
+        class={[node_color_classes(@status), node_animation(@status)]}
       />
 
       <!-- Status icon -->
       <.status_icon status={@status} x={@node.x} y={@node.y} />
 
+      <!-- Status tooltip -->
+      <g
+        aria-hidden="true"
+        class="pointer-events-none opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+      >
+        <rect
+          x={@node.x - @tooltip_width / 2}
+          y={@node.y - @node_radius - 32}
+          width={@tooltip_width}
+          height="24"
+          rx="6"
+          class="fill-slate-900 dark:fill-slate-100"
+        />
+        <text
+          x={@node.x}
+          y={@node.y - @node_radius - 16}
+          text-anchor="middle"
+          class="text-xs font-semibold fill-white dark:fill-slate-900"
+        >
+          {@status_text}
+        </text>
+      </g>
+
       <!-- Label background -->
       <rect
-        x={@node.x - String.length(@node.label) * 4 - 4}
+        x={@node.x - @node.label_width / 2}
         y={@node.y + @node_radius + 4}
-        width={String.length(@node.label) * 8 + 8}
+        width={@node.label_width}
         height="18"
         fill="white"
         fill-opacity="0.9"
@@ -184,7 +246,7 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
         x={@node.x}
         y={@node.y + @node_radius + 16}
         text-anchor="middle"
-        class="text-xs font-medium fill-slate-700 dark:fill-slate-300"
+        class="text-xs font-mono font-medium fill-slate-700 dark:fill-slate-300"
       >
         {@node.label}
       </text>
@@ -244,22 +306,33 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
     """
   end
 
-  defp node_fill(s) when s in [:completed, "completed"], do: "#10b981"
-  defp node_fill(s) when s in [:failed, "failed"], do: "#ef4444"
-  defp node_fill(s) when s in [:started, "started"], do: "#8b5cf6"
-  defp node_fill(s) when s in [:skipped, "skipped"], do: "#94a3b8"
-  defp node_fill(_), do: "#94a3b8"
+  defp node_color_classes(s) when s in [:completed, "completed"],
+    do: "fill-emerald-500 stroke-emerald-600"
 
-  defp node_stroke(s) when s in [:completed, "completed"], do: "#059669"
-  defp node_stroke(s) when s in [:failed, "failed"], do: "#dc2626"
-  defp node_stroke(s) when s in [:started, "started"], do: "#7c3aed"
-  defp node_stroke(s) when s in [:skipped, "skipped"], do: "#64748b"
-  defp node_stroke(_), do: "#64748b"
+  defp node_color_classes(s) when s in [:failed, "failed"],
+    do: "fill-red-500 stroke-red-600"
+
+  defp node_color_classes(s) when s in [:started, "started"],
+    do: "fill-violet-500 stroke-violet-600"
+
+  defp node_color_classes(s) when s in [:skipped, "skipped"],
+    do: "fill-orange-600 stroke-orange-800 dark:fill-amber-400 dark:stroke-amber-200"
+
+  defp node_color_classes(_), do: "fill-slate-400 stroke-slate-500"
 
   defp node_animation(_status) do
     # No animation on the node itself - the spinning icon inside indicates activity
     ""
   end
+
+  defp status_label(status) when status in [:completed, "completed"], do: "Completed"
+  defp status_label(status) when status in [:failed, "failed"], do: "Failed"
+  defp status_label(status) when status in [:started, "started"], do: "Running"
+  defp status_label(status) when status in [:skipped, "skipped"], do: "Skipped"
+  defp status_label(_status), do: "Pending"
+
+  defp aria_pressed(nil, _highlighted), do: nil
+  defp aria_pressed(_on_click, highlighted), do: to_string(highlighted)
 
   # Graph layout algorithm
   defp layout_graph([_ | _] = steps) do
@@ -282,9 +355,32 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
         Map.get(levels, slug, 0)
       end)
 
-    # Position nodes
+    labels =
+      Map.new(steps, fn step ->
+        slug = step[:step_slug] || step["step_slug"]
+        {slug, format_label(slug)}
+      end)
+
+    # Position nodes with enough room for the longest label in each level.
     max_level = levels |> Map.values() |> Enum.max(fn -> 0 end)
     max_width = level_groups |> Map.values() |> Enum.map(&length/1) |> Enum.max(fn -> 1 end)
+
+    level_widths =
+      Map.new(0..max_level, fn level ->
+        width =
+          level_groups
+          |> Map.get(level, [])
+          |> Enum.map(fn step ->
+            slug = step[:step_slug] || step["step_slug"]
+            label_width(Map.fetch!(labels, slug))
+          end)
+          |> Enum.max(fn -> 120 end)
+          |> max(120)
+
+        {level, width}
+      end)
+
+    {level_centers, graph_content_width} = level_centers(level_widths, max_level)
 
     nodes =
       Enum.flat_map(level_groups, fn {level, level_steps} ->
@@ -294,12 +390,14 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
         |> Enum.with_index()
         |> Enum.map(fn {step, idx} ->
           slug = step[:step_slug] || step["step_slug"]
-          x = @padding + @node_spacing_x * level
-          y = @padding + @node_spacing_y * idx + @node_spacing_y * (max_width - count) / 2
+          label = Map.fetch!(labels, slug)
+          x = Map.fetch!(level_centers, level)
+          y = @padding_top + @node_spacing_y * idx + @node_spacing_y * (max_width - count) / 2
 
           %{
             slug: slug,
-            label: format_label(slug),
+            label: label,
+            label_width: label_width(label),
             x: x,
             y: y
           }
@@ -330,10 +428,10 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
         end)
       end)
 
-    width = @padding * 2 + @node_spacing_x * max_level + @node_radius * 2
-    height = @padding * 2 + @node_spacing_y * (max_width - 1) + @node_radius * 2
+    width = @padding * 2 + graph_content_width
+    height = @padding_top + @node_spacing_y * (max_width - 1) + @node_radius + 50
 
-    {nodes, edges, max(width, 200), max(height, 100)}
+    {nodes, edges, max(width, 240), max(height, 138)}
   end
 
   defp layout_graph(_), do: {[], [], 200, 100}
@@ -355,11 +453,23 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
     Map.put(acc, node, max_dep_level + 1)
   end
 
+  defp level_centers(level_widths, max_level) do
+    {centers, cursor} =
+      Enum.reduce(0..max_level, {%{}, 0}, fn level, {centers, cursor} ->
+        width = Map.fetch!(level_widths, level)
+        center = cursor + width / 2
+        {Map.put(centers, level, @padding + center), cursor + width + @level_gap}
+      end)
+
+    {centers, cursor - @level_gap}
+  end
+
+  defp label_width(label), do: String.length(label) * @label_char_width + 16
+
   defp format_label(slug) when is_binary(slug) do
     slug
     |> String.split("_")
     |> Enum.map_join(" ", &String.capitalize/1)
-    |> String.slice(0..15)
   end
 
   defp format_label(slug) when is_atom(slug), do: slug |> to_string() |> format_label()

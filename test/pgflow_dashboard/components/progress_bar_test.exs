@@ -17,7 +17,8 @@ defmodule PgFlowDashboard.Components.ProgressBarTest do
         )
 
       assert html =~ "1 skipped"
-      assert html =~ "bg-amber"
+      assert html =~ "bg-orange-600"
+      assert html =~ "dark:bg-amber-400"
     end
 
     test "renders no skipped segment or count when skipped is 0" do
@@ -31,7 +32,7 @@ defmodule PgFlowDashboard.Components.ProgressBarTest do
         )
 
       refute html =~ "skipped"
-      refute html =~ "bg-amber"
+      refute html =~ "bg-orange"
     end
 
     test "defaults skipped to 0 when the attribute is omitted" do

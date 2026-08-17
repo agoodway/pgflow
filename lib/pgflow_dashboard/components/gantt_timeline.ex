@@ -18,12 +18,12 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
 
   def gantt_timeline(assigns) do
     # Calculate timeline bounds
+    current_time = DateTime.utc_now()
     run_start = assigns.run.started_at
-    run_end = assigns.run.completed_at || DateTime.utc_now()
+    run_end = assigns.run.completed_at || current_time
 
-    total_duration_ms = DateTime.diff(run_end, run_start, :millisecond)
-    # Ensure minimum duration to avoid division by zero
-    total_duration_ms = max(total_duration_ms, 1000)
+    total_duration_ms = max(DateTime.diff(run_end, run_start, :millisecond), 0)
+    timeline_duration_ms = max(total_duration_ms, 1)
 
     # Sort steps by start time (nil starts go last)
     sorted_steps =
@@ -48,6 +48,7 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
       |> assign(:run_start, run_start)
       |> assign(:run_end, run_end)
       |> assign(:total_duration_ms, total_duration_ms)
+      |> assign(:timeline_duration_ms, timeline_duration_ms)
       |> assign(:row_height, row_height)
       |> assign(:label_width, label_width)
       |> assign(:chart_width, chart_width)
@@ -64,7 +65,7 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
         </p>
       </div>
 
-      <div class="p-4 overflow-x-auto">
+      <div class="p-4 overflow-x-auto" role="region" tabindex="0" aria-label="Timeline chart">
         <svg
           width={@label_width + @chart_width + @padding * 2}
           height={@total_height}
@@ -117,11 +118,11 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
                       if step.status == "skipped" do
                         step.skipped_at || step.started_at
                       else
-                        step.completed_at || DateTime.utc_now()
+                        step.completed_at || @run_end
                       end
 
-                    bar_start = calc_position(step.started_at, @run_start, @total_duration_ms, @chart_width)
-                    bar_end = calc_position(bar_end_at, @run_start, @total_duration_ms, @chart_width)
+                    bar_start = calc_position(step.started_at, @run_start, @timeline_duration_ms, @chart_width)
+                    bar_end = calc_position(bar_end_at, @run_start, @timeline_duration_ms, @chart_width)
                     bar_width = max(bar_end - bar_start, 4)
                   %>
                   <.step_bar
@@ -136,10 +137,11 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
                   <!-- Never-started skipped step: ghost/zero-width marker, not the
                        dashed "pending" bar - it never had a chance to run. -->
                   <circle
-                    class="gantt-skip-ghost fill-amber-400 dark:fill-amber-500"
+                    class="gantt-skip-ghost fill-orange-600 stroke-orange-900 dark:fill-amber-400 dark:stroke-amber-200"
                     cx={@label_width + @padding + 2}
                     cy={@row_height / 2 - 2}
                     r="3"
+                    stroke-width="1"
                   />
                   <text
                     x={@label_width + @padding + 10}
@@ -176,7 +178,7 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
 
           <!-- "Now" indicator for running runs -->
           <%= if @run.status == "started" do %>
-            <% now_pos = calc_position(DateTime.utc_now(), @run_start, @total_duration_ms, @chart_width) %>
+            <% now_pos = calc_position(@run_end, @run_start, @timeline_duration_ms, @chart_width) %>
             <g transform={"translate(#{@label_width + @padding + now_pos}, #{@header_height})"}>
               <line
                 x1="0" y1="0"
@@ -194,7 +196,7 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
       </div>
 
       <!-- Legend -->
-      <div class="px-4 py-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 flex items-center gap-4 text-xs">
+      <div class="px-4 py-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
         <div class="flex items-center gap-1.5">
           <span class="w-3 h-3 rounded bg-emerald-500"></span>
           <span class="text-slate-600 dark:text-slate-400">Completed</span>
@@ -208,7 +210,7 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
           <span class="text-slate-600 dark:text-slate-400">Failed</span>
         </div>
         <div class="flex items-center gap-1.5">
-          <span class="w-3 h-3 rounded bg-amber-400 dark:bg-amber-500"></span>
+          <span class="w-3 h-3 rounded bg-orange-600 ring-1 ring-orange-800/40 dark:bg-amber-400 dark:ring-amber-200/50"></span>
           <span class="text-slate-600 dark:text-slate-400">Skipped</span>
         </div>
         <div class="flex items-center gap-1.5">
@@ -247,7 +249,7 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
       <text
         x={@x + @width / 2}
         y={@row_height / 2 + 4}
-        class="fill-white text-xs font-medium"
+        class={[bar_text_color(@status), "text-xs font-medium"]}
         text-anchor="middle"
       >
         {format_duration(@duration_ms || 0)}
@@ -268,14 +270,22 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
   defp calc_position(datetime, run_start, total_duration_ms, chart_width) do
     offset_ms = DateTime.diff(datetime, run_start, :millisecond)
     ratio = offset_ms / total_duration_ms
-    Float.round(ratio * chart_width, 1)
+
+    ratio
+    |> Kernel.*(chart_width)
+    |> max(0.0)
+    |> min(chart_width * 1.0)
+    |> Float.round(1)
   end
 
   defp bar_color("completed"), do: "fill-emerald-500"
   defp bar_color("started"), do: "fill-blue-500"
   defp bar_color("failed"), do: "fill-red-500"
-  defp bar_color("skipped"), do: "fill-amber-400 dark:fill-amber-500"
+  defp bar_color("skipped"), do: "fill-orange-600 dark:fill-amber-400"
   defp bar_color(_), do: "fill-slate-300 dark:fill-slate-600"
+
+  defp bar_text_color("skipped"), do: "fill-white dark:fill-slate-950"
+  defp bar_text_color(_), do: "fill-white"
 
   defp format_duration(ms) when is_number(ms) do
     format_duration_value(ms)

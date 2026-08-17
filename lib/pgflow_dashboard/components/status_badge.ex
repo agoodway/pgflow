@@ -75,7 +75,7 @@ defmodule PgFlowDashboard.Components.StatusBadge do
   end
 
   defp status_classes(:skipped) do
-    "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
+    "bg-orange-100 text-orange-800 ring-1 ring-inset ring-orange-300 dark:bg-amber-900/30 dark:text-amber-300 dark:ring-amber-700"
   end
 
   defp status_classes(_) do

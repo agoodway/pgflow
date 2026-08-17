@@ -42,7 +42,7 @@ defmodule PgFlowDashboard.Components.ProgressBar do
           />
           <div
             :if={@skipped > 0}
-            class="h-full bg-amber-400 dark:bg-amber-500"
+            class="h-full bg-orange-600 dark:bg-amber-400"
             style={"width: #{skipped_width(@skipped, @total)}%"}
           />
           <div

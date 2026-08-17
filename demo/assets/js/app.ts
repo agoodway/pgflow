@@ -26,7 +26,7 @@ import { hooks as colocatedHooks } from "phoenix-colocated/pgflow_demo"
 import topbar from "../vendor/topbar"
 
 // PgFlow Dashboard hooks
-import { DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu } from "pgflow/priv/static/pgflow_dashboard/hooks/index.js"
+import { CopyToClipboard, DarkMode, GraphNodeKeyboard, KeyboardShortcuts, ShortcutsModal, MobileMenu } from "../../../priv/static/pgflow_dashboard/hooks/index.js"
 
 // LiveFilter hooks for filter UI
 import { hooks as liveFilterHooks } from "livefilter/priv/static/live_filter.js"
@@ -62,7 +62,16 @@ const csrfToken = document
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: { _csrf_token: csrfToken },
-  hooks: { ...colocatedHooks, ...liveFilterHooks, DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu },
+  hooks: {
+    ...colocatedHooks,
+    ...liveFilterHooks,
+    CopyToClipboard,
+    DarkMode,
+    GraphNodeKeyboard,
+    KeyboardShortcuts,
+    ShortcutsModal,
+    MobileMenu,
+  },
 })
 
 // Show progress bar on live navigation and form submits

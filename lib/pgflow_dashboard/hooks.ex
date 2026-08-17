@@ -12,10 +12,10 @@ defmodule PgFlowDashboard.Hooks do
 
   Add to your `assets/js/app.js`:
 
-      import { DarkMode, KeyboardShortcuts, ShortcutsModal } from "../../deps/pgflow/priv/static/pgflow_dashboard/hooks"
+      import { CopyToClipboard, DarkMode, GraphNodeKeyboard, KeyboardShortcuts, MobileMenu, ShortcutsModal } from "pgflow/priv/static/pgflow_dashboard/hooks/index.js"
 
       let liveSocket = new LiveSocket("/live", Socket, {
-        hooks: { DarkMode, KeyboardShortcuts, ShortcutsModal, ...YourOtherHooks }
+        hooks: { CopyToClipboard, DarkMode, GraphNodeKeyboard, KeyboardShortcuts, MobileMenu, ShortcutsModal, ...YourOtherHooks }
       })
 
   ### Option 2: Copy the hooks
@@ -24,6 +24,16 @@ defmodule PgFlowDashboard.Hooks do
   `assets/js/` directory and import them from there.
 
   ## Available Hooks
+
+  ### CopyToClipboard
+
+  Copies the text content referenced by `data-copy-target` and announces the
+  result. Used by the dashboard JSON viewer.
+
+  ### GraphNodeKeyboard
+
+  Preserves button-like keyboard behavior for interactive SVG workflow nodes,
+  including preventing Space from scrolling the page.
 
   ### DarkMode
 

@@ -84,6 +84,40 @@ defmodule PgFlowDashboard.Live.LiveHelpers do
   end
 
   @doc """
+  Returns the inclusive UTC bounds of the local calendar day containing `now`.
+  """
+  @spec local_day_bounds(DateTime.t(), Calendar.time_zone()) :: {DateTime.t(), DateTime.t()}
+  def local_day_bounds(%DateTime{} = now, time_zone) do
+    local_day_bounds(now, time_zone, Calendar.get_time_zone_database())
+  end
+
+  @doc false
+  @spec local_day_bounds(DateTime.t(), Calendar.time_zone(), module()) ::
+          {DateTime.t(), DateTime.t()}
+  def local_day_bounds(%DateTime{} = now, time_zone, time_zone_database) do
+    time_zone = if time_zone == "UTC", do: "Etc/UTC", else: time_zone
+
+    date =
+      now
+      |> DateTime.shift_zone!(time_zone, time_zone_database)
+      |> DateTime.to_date()
+
+    start_of_day =
+      date
+      |> DateTime.new!(~T[00:00:00], time_zone, time_zone_database)
+      |> DateTime.shift_zone!("Etc/UTC", time_zone_database)
+
+    end_of_day =
+      date
+      |> Date.add(1)
+      |> DateTime.new!(~T[00:00:00], time_zone, time_zone_database)
+      |> DateTime.shift_zone!("Etc/UTC", time_zone_database)
+      |> DateTime.add(-1, :microsecond)
+
+    {start_of_day, end_of_day}
+  end
+
+  @doc """
   Formats a timestamp for display in the configured time zone.
   """
   def format_timestamp(nil, _time_zone), do: "-"

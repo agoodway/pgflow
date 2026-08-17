@@ -8,6 +8,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   alias PgFlowDashboard.Components.{
     DependencyGraph,
     GanttTimeline,
+    JsonViewer,
     Layouts,
     ProgressBar,
     StatusBadge
@@ -128,23 +129,17 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
 
   @impl true
   def handle_event("select_step", %{"step" => step_slug}, socket) do
-    socket =
-      if socket.assigns.selected_step == step_slug do
-        # Deselect if clicking the same step
-        socket
-        |> assign(:selected_step, nil)
-        |> assign(:step_tasks, [])
-      else
-        # Select the step and load its tasks
-        tasks = Runs.list_step_tasks(socket.assigns.repo, socket.assigns.run_id, step_slug)
-
-        socket
-        |> assign(:selected_step, step_slug)
-        |> assign(:step_tasks, tasks)
-      end
-
-    {:noreply, socket}
+    {:noreply, toggle_step(socket, step_slug)}
   end
+
+  @impl true
+  def handle_event("select_step_keydown", %{"key" => key, "step" => step_slug}, socket)
+      when key in ["Enter", " "] do
+    {:noreply, toggle_step(socket, step_slug)}
+  end
+
+  @impl true
+  def handle_event("select_step_keydown", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("clear_selection", _, socket) do
@@ -241,6 +236,16 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
     |> assign(:step_tasks, tasks)
   end
 
+  defp toggle_step(socket, step_slug) do
+    if socket.assigns.selected_step == step_slug do
+      socket
+      |> assign(:selected_step, nil)
+      |> assign(:step_tasks, [])
+    else
+      select_step(socket, step_slug)
+    end
+  end
+
   defp load_run(socket) do
     case Runs.get_run(socket.assigns.repo, socket.assigns.run_id) do
       {:ok, run} -> assign(socket, :run, run)
@@ -314,12 +319,13 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
         <!-- Workflow (full width) -->
         <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4 mb-6">
           <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Workflow</h2>
-          <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Click a node to view its output</p>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Select a node to view its output</p>
           <DependencyGraph.dependency_graph
             steps={@flow_steps}
             step_states={@step_state_map}
             highlighted_step={@selected_step}
             on_click="select_step"
+            on_keydown="select_step_keydown"
           />
         </div>
 
@@ -329,20 +335,27 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
             <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
               <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Step States</h2>
-              <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Click a step to view its output</p>
+              <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Select a step to view its output</p>
             </div>
-            <div class="divide-y divide-slate-200 dark:divide-slate-700 max-h-64 overflow-y-auto">
+            <div
+              class="divide-y divide-slate-200 dark:divide-slate-700 max-h-64 overflow-y-auto"
+              tabindex="0"
+              aria-label="Step states"
+            >
               <%= if @step_states == [] do %>
                 <div class="px-4 py-8 text-center text-slate-500 dark:text-slate-400 text-sm">
                   No step states yet
                 </div>
               <% else %>
                 <%= for state <- @step_states do %>
-                  <div
+                  <button
+                    type="button"
+                    id={"step-state-#{state.step_slug}"}
                     phx-click="select_step"
                     phx-value-step={state.step_slug}
+                    aria-pressed={to_string(@selected_step == state.step_slug)}
                     class={[
-                      "px-4 py-3 cursor-pointer transition-colors",
+                      "w-full px-4 py-3 text-left cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-purple-500",
                       @selected_step == state.step_slug && "bg-purple-50 dark:bg-purple-900/20 border-l-2 border-l-purple-500 !border-b-transparent",
                       @selected_step != state.step_slug && "hover:bg-slate-50 dark:hover:bg-slate-700/50"
                     ]}
@@ -352,18 +365,18 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
                         <StatusBadge.status_badge status={state.status} size={:sm} pulse={state.status == "started"} />
                         <span class="text-sm font-medium text-slate-900 dark:text-white">{state.step_slug}</span>
                       </div>
-                      <span class="text-xs text-slate-500 dark:text-slate-400">
+                      <span class="text-xs text-slate-950 dark:text-white">
                         {LiveHelpers.format_duration(state.duration_ms)}
                       </span>
                     </div>
-                    <div :if={Map.get(state, :skip_reason)} class="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                      {state.skip_reason}
+                    <div :if={Map.get(state, :skip_reason)} class="mt-1 text-xs text-slate-950 dark:text-white">
+                      Skip reason: {format_skip_reason(state.skip_reason)}
                     </div>
-                    <div :if={state.total_tasks > 0} class="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                    <div :if={state.total_tasks > 0} class="mt-2 text-xs text-slate-950 dark:text-white">
                       Tasks: {state.completed_tasks}/{state.total_tasks}
-                      <span :if={state.failed_tasks > 0} class="text-rose-500">({state.failed_tasks} failed)</span>
+                      <span :if={state.failed_tasks > 0} class="text-rose-900 dark:text-rose-100">({state.failed_tasks} failed)</span>
                     </div>
-                  </div>
+                  </button>
                 <% end %>
               <% end %>
             </div>
@@ -405,9 +418,14 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
               </div>
               <div class="p-4">
                 <%= if @selected_step do %>
-                  <.step_input_display step_slug={@selected_step} step_states={@step_states} run={@run} />
+                  <.step_input_display
+                    id={"step-input-#{@selected_step}"}
+                    step_slug={@selected_step}
+                    step_states={@step_states}
+                    run={@run}
+                  />
                 <% else %>
-                  <pre class="text-xs text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-900 rounded p-3 overflow-x-auto max-h-96"><%= format_json(@run.input) %></pre>
+                  <JsonViewer.json_viewer id="run-input-json" data={@run.input} />
                 <% end %>
               </div>
             </div>
@@ -417,18 +435,28 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
                 <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Output</h2>
               </div>
               <div class="p-4">
-                <%= if @selected_step && @step_tasks != [] do %>
+                <%= cond do %>
+                  <% @selected_step && @step_tasks != [] -> %>
                   <div class="space-y-3">
                     <%= for task <- @step_tasks do %>
                       <div class="border-l-2 border-slate-300 dark:border-slate-600 pl-3">
                         <p class="text-xs text-slate-500 dark:text-slate-400 mb-1">Task {task.task_index}</p>
-                        <pre class="text-xs text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-900 rounded p-3 overflow-x-auto max-h-64"><%= format_json(task.output) %></pre>
-                        <p :if={task.error_message} class="text-xs text-rose-500 mt-2">Error: {task.error_message}</p>
+                        <JsonViewer.json_viewer
+                          id={"step-output-#{@selected_step}-task-#{task.task_index}"}
+                          data={task.output}
+                        />
+                        <p :if={task.error_message} class="text-xs text-rose-600 dark:text-rose-400 mt-2">
+                          Error: {task.error_message}
+                        </p>
                       </div>
                     <% end %>
                   </div>
-                <% else %>
-                  <pre class="text-xs text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-900 rounded p-3 overflow-x-auto max-h-96"><%= format_json(@run.output) %></pre>
+                  <% @selected_step -> %>
+                    <div class="rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-400">
+                      No output was recorded for this step
+                    </div>
+                  <% true -> %>
+                  <JsonViewer.json_viewer id="run-output-json" data={@run.output} />
                 <% end %>
               </div>
             </div>
@@ -440,6 +468,11 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   end
 
   # Component to show step input (based on dependencies)
+  attr(:id, :string, required: true)
+  attr(:step_slug, :string, required: true)
+  attr(:step_states, :list, required: true)
+  attr(:run, :map, required: true)
+
   defp step_input_display(assigns) do
     # Find the step's dependencies
     step_state = Enum.find(assigns.step_states, fn s -> s.step_slug == assigns.step_slug end)
@@ -453,12 +486,12 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
         <p class="text-xs text-slate-500 dark:text-slate-400 italic">
           This step has no dependencies - it receives the run input directly.
         </p>
-        <pre class="text-xs text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-900 rounded p-3 overflow-x-auto max-h-64"><%= format_json(@run.input) %></pre>
+        <JsonViewer.json_viewer id={@id} data={@run.input} />
       <% else %>
-        <p class="text-xs text-slate-500 dark:text-slate-400 italic mb-2">
+        <p class="text-xs text-slate-950 dark:text-white italic mb-2">
           Input comes from dependencies: {Enum.join(@deps, ", ")}
         </p>
-        <p class="text-xs text-slate-400 dark:text-slate-500">
+        <p class="text-xs text-slate-700 dark:text-slate-200">
           (Click on a dependency step to see its output)
         </p>
       <% end %>
@@ -466,13 +499,10 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
     """
   end
 
-  defp format_json(nil), do: "-"
+  defp format_skip_reason("condition_unmet"), do: "Condition not met"
+  defp format_skip_reason("dependency_skipped"), do: "Dependency skipped"
+  defp format_skip_reason("handler_failed"), do: "Handler failed"
 
-  defp format_json(data) when is_map(data) or is_list(data) do
-    Jason.encode!(data, pretty: true)
-  rescue
-    _ -> inspect(data)
-  end
-
-  defp format_json(data), do: inspect(data)
+  defp format_skip_reason(reason),
+    do: reason |> to_string() |> String.replace("_", " ") |> String.capitalize()
 end

@@ -83,7 +83,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
 
     # Redirect to default date range if no started_at filter
     if missing_date_filter?(params) do
-      default_params = default_date_params()
+      default_params = default_date_params(socket.assigns.time_zone)
 
       {:noreply,
        push_patch(socket,
@@ -210,10 +210,9 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
     !(has_legacy_range || has_and_range)
   end
 
-  defp default_date_params do
-    today = Date.utc_today()
-    start_of_day = DateTime.new!(today, ~T[00:00:00], "Etc/UTC")
-    end_of_day = DateTime.new!(today, ~T[23:59:59], "Etc/UTC")
+  defp default_date_params(time_zone) do
+    {start_of_day, end_of_day} =
+      LiveHelpers.local_day_bounds(DateTime.utc_now(), time_zone)
 
     %{
       "and" =>

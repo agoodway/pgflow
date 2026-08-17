@@ -10,8 +10,9 @@ defmodule PgFlowDashboard.Components.StatusBadgeTest do
       html = render_component(&StatusBadge.status_badge/1, status: "skipped")
 
       assert html =~ "Skipped"
-      assert html =~ "bg-amber-100"
-      assert html =~ "text-amber-800"
+      assert html =~ "bg-orange-100"
+      assert html =~ "text-orange-800"
+      assert html =~ "ring-orange-300"
     end
   end
 end

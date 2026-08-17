@@ -5,7 +5,7 @@ defmodule PgFlowDashboard.Live.OverviewLive do
 
   use Phoenix.LiveView
 
-  alias PgFlowDashboard.Components.{Layouts, MetricCard, StatusBadge, TypeBadge}
+  alias PgFlowDashboard.Components.{HealthBadge, Layouts, MetricCard, StatusBadge, TypeBadge}
   alias PgFlowDashboard.Live.LiveHelpers
   alias PgFlowDashboard.Queries.{Metrics, Runs, Workers}
 
@@ -86,7 +86,7 @@ defmodule PgFlowDashboard.Live.OverviewLive do
       <!-- Metrics Grid -->
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <MetricCard.metric_card
-          title="Active Workers"
+          title="Healthy Workers"
           value={@metrics.healthy_workers}
           subtitle={"#{@metrics.stale_workers} stale"}
           href={"#{@base_path}/workers?health=healthy"}
@@ -128,7 +128,7 @@ defmodule PgFlowDashboard.Live.OverviewLive do
                 <div class="px-4 py-3">
                   <div class="flex items-center justify-between">
                     <div class="flex items-center gap-3">
-                      <.health_indicator status={worker.health_status} />
+                      <HealthBadge.health_badge status={worker.health_status} size={:sm} />
                       <div>
                         <div class="flex items-center gap-2">
                           <p class="text-sm font-medium text-slate-900 dark:text-white">{worker.flow_slug}</p>
@@ -179,7 +179,9 @@ defmodule PgFlowDashboard.Live.OverviewLive do
                     </div>
                     <div class="text-right">
                       <p class="text-xs text-slate-500 dark:text-slate-400">{LiveHelpers.format_duration(run.duration_ms)}</p>
-                      <p class="text-xs text-slate-400">{LiveHelpers.format_percent(run.progress_percent)}%</p>
+                      <p class="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+                        {LiveHelpers.format_percent(run.progress_percent)}%
+                      </p>
                     </div>
                   </div>
                 </.link>
@@ -189,21 +191,6 @@ defmodule PgFlowDashboard.Live.OverviewLive do
         </div>
       </div>
     </Layouts.dashboard_layout>
-    """
-  end
-
-  defp health_indicator(assigns) do
-    color =
-      case assigns.status do
-        "healthy" -> "bg-emerald-500"
-        "stale" -> "bg-amber-500"
-        _ -> "bg-slate-400"
-      end
-
-    assigns = assign(assigns, :color, color)
-
-    ~H"""
-    <span class={["w-2 h-2 rounded-full", @color]} />
     """
   end
 end

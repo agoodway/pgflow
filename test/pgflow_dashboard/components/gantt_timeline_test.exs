@@ -43,11 +43,19 @@ defmodule PgFlowDashboard.Components.GanttTimelineTest do
 
       # None of the skipped-specific styling should be present
       refute html =~ "gantt-skip-ghost"
-      refute html =~ "fill-amber"
+      refute html =~ "fill-orange"
       refute html =~ "Skipped</text>"
 
       # No pending dashed indicator either (every step ran to completion)
       refute html =~ ~s(stroke-dasharray="4,4")
+    end
+
+    test "makes the horizontally scrollable chart keyboard accessible" do
+      html = render_component(&GanttTimeline.gantt_timeline/1, run: @run, step_states: [])
+
+      assert html =~ ~s(role="region")
+      assert html =~ ~s(tabindex="0")
+      assert html =~ ~s(aria-label="Timeline chart")
     end
   end
 
@@ -69,11 +77,13 @@ defmodule PgFlowDashboard.Components.GanttTimelineTest do
 
       assert html =~ "gantt-skip-ghost"
       assert html =~ "Skipped"
+      assert html =~ "fill-orange-600"
+      assert html =~ "stroke-orange-900"
     end
 
     test "a started-then-skipped step's bar ends at skipped_at, not now/completed_at" do
       started_at = DateTime.add(@run_start, 5, :second)
-      skipped_at = DateTime.add(started_at, 5, :second)
+      skipped_at = DateTime.add(started_at, 10, :second)
 
       step_states = [
         %{
@@ -82,14 +92,15 @@ defmodule PgFlowDashboard.Components.GanttTimelineTest do
           started_at: started_at,
           completed_at: nil,
           skipped_at: skipped_at,
-          duration_ms: 5_000
+          duration_ms: 10_000
         }
       ]
 
       html =
         render_component(&GanttTimeline.gantt_timeline/1, run: @run, step_states: step_states)
 
-      assert html =~ "fill-amber"
+      assert html =~ "fill-orange-600"
+      assert html =~ "dark:fill-slate-950"
       refute html =~ "gantt-skip-ghost"
     end
 
@@ -97,6 +108,48 @@ defmodule PgFlowDashboard.Components.GanttTimelineTest do
       html = render_component(&GanttTimeline.gantt_timeline/1, run: @run, step_states: [])
 
       assert html =~ "Skipped"
+      assert html =~ "bg-orange-600"
+      assert html =~ "ring-orange-800/40"
+      assert html =~ "flex-wrap"
+    end
+  end
+
+  describe "gantt_timeline/1 - fast runs" do
+    test "reports the actual sub-second run duration" do
+      run = %{
+        started_at: @run_start,
+        completed_at: DateTime.add(@run_start, 41, :millisecond),
+        status: "completed"
+      }
+
+      html = render_component(&GanttTimeline.gantt_timeline/1, run: run, step_states: [])
+
+      assert html =~ "Total: 41ms"
+      refute html =~ "Total: 1.0s"
+    end
+
+    test "clamps step bars to the chart bounds" do
+      run = %{
+        started_at: @run_start,
+        completed_at: DateTime.add(@run_start, 1, :millisecond),
+        status: "completed"
+      }
+
+      step_states = [
+        %{
+          step_slug: "outside_bounds",
+          status: "completed",
+          started_at: DateTime.add(@run_start, -1, :millisecond),
+          completed_at: DateTime.add(@run_start, 5, :millisecond),
+          skipped_at: nil,
+          duration_ms: 6
+        }
+      ]
+
+      html = render_component(&GanttTimeline.gantt_timeline/1, run: run, step_states: step_states)
+
+      assert html =~ ~s(x="188.0")
+      assert html =~ ~s(width="460.0")
     end
   end
 end

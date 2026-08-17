@@ -50,7 +50,7 @@ The dashboard's Runs page uses [LiveFilter](https://github.com/agoodway/livefilt
 def deps do
   [
     {:pgflow, "~> 0.1.0"},
-    {:live_filter, github: "agoodway/livefilter"}
+    {:livefilter, "~> 0.2.0"}
   ]
 end
 ```
@@ -66,11 +66,11 @@ mix deps.get
 **JavaScript hooks** — Add both PgFlow Dashboard and LiveFilter hooks to your LiveSocket in `assets/js/app.js`:
 
 ```javascript
-import { DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu } from "../../deps/pgflow/priv/static/pgflow_dashboard/hooks"
-import { hooks as liveFilterHooks } from "live_filter"
+import { CopyToClipboard, DarkMode, GraphNodeKeyboard, KeyboardShortcuts, ShortcutsModal, MobileMenu } from "pgflow/priv/static/pgflow_dashboard/hooks/index.js"
+import { hooks as liveFilterHooks } from "livefilter/priv/static/live_filter.js"
 
 let liveSocket = new LiveSocket("/live", Socket, {
-  hooks: { ...liveFilterHooks, DarkMode, KeyboardShortcuts, ShortcutsModal, MobileMenu, ...yourOtherHooks }
+  hooks: { ...liveFilterHooks, CopyToClipboard, DarkMode, GraphNodeKeyboard, KeyboardShortcuts, ShortcutsModal, MobileMenu, ...yourOtherHooks }
 })
 ```
 
@@ -88,11 +88,12 @@ config :esbuild,
   ]
 ```
 
-**Tailwind** — Add LiveFilter and DaisyUI component paths so Tailwind generates their classes. In your CSS file (e.g. `assets/css/app.css`):
+**Tailwind** — Add the dashboard, LiveFilter, and DaisyUI component paths so Tailwind generates their classes. In your CSS file (e.g. `assets/css/app.css`):
 
 ```css
+@source "../../deps/pgflow/lib/pgflow_dashboard";
 @source "../../deps/daisy_ui_components";
-@source "../../deps/live_filter";
+@source "../../deps/livefilter";
 ```
 
 Or if using `tailwind.config.js`:
@@ -101,8 +102,9 @@ Or if using `tailwind.config.js`:
 module.exports = {
   content: [
     // ... existing paths ...
+    "../deps/pgflow/lib/pgflow_dashboard/**/*.*ex",
     "../deps/daisy_ui_components/**/*.*ex",
-    "../deps/live_filter/**/*.*ex",
+    "../deps/livefilter/**/*.*ex",
   ],
 }
 ```
@@ -214,6 +216,6 @@ mix ecto.migrate
 
 **Real-time updates not working** -- Check that PubSub is configured and the `PgFlowDashboard` supervisor is running.
 
-**Hooks not working** -- Verify all four hooks (`DarkMode`, `KeyboardShortcuts`, `ShortcutsModal`, `MobileMenu`) and `liveFilterHooks` are registered with your LiveSocket.
+**Hooks not working** -- Verify the dashboard hooks (`CopyToClipboard`, `DarkMode`, `GraphNodeKeyboard`, `KeyboardShortcuts`, `ShortcutsModal`, `MobileMenu`) and `liveFilterHooks` are registered with your LiveSocket.
 
-**Runs page filters not rendering** -- Ensure `live_filter` is in your deps, esbuild `NODE_PATH` includes `deps/`, and Tailwind scans `daisy_ui_components` and `live_filter` paths.
+**Runs page filters not rendering** -- Ensure `livefilter` is in your deps, esbuild `NODE_PATH` includes `deps/`, and Tailwind scans `pgflow`, `daisy_ui_components`, and `livefilter` paths.
