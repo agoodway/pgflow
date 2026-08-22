@@ -152,4 +152,18 @@ defmodule PgFlow.ClientTest do
       assert is_binary(run_id)
     end
   end
+
+  # ── signal/3,4 ─────────────────────────────────────────────────────
+
+  describe "signal/3 and signal/4" do
+    test "returns :ok for a buffered payload targeting an existing run" do
+      {:ok, run_id} = Client.start_flow(ClientTestFlow, %{"value" => 1})
+      assert :ok = Client.signal(run_id, :process, %{"decision" => "approved"})
+      assert :ok = Client.signal(run_id, "process", 0, %{"decision" => "approved"})
+    end
+
+    test "returns :ok for a missing run (no-op)" do
+      assert :ok = Client.signal(Ecto.UUID.generate(), :process, %{"ok" => true})
+    end
+  end
 end

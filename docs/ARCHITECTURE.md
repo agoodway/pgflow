@@ -93,6 +93,7 @@ PgFlow.Supervisor (rest_for_one)
 |   |-- Worker.Server (job: send_email)
 |   +-- ...
 |-- StalledTaskRecovery
+|-- WaitingTaskRecovery
 +-- :flow_starter (temporary Task — registers flows/jobs, starts workers)
 ```
 
@@ -256,6 +257,27 @@ States managed by `PgFlow.Worker.Lifecycle`:
 
 `StalledTaskRecovery` GenServer sweeps every `recovery_interval` (default: 15s) for tasks stuck in `started` status beyond `stale_threshold` (default: 60s). Resets them to `queued` and makes their pgmq messages immediately visible via `pgflow.set_vt_batch`.
 
+## Awaiting signals
+
+Handlers may call `PgFlow.Context.await_signal/2` to park a task as `waiting`
+until `PgFlow.signal/3` delivers a JSON payload. This is unrelated to
+`signal_strategy: :notify`, which only wakes workers on pgmq inserts.
+
+Parked tasks are not stalled: `recover_stalled_tasks` still selects only
+`st.status = 'started'`. `WaitingTaskRecovery` re-queues `waiting` tasks
+whose `wait_deadline_at` has passed so the next `await_signal` returns
+`{:error, :timeout}`.
+
+```elixir
+case PgFlow.Context.await_signal(ctx, wait_for: {24, :hours}, wait_timeout: 5_000) do
+  {:ok, %{"decision" => "approved"}} -> charge_card(input)
+  {:ok, %{"decision" => "rejected"}} -> raise "rejected"
+  {:error, :timeout} -> raise "no decision"
+end
+
+PgFlow.signal(run_id, :approval, %{"decision" => "approved"})
+```
+
 ## OTP Integration
 
 PgFlow leverages OTP primitives for fault tolerance:
@@ -284,6 +306,7 @@ The Deno implementation uses stateless edge functions with external coordination
   max_concurrency: 10,              # parallel tasks per worker
   batch_size: 10,                   # messages per poll
   recovery_interval: 15_000,        # stalled task sweep (ms)
+  waiting_recovery_interval: 15_000,# waiting-task timeout sweep (ms)
   stale_threshold: 60,              # seconds before task is stale
   worker_name: "my-app",            # optional human-readable prefix for logs
   attach_default_logger: false}     # attach telemetry logger (default: false)

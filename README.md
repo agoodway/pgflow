@@ -15,6 +15,7 @@ A native Elixir implementation of [pgflow](https://pgflow.dev) — a PostgreSQL-
 - **Automatic retries** — Failed steps retry with exponential backoff. Only failed steps retry, not the whole workflow.
 - **Parallel processing** — Steps run concurrently when dependencies allow. Fan-out with `map` for array processing.
 - **Conditional steps** — Elixir supports pgflow 0.14 conditional steps (`if` / `if_not` / `when_unmet` / `when_exhausted`).
+- **Awaiting signals** — Park a Job or Flow task mid-handler with `Context.await_signal/2` until `PgFlow.signal/3` delivers a JSON payload. Unrelated to `signal_strategy: :notify`, which only wakes workers on pgmq inserts.
 - **Cross-language** — Same flows can be processed by Elixir or Deno (Supabase) workers side-by-side.
 
 ## Further Reading
@@ -213,6 +214,26 @@ mix ecto.migrate
 ```elixir
 # Enqueue a job
 {:ok, run_id} = PgFlow.enqueue(MyApp.Jobs.SendEmail, %{"to" => "user@example.com", "subject" => "Hello"})
+```
+
+## Awaiting Signals
+
+Park a Job or Flow handler until an external event (approval, webhook) arrives.
+This is **not** `signal_strategy: :notify` (pgmq worker wake-ups).
+
+```elixir
+step :approval do
+  fn input, ctx ->
+    case PgFlow.Context.await_signal(ctx, wait_for: {24, :hours}) do
+      {:ok, %{"decision" => "approved"}} -> Map.put(input, "charged", true)
+      {:ok, _} -> raise "rejected"
+      {:error, :timeout} -> raise "no decision"
+    end
+  end
+end
+
+# From a controller, webhook, or IEx:
+PgFlow.signal(run_id, :approval, %{"decision" => "approved"})
 ```
 
 ## Cron Scheduling

@@ -46,6 +46,19 @@ defmodule PgFlow do
 
       {:ok, run_id} = PgFlow.start_flow(MyApp.Flows.ProcessOrder, %{"order_id" => 123})
 
+  ## Awaiting signals
+
+  Handlers may park mid-execution with `PgFlow.Context.await_signal/2` until
+  `PgFlow.signal/3` delivers a JSON payload. This is unrelated to
+  `signal_strategy` / `PgFlow.Signal.Notify`.
+
+      case PgFlow.Context.await_signal(ctx, wait_for: {24, :hours}) do
+        {:ok, %{"decision" => "approved"}} -> charge(input)
+        {:error, :timeout} -> raise "no decision"
+      end
+
+      PgFlow.signal(run_id, :approval, %{"decision" => "approved"})
+
   ## Configuration
 
   Add PgFlow to your supervision tree:
@@ -106,6 +119,21 @@ defmodule PgFlow do
   """
   @spec start_flow(module() | atom() | String.t(), map()) :: {:ok, String.t()} | {:error, term()}
   defdelegate start_flow(flow_module_or_slug, input), to: Client
+
+  @doc """
+  Delivers a JSON payload to a parked or not-yet-awaited task.
+
+  See `PgFlow.Client.signal/3`. Unrelated to `signal_strategy` /
+  `PgFlow.Signal.Notify`.
+  """
+  @spec signal(String.t(), atom() | String.t(), map() | list()) :: :ok
+  defdelegate signal(run_id, step_slug, payload), to: Client
+
+  @doc """
+  Same as `signal/3` with an explicit `task_index` for map tasks.
+  """
+  @spec signal(String.t(), atom() | String.t(), non_neg_integer(), map() | list()) :: :ok
+  defdelegate signal(run_id, step_slug, task_index, payload), to: Client
 
   @doc """
   Starts a flow and waits for completion.

@@ -8,13 +8,15 @@ defmodule PgFlow.Supervisor do
   - TaskSupervisor - Supervises async task execution
   - WorkerSupervisor - Supervises flow workers
   - StalledTaskRecovery - Recovers orphaned tasks
+  - WaitingTaskRecovery - Re-queues expired `waiting` tasks
 
   ## Supervision Tree
 
       PgFlow.Supervisor
       ├── Task.Supervisor (PgFlow.TaskSupervisor)
       ├── PgFlow.WorkerSupervisor
-      └── PgFlow.Worker.StalledTaskRecovery
+      ├── PgFlow.Worker.StalledTaskRecovery
+      └── PgFlow.Worker.WaitingTaskRecovery
 
   """
 
@@ -23,7 +25,7 @@ defmodule PgFlow.Supervisor do
 
   alias PgFlow.{Config, FlowStarter, Telemetry, WorkerSupervisor}
   alias PgFlow.Signal
-  alias PgFlow.Worker.StalledTaskRecovery
+  alias PgFlow.Worker.{StalledTaskRecovery, WaitingTaskRecovery}
 
   @task_supervisor PgFlow.TaskSupervisor
 
@@ -68,6 +70,7 @@ defmodule PgFlow.Supervisor do
         notify_child(signal_strategy, repo, notify_throttle_ms),
         {WorkerSupervisor, config},
         {StalledTaskRecovery, config},
+        {WaitingTaskRecovery, config},
         {FlowStarter,
          repo: repo,
          flows: flows,

@@ -25,6 +25,7 @@ defmodule PgFlow.Client do
   require Logger
 
   alias PgFlow.Queries.Flows
+  alias PgFlow.Queries.Signals
   alias PgFlow.Schema.Run
   alias PgFlow.Telemetry
 
@@ -77,6 +78,44 @@ defmodule PgFlow.Client do
   @spec enqueue(module(), map()) :: {:ok, String.t()} | {:error, term()}
   def enqueue(job_module, input) when is_atom(job_module) and is_map(input) do
     start_flow(job_module, input)
+  end
+
+  @doc """
+  Delivers a JSON payload to a task addressed by `run_id` + `step_slug`
+  (`task_index` 0).
+
+  Fire-and-forget: always returns `:ok`. An early signal is buffered until
+  `PgFlow.Context.await_signal/2` consumes it. Signalling a `waiting` task
+  re-queues it. Missing or terminal tasks are a no-op.
+
+  This is unrelated to `signal_strategy` / `PgFlow.Signal.Notify`, which only
+  wake workers on pgmq inserts.
+  """
+  @spec signal(String.t(), atom() | String.t(), map() | list()) :: :ok
+  def signal(run_id, step_slug, payload) when is_map(payload) or is_list(payload) do
+    signal(run_id, step_slug, 0, payload)
+  end
+
+  @doc """
+  Same as `signal/3` with an explicit `task_index` for map tasks.
+  """
+  @spec signal(String.t(), atom() | String.t(), non_neg_integer(), map() | list()) :: :ok
+  def signal(run_id, step_slug, task_index, payload)
+      when (is_map(payload) or is_list(payload)) and is_integer(task_index) and task_index >= 0 do
+    slug = to_string(step_slug)
+
+    with {:ok, repo} <- get_repo() do
+      case Signals.signal_task(repo, run_id, slug, task_index, payload) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Logger.debug("PgFlow.signal no-op: #{inspect(reason)}")
+          :ok
+      end
+    end
+
+    :ok
   end
 
   @doc """

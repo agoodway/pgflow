@@ -147,6 +147,11 @@ defmodule PgFlow.ConfigTest do
       assert config[:recovery_interval] == 15_000
     end
 
+    test "applies default 15_000 for :waiting_recovery_interval" do
+      config = Config.validate!(repo: ValidTestRepo)
+      assert config[:waiting_recovery_interval] == 15_000
+    end
+
     test "applies default 60 for :stale_threshold" do
       config = Config.validate!(repo: ValidTestRepo)
       assert config[:stale_threshold] == 60
