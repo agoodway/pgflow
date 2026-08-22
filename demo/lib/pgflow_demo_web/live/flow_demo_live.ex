@@ -139,6 +139,9 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       nil ->
         {:noreply, socket}
 
+      :cron ->
+        {:noreply, assign(socket, :selected_flow, :cron)}
+
       selected ->
         {:noreply, switch_flow(socket, selected)}
     end
@@ -587,6 +590,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp parse_flow_key("article"), do: :article
   defp parse_flow_key("onboarding"), do: :onboarding
   defp parse_flow_key("approval"), do: :approval
+  defp parse_flow_key("cron"), do: :cron
   defp parse_flow_key(_), do: nil
 
   defp start_selected_flow(socket, flow_slug, input) do
@@ -1174,7 +1178,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         </div>
 
         <!-- Interactive tip -->
-        <div class="mb-6 px-4 py-3 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center gap-3">
+        <div
+          :if={@selected_flow != :cron}
+          class="mb-6 px-4 py-3 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center gap-3"
+        >
           <span class="text-purple-400 text-lg" title="Tip">ⓘ</span>
           <p class="text-purple-300/80 text-sm">
             Click on
@@ -1185,9 +1192,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <a href="#flow-dsl" class="text-orange-400 hover:underline underline-offset-2">
               Flow DSL
             </a>
-            steps, <a href="#cron-dsl" class="text-amber-400 hover:underline underline-offset-2">
-              Cron DSL
-            </a>, or
+            steps, or
             <a href="#event-log" class="text-cyan-400 hover:underline underline-offset-2">
               Event Log
             </a>
@@ -1201,7 +1206,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
         <!-- Input -->
         <div class="backdrop-blur-xl bg-white/5 rounded-2xl p-6 mb-6 border border-white/10">
-          <div class="flex gap-2 mb-4">
+          <div class={["flex gap-2", @selected_flow != :cron && "mb-4"]}>
             <button
               type="button"
               id="tab-article"
@@ -1228,6 +1233,15 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               class={flow_tab_class(@selected_flow == :approval)}
             >
               Approval
+            </button>
+            <button
+              type="button"
+              id="tab-cron"
+              phx-click="select_flow"
+              phx-value-flow="cron"
+              class={flow_tab_class(@selected_flow == :cron)}
+            >
+              Cron
             </button>
           </div>
 
@@ -1359,7 +1373,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </button>
           </div>
 
-          <div class="mt-4 flex items-center justify-between">
+          <div :if={@selected_flow != :cron} class="mt-4 flex items-center justify-between">
             <div class="flex items-center gap-3">
               <div class={"flex items-center gap-2 px-3 py-1 rounded-full #{status_bg(@run_status)}"}>
                 <div class={"w-2 h-2 rounded-full #{if @run_status == :running, do: "animate-pulse"} #{status_color(@run_status)} bg-current"}>
@@ -1387,7 +1401,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         </div>
 
         <!-- Main Grid - Side by side on md+ screens, stacked on mobile -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div :if={@selected_flow != :cron} class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <!-- Workflow -->
           <div
             id="workflow"
@@ -1628,6 +1642,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
         <!-- Flow DSL -->
         <div
+          :if={@selected_flow != :cron}
           id="flow-dsl"
           class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
         >
@@ -1674,6 +1689,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
         <!-- Step Output -->
         <div
+          :if={@selected_flow != :cron}
           id="step-output"
           class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
         >
@@ -1710,6 +1726,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
         <!-- Cron DSL -->
         <div
+          :if={@selected_flow == :cron}
           id="cron-dsl"
           class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
         >

@@ -142,6 +142,40 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
     assert html =~ "create_order" or html =~ "await_approval"
   end
 
+  test "Cron DSL is not rendered on the default Article tab", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/")
+
+    refute html =~ ~s(id="cron-dsl")
+    refute html =~ "Scheduled cleanup job"
+    assert html =~ ~s(id="tab-cron")
+    assert html =~ "Start Flow"
+  end
+
+  test "Cron tab shows the scheduled job DSL and hides flow controls", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    html = view |> element("#tab-cron") |> render_click()
+
+    assert html =~ ~s(id="cron-dsl")
+    assert html =~ "Scheduled cleanup job"
+    assert html =~ "article_flow_cleanup"
+    refute html =~ "Start Flow"
+    refute html =~ ~s(id="workflow")
+    refute html =~ ~s(id="flow-dsl")
+    refute html =~ ~s(id="article-form")
+  end
+
+  test "switching from Cron back to Article restores the flow UI", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    view |> element("#tab-cron") |> render_click()
+    html = view |> element("#tab-article") |> render_click()
+
+    refute html =~ ~s(id="cron-dsl")
+    assert html =~ "Start Flow"
+    assert html =~ ~s(id="workflow")
+  end
+
   test "task_waiting for await_approval shows Approve and Reject", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     view |> element("#tab-approval") |> render_click()
