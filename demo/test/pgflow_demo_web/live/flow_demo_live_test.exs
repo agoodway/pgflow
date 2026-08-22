@@ -157,6 +157,47 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
     assert has_element?(view, "#approval-reject")
   end
 
+  test "apply_waiting_task_statuses overlays waiting tasks over started/running steps" do
+    steps_config = [
+      %{slug: :create_order},
+      %{slug: :await_approval},
+      %{slug: :charge}
+    ]
+
+    steps = %{create_order: :completed, await_approval: :running, charge: :pending}
+
+    task_rows = [
+      %{step_slug: "create_order", status: "completed"},
+      %{step_slug: "await_approval", status: "waiting"},
+      %{step_slug: "charge", status: "queued"}
+    ]
+
+    result =
+      PgflowDemoWeb.FlowDemoLive.apply_waiting_task_statuses(steps, task_rows, steps_config)
+
+    assert result[:create_order] == :completed
+    assert result[:await_approval] == :waiting
+    assert result[:charge] == :pending
+  end
+
+  test "apply_waiting_task_statuses ignores unknown slugs and non-waiting rows" do
+    steps_config = [%{slug: :await_approval}]
+    steps = %{await_approval: :running}
+
+    result =
+      PgflowDemoWeb.FlowDemoLive.apply_waiting_task_statuses(
+        steps,
+        [
+          %{step_slug: "await_approval", status: "started"},
+          %{step_slug: "unknown_step", status: "waiting"}
+        ],
+        steps_config
+      )
+
+    assert result[:await_approval] == :running
+    refute Map.has_key?(result, :unknown_step)
+  end
+
   test "task_started after waiting hides Approve and Reject", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     view |> element("#tab-approval") |> render_click()

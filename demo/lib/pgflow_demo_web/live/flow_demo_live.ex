@@ -5,9 +5,12 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   use PgflowDemoWeb, :live_view
 
+  import Ecto.Query, only: [from: 2]
+
   require Logger
 
   alias PgFlow.Client
+  alias PgFlow.Schema.StepTask
   alias PgflowDemoWeb.Components.{CronDSL, FlowDSL, PoweredBy}
 
   # UI Constants
@@ -668,12 +671,37 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
+  # Maps task rows onto the LiveView steps map. Only `status == "waiting"`
+  # is applied; other task statuses are ignored so step_states remain source
+  # of truth for started/completed/failed/skipped.
+  @doc false
+  def apply_waiting_task_statuses(steps, task_rows, steps_config) do
+    Enum.reduce(task_rows, steps, fn row, acc ->
+      if task_row_status(row) == "waiting" do
+        case to_step_atom(task_row_step_slug(row), steps_config) do
+          nil -> acc
+          step_atom -> Map.put(acc, step_atom, :waiting)
+        end
+      else
+        acc
+      end
+    end)
+  end
+
   defp apply_run_snapshot(socket, run) do
     steps_config = socket.assigns.steps_config
 
+    # step_states has no "waiting" status (parked tasks stay "started" there).
+    # Overlay from step_tasks so a missed task_waiting PubSub event still
+    # shows Approve/Reject. Do not map step_states "started" to :waiting.
+    steps =
+      socket.assigns.steps
+      |> merge_step_statuses(run.step_states, steps_config)
+      |> apply_waiting_task_statuses(waiting_task_rows(run.run_id), steps_config)
+
     socket =
       socket
-      |> assign(:steps, merge_step_statuses(socket.assigns.steps, run.step_states, steps_config))
+      |> assign(:steps, steps)
       |> assign(
         :step_outputs,
         merge_step_outputs(socket.assigns.step_outputs, run.step_states, steps_config)
@@ -725,6 +753,24 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         step_atom -> Map.put(acc, step_atom, step_state_status(step_state.status))
       end
     end)
+  end
+
+  defp task_row_status(row), do: Map.get(row, :status) || Map.get(row, "status")
+  defp task_row_step_slug(row), do: Map.get(row, :step_slug) || Map.get(row, "step_slug")
+
+  defp waiting_task_rows(run_id) do
+    from(t in StepTask,
+      where: t.run_id == ^run_id and t.status == "waiting",
+      select: %{step_slug: t.step_slug, status: t.status}
+    )
+    |> PgflowDemo.Repo.all()
+  rescue
+    error ->
+      Logger.warning(
+        "FlowDemoLive: failed to load waiting tasks for run #{run_id}: #{inspect(error)}"
+      )
+
+      []
   end
 
   defp step_state_status("completed"), do: :completed
