@@ -20,6 +20,12 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   @default_url "https://www.pgflow.dev/news/pgflow-0-13-1-cli-fix-step-output-storage-for-conditional-execution/"
 
+  @send_email_input %{
+    "to" => "demo@pgflow.dev",
+    "subject" => "Welcome to PgFlow",
+    "body" => "This email was enqueued as a Job."
+  }
+
   @flow_modules %{
     article: PgflowDemo.Flows.ArticleFlow,
     onboarding: PgflowDemo.Flows.OnboardingFlow,
@@ -181,7 +187,9 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   end
 
   @impl true
-  def handle_event("start_job", _params, socket), do: {:noreply, socket}
+  def handle_event("start_job", _params, %{assigns: %{selected_flow: :job}} = socket) do
+    start_selected_job(socket)
+  end
 
   @impl true
   def handle_event("signal_approval", %{"decision" => decision}, socket)
@@ -493,7 +501,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   end
 
   @impl true
-  def handle_info({:pgflow, _run_id, {:run_completed, _payload}}, socket) do
+  def handle_info({:pgflow, _run_id, {:run_completed, payload}}, socket) do
     cancel_timer(socket.assigns.timer_ref)
 
     elapsed_ms =
@@ -510,6 +518,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:timer_ref, nil)
       |> assign(:error, nil)
       |> assign(:error_step, nil)
+      |> maybe_assign_job_output(payload[:output])
       |> add_log(:success, "Flow Complete", "Total: #{elapsed_ms}ms")
 
     {:noreply, socket}
@@ -601,61 +610,71 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp start_selected_flow(socket, flow_slug, input) do
     case Client.start_flow(flow_slug, input) do
       {:ok, run_id} ->
-        socket = cleanup_subscription(socket)
-
-        # `Client.start_flow/2` can synchronously emit `step:skipped` and
-        # `run:completed`/`run:failed` telemetry for a root-only skip that
-        # resolves before any worker gets involved — that broadcast happens
-        # *inside* start_flow, before this function ever sees a run_id.
-        # Subscribing here (immediately once the run_id — and therefore the
-        # topic name — exists) is as early as this LiveView can possibly
-        # subscribe, but it can still be too late for that synchronous
-        # broadcast, which already went out to zero subscribers and is gone
-        # for good. `reconcile_run_state/2` below reads the run's current
-        # DB state right after subscribing so any event that fired (and was
-        # missed) before the subscription existed still lands in the UI —
-        # this is the same subscribe-then-load-snapshot order used by
-        # `PgFlow.LiveClient.subscribe_and_load/3`.
-        Phoenix.PubSub.subscribe(PgflowDemo.PubSub, "pgflow:run:#{run_id}")
-
-        cancel_timer(socket.assigns.timer_ref)
-
-        socket =
-          socket
-          |> assign(:run_id, run_id)
-          |> assign(:run_status, :running)
-          |> assign(:error, nil)
-          |> assign(:error_step, nil)
-          |> assign(:steps, initial_steps(socket.assigns.steps_config))
-          |> assign(:step_outputs, %{})
-          |> assign(:duration, nil)
-          |> assign(:start_time, System.monotonic_time(:millisecond))
-          |> assign(:elapsed_ms, 0)
-          |> assign(:event_log, [
-            log_entry(:info, "Flow started", "Run ID: #{short_id(run_id)}")
-          ])
-          |> assign(:active_edges, MapSet.new())
-          |> assign(:timer_ref, nil)
-          |> assign(:output_step, nil)
-          |> assign(:output_content, nil)
-          |> assign(:output_loading, false)
-          |> reconcile_run_state(run_id)
-
-        # Only tick the elapsed-time clock if the run is (still) actually
-        # running — reconcile_run_state/2 may have already resolved it to
-        # :completed/:failed above.
-        timer_ref =
-          if socket.assigns.run_status == :running, do: maybe_start_tick_timer(socket)
-
-        {:noreply, assign(socket, :timer_ref, timer_ref)}
+        {:noreply, subscribe_to_run(socket, run_id, "Flow started")}
 
       {:error, reason} ->
         {:noreply, assign(socket, :error, format_user_error(reason))}
     end
   end
 
+  defp start_selected_job(socket) do
+    case Client.enqueue(PgflowDemo.Jobs.SendEmail, @send_email_input) do
+      {:ok, run_id} ->
+        {:noreply, subscribe_to_run(socket, run_id, "Job started")}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, :error, format_user_error(reason))}
+    end
+  end
+
+  # `Client.start_flow/2` and `Client.enqueue/2` can synchronously emit
+  # `step:skipped` and `run:completed`/`run:failed` telemetry that broadcasts
+  # *inside* the call, before this function ever sees a run_id. Subscribing
+  # here (immediately once the run_id — and therefore the topic name — exists)
+  # is as early as this LiveView can possibly subscribe, but it can still be
+  # too late for that synchronous broadcast, which already went out to zero
+  # subscribers and is gone for good. `reconcile_run_state/2` below reads the
+  # run's current DB state right after subscribing so any event that fired
+  # (and was missed) before the subscription existed still lands in the UI —
+  # this is the same subscribe-then-load-snapshot order used by
+  # `PgFlow.LiveClient.subscribe_and_load/3`.
+  defp subscribe_to_run(socket, run_id, log_title) do
+    socket = cleanup_subscription(socket)
+    Phoenix.PubSub.subscribe(PgflowDemo.PubSub, "pgflow:run:#{run_id}")
+    cancel_timer(socket.assigns.timer_ref)
+
+    socket =
+      socket
+      |> assign(:run_id, run_id)
+      |> assign(:run_status, :running)
+      |> assign(:error, nil)
+      |> assign(:error_step, nil)
+      |> assign(:steps, initial_steps(socket.assigns.steps_config))
+      |> assign(:step_outputs, %{})
+      |> assign(:duration, nil)
+      |> assign(:start_time, System.monotonic_time(:millisecond))
+      |> assign(:elapsed_ms, 0)
+      |> assign(:event_log, [
+        log_entry(:info, log_title, "Run ID: #{short_id(run_id)}")
+      ])
+      |> assign(:active_edges, MapSet.new())
+      |> assign(:timer_ref, nil)
+      |> assign(:output_step, nil)
+      |> assign(:output_content, nil)
+      |> assign(:output_loading, false)
+      |> reconcile_run_state(run_id)
+
+    # Only tick the elapsed-time clock if the run is (still) actually
+    # running — reconcile_run_state/2 may have already resolved it to
+    # :completed/:failed above.
+    timer_ref =
+      if socket.assigns.run_status == :running, do: maybe_start_tick_timer(socket)
+
+    assign(socket, :timer_ref, timer_ref)
+  end
+
   # Reads the run's current state from the DB and merges it into the socket.
-  # Called right after subscribing in start_selected_flow/3 so a run that
+  # Called right after subscribing in subscribe_to_run/3 so a run that
   # already finished (or partially progressed) before the subscription
   # existed is still reflected in the UI instead of leaving it stuck on
   # "running". Exposed (not `defp`) so it can be exercised directly in
@@ -731,6 +750,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         |> assign(:active_edges, MapSet.new())
         |> assign(:error, nil)
         |> assign(:error_step, nil)
+        |> maybe_assign_job_output(run.output)
         |> add_log(:success, "Flow Complete", "Total: #{duration}ms")
 
       "failed" ->
@@ -942,6 +962,12 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       atom -> {:ok, atom}
     end
   end
+
+  defp maybe_assign_job_output(%{assigns: %{selected_flow: :job}} = socket, output)
+       when not is_nil(output),
+       do: assign(socket, :output_content, output)
+
+  defp maybe_assign_job_output(socket, _output), do: socket
 
   defp format_user_error(reason) when is_binary(reason), do: "Failed to start flow: #{reason}"
   defp format_user_error(%{message: msg}), do: "Failed to start flow: #{msg}"

@@ -218,6 +218,23 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
     assert html =~ ~s(id="workflow")
   end
 
+  test "Job tab shows run output after run_completed", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    view |> element("#tab-job") |> render_click()
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id",
+       {:run_completed, %{output: %{"sent" => true, "to" => "demo@pgflow.dev"}}}}
+    )
+
+    html = render(view)
+    assert html =~ ~s(id="job-output")
+    assert html =~ "sent"
+    assert html =~ "demo@pgflow.dev"
+    assert has_element?(view, "button", "Reset")
+  end
+
   test "task_waiting for await_approval shows Approve and Reject", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     view |> element("#tab-approval") |> render_click()
