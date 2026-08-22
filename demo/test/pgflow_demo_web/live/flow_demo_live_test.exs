@@ -133,6 +133,52 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
     assert html =~ "Flow failed: unrecoverable"
   end
 
+  test "Approval tab renders a start form without the article URL field", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    html = view |> element("#tab-approval") |> render_click()
+    assert html =~ "Start Flow"
+    refute html =~ ~s(name="url")
+    assert html =~ "create_order" or html =~ "await_approval"
+  end
+
+  test "task_waiting for await_approval shows Approve and Reject", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    view |> element("#tab-approval") |> render_click()
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id", {:task_waiting, %{step_slug: "await_approval", task_index: 0}}}
+    )
+
+    html = render(view)
+    assert html =~ "Waiting"
+    assert has_element?(view, "#approval-approve")
+    assert has_element?(view, "#approval-reject")
+  end
+
+  test "task_started after waiting hides Approve and Reject", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    view |> element("#tab-approval") |> render_click()
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id", {:task_waiting, %{step_slug: "await_approval", task_index: 0}}}
+    )
+
+    assert has_element?(view, "#approval-approve")
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id", {:task_started, %{step_slug: "await_approval", task_index: 0}}}
+    )
+
+    html = render(view)
+    refute has_element?(view, "#approval-approve")
+    refute has_element?(view, "#approval-reject")
+    assert html =~ "Started"
+  end
+
   # Task 4: the demo must not get stuck showing "running" when a run's
   # broadcast (step:skipped / run:completed / run:failed) fires before the
   # LiveView's PubSub subscription exists. `Client.start_flow/2` can emit

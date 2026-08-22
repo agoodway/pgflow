@@ -6,13 +6,15 @@ defmodule PgflowDemoWeb.Components.FlowDSL do
 
   use Phoenix.Component
 
-  alias PgflowDemo.Flows.{ArticleFlow, OnboardingFlow}
+  alias PgflowDemo.Flows.{ApprovalFlow, ArticleFlow, OnboardingFlow}
 
   # Read flow sources at compile time
   @article_source_path "lib/pgflow_demo/flows/article_flow.ex"
   @onboarding_source_path "lib/pgflow_demo/flows/onboarding_flow.ex"
+  @approval_source_path "lib/pgflow_demo/flows/approval_flow.ex"
   @external_resource @article_source_path
   @external_resource @onboarding_source_path
+  @external_resource @approval_source_path
 
   # Define segments with their line ranges (1-indexed, inclusive)
   # Each segment is either a step (clickable) or structural code (not clickable)
@@ -32,6 +34,13 @@ defmodule PgflowDemoWeb.Components.FlowDSL do
     %{id: :activate_perk, lines: 45..50, clickable: true},
     %{id: :send_welcome, lines: 52..64, clickable: true},
     %{id: :finish, lines: 66..71, clickable: true}
+  ]
+
+  @approval_segment_defs [
+    %{id: :preamble, lines: 1..13, clickable: false},
+    %{id: :create_order, lines: 15..22, clickable: true},
+    %{id: :await_approval, lines: 24..32, clickable: true},
+    %{id: :charge, lines: 34..43, clickable: true}
   ]
 
   # Slices each segment's line range out of the flow source and attaches the
@@ -64,6 +73,7 @@ defmodule PgflowDemoWeb.Components.FlowDSL do
                                    @onboarding_source_path,
                                    @onboarding_segment_defs
                                  )
+  @processed_approval_segments process_segments.(@approval_source_path, @approval_segment_defs)
 
   @doc """
   Returns the pre-processed ArticleFlow DSL segments for use in templates.
@@ -75,13 +85,14 @@ defmodule PgflowDemoWeb.Components.FlowDSL do
   """
   def get_segments(ArticleFlow), do: @processed_article_segments
   def get_segments(OnboardingFlow), do: @processed_onboarding_segments
+  def get_segments(ApprovalFlow), do: @processed_approval_segments
 
   @doc """
   Renders the Flow DSL with interactive step highlighting.
 
   ## Assigns
   - segments: List of DSL segments (from get_segments/0 or get_segments/1)
-  - steps: Map of step_slug => status (:pending, :running, :completed, :failed, :skipped)
+  - steps: Map of step_slug => status (:pending, :running, :waiting, :completed, :failed, :skipped)
   - highlighted_step: Currently highlighted step slug (atom) or nil
   """
   attr :segments, :list, required: true
@@ -120,6 +131,7 @@ defmodule PgflowDemoWeb.Components.FlowDSL do
   defp clickable_class(false), do: ""
 
   defp status_class(:running, _), do: "bg-purple-500/20"
+  defp status_class(:waiting, _), do: "bg-amber-500/20"
   defp status_class(:completed, _), do: "bg-emerald-500/10 hover:bg-emerald-500/20"
   defp status_class(:failed, _), do: "bg-red-500/10"
   defp status_class(:skipped, _), do: "bg-slate-500/10 opacity-60 hover:bg-slate-500/20"

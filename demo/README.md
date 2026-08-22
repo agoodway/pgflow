@@ -7,6 +7,8 @@ fetch_article → convert_to_markdown → summarize        → publish
                                     ↘ extract_keywords ↗
 ```
 
+The homepage also has an **Approval** tab (`create_order → await_approval → charge`) that parks until you click Approve or Reject — this uses `await_signal` / `Client.signal/3`, not `signal_strategy`.
+
 ## Setup
 
 ```bash

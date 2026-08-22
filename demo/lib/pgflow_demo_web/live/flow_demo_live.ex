@@ -19,7 +19,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   @flow_modules %{
     article: PgflowDemo.Flows.ArticleFlow,
-    onboarding: PgflowDemo.Flows.OnboardingFlow
+    onboarding: PgflowDemo.Flows.OnboardingFlow,
+    approval: PgflowDemo.Flows.ApprovalFlow
   }
 
   @flows %{
@@ -54,6 +55,18 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         {:setup_premium, :activate_perk},
         {:create_account, :send_welcome},
         {:create_account, :finish}
+      ]
+    },
+    approval: %{
+      slug: :approval_flow,
+      steps: [
+        %{slug: :create_order, label: "Order", x: 100, y: 40},
+        %{slug: :await_approval, label: "Approve", x: 100, y: 110},
+        %{slug: :charge, label: "Charge", x: 100, y: 180}
+      ],
+      edges: [
+        {:create_order, :await_approval},
+        {:await_approval, :charge}
       ]
     }
   }
@@ -142,6 +155,14 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   end
 
   @impl true
+  def handle_event("start_flow", _params, %{assigns: %{selected_flow: :approval}} = socket) do
+    start_selected_flow(socket, :approval_flow, %{
+      "order_id" => "ord_demo",
+      "amount" => 42
+    })
+  end
+
+  @impl true
   def handle_event("start_flow", %{"url" => url}, socket) do
     case validate_url(url) do
       {:error, message} ->
@@ -150,6 +171,18 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       {:ok, valid_url} ->
         start_selected_flow(socket, :article_flow, %{"url" => valid_url})
     end
+  end
+
+  @impl true
+  def handle_event("signal_approval", %{"decision" => decision}, socket)
+      when decision in ["approved", "rejected"] do
+    run_id = socket.assigns.run_id
+
+    if run_id && socket.assigns.steps[:await_approval] == :waiting do
+      _ = Client.signal(run_id, :await_approval, %{"decision" => decision})
+    end
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -496,6 +529,35 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   end
 
   @impl true
+  def handle_info(
+        {:pgflow, _run_id, {:task_waiting, %{step_slug: step_slug, task_index: task_index}}},
+        socket
+      ) do
+    case to_step_atom(step_slug, socket.assigns.steps_config) do
+      nil ->
+        {:noreply, socket}
+
+      step_atom ->
+        steps = update_step_status(socket.assigns.steps, step_atom, :waiting)
+
+        socket =
+          socket
+          |> assign(:steps, steps)
+          |> assign(:active_edges, MapSet.new())
+          |> assign(:highlighted_step, step_atom)
+          |> push_event("scroll_dsl_pane", %{step: to_string(step_atom)})
+          |> add_log(
+            :info,
+            "Waiting",
+            "#{format_step_label(step_atom)} [task #{task_index}]",
+            step_atom
+          )
+
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   # Helpers
@@ -521,6 +583,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   defp parse_flow_key("article"), do: :article
   defp parse_flow_key("onboarding"), do: :onboarding
+  defp parse_flow_key("approval"), do: :approval
   defp parse_flow_key(_), do: nil
 
   defp start_selected_flow(socket, flow_slug, input) do
@@ -849,16 +912,19 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   defp step_color(:pending), do: "#4B5563"
   defp step_color(:running), do: "#8B5CF6"
+  defp step_color(:waiting), do: "#F59E0B"
   defp step_color(:completed), do: "#10B981"
   defp step_color(:failed), do: "#EF4444"
   defp step_color(:skipped), do: "#64748B"
 
   defp node_stroke(:running), do: "#A78BFA"
+  defp node_stroke(:waiting), do: "#FBBF24"
   defp node_stroke(:completed), do: "#34D399"
   defp node_stroke(:skipped), do: "#94A3B8"
   defp node_stroke(_), do: "#6B7280"
 
   defp node_label_fill(:running), do: "#A78BFA"
+  defp node_label_fill(:waiting), do: "#FBBF24"
   defp node_label_fill(:completed), do: "#34D399"
   defp node_label_fill(:skipped), do: "#94A3B8"
   defp node_label_fill(_), do: "#D1D5DB"
@@ -1108,6 +1174,15 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             >
               Onboarding
             </button>
+            <button
+              type="button"
+              id="tab-approval"
+              phx-click="select_flow"
+              phx-value-flow="approval"
+              class={flow_tab_class(@selected_flow == :approval)}
+            >
+              Approval
+            </button>
           </div>
 
           <form
@@ -1189,6 +1264,54 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               Reset
             </button>
           </form>
+
+          <form
+            :if={@selected_flow == :approval}
+            id="approval-form"
+            phx-submit="start_flow"
+            class="flex flex-wrap items-center gap-4"
+          >
+            <button
+              :if={@run_status != :running}
+              type="submit"
+              class="px-6 py-3 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white font-semibold rounded-xl shadow-lg"
+            >
+              Start Flow
+            </button>
+            <button
+              :if={@run_status in [:completed, :failed]}
+              type="button"
+              phx-click="reset"
+              class="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl"
+            >
+              Reset
+            </button>
+          </form>
+
+          <div
+            :if={@selected_flow == :approval and Map.get(@steps, :await_approval) == :waiting}
+            id="approval-actions"
+            class="mt-4 flex gap-3"
+          >
+            <button
+              id="approval-approve"
+              type="button"
+              phx-click="signal_approval"
+              phx-value-decision="approved"
+              class="px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl"
+            >
+              Approve
+            </button>
+            <button
+              id="approval-reject"
+              type="button"
+              phx-click="signal_approval"
+              phx-value-decision="rejected"
+              class="px-6 py-3 bg-red-600 hover:bg-red-500 text-white font-semibold rounded-xl"
+            >
+              Reject
+            </button>
+          </div>
 
           <div class="mt-4 flex items-center justify-between">
             <div class="flex items-center gap-3">
@@ -1378,6 +1501,17 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                       stroke-width="1"
                       stroke-dasharray="4 4"
                       class="edge-active"
+                    />
+                  <% end %>
+                  <%= if status == :waiting do %>
+                    <circle
+                      cx={step.x}
+                      cy={step.y}
+                      r="4"
+                      fill="none"
+                      stroke="white"
+                      stroke-width="1"
+                      stroke-dasharray="2 2"
                     />
                   <% end %>
                   <rect
