@@ -11,7 +11,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   alias PgFlow.Client
   alias PgFlow.Schema.StepTask
-  alias PgflowDemoWeb.Components.{CronDSL, FlowDSL, PoweredBy}
+  alias PgflowDemoWeb.Components.{CronDSL, FlowDSL, JobDSL, PoweredBy}
 
   # UI Constants
   @node_radius 10
@@ -109,6 +109,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:migration_content, get_migration_content(:article))
       |> assign(:cron_highlighted_source, CronDSL.get_highlighted_source())
       |> assign(:cron_next_run_info, CronDSL.get_next_run_info())
+      |> assign(:job_highlighted_source, JobDSL.get_highlighted_source())
 
     {:ok, socket}
   end
@@ -139,8 +140,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       nil ->
         {:noreply, socket}
 
-      :cron ->
-        {:noreply, assign(socket, :selected_flow, :cron)}
+      selected when selected in [:cron, :job] ->
+        {:noreply, assign(socket, :selected_flow, selected)}
 
       selected ->
         {:noreply, switch_flow(socket, selected)}
@@ -178,6 +179,9 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         start_selected_flow(socket, :article_flow, %{"url" => valid_url})
     end
   end
+
+  @impl true
+  def handle_event("start_job", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("signal_approval", %{"decision" => decision}, socket)
@@ -591,6 +595,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp parse_flow_key("onboarding"), do: :onboarding
   defp parse_flow_key("approval"), do: :approval
   defp parse_flow_key("cron"), do: :cron
+  defp parse_flow_key("job"), do: :job
   defp parse_flow_key(_), do: nil
 
   defp start_selected_flow(socket, flow_slug, input) do
@@ -983,6 +988,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp node_style(:skipped), do: "cursor: default; opacity: 0.55"
   defp node_style(_), do: "cursor: default"
 
+  defp flow_tab?(tab), do: tab in [:article, :onboarding, :approval]
+
   defp flow_tab_class(true),
     do:
       "px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white shadow-lg shadow-purple-500/20"
@@ -1179,7 +1186,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
         <!-- Interactive tip -->
         <div
-          :if={@selected_flow != :cron}
+          :if={flow_tab?(@selected_flow)}
           class="mb-6 px-4 py-3 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center gap-3"
         >
           <span class="text-purple-400 text-lg" title="Tip">ⓘ</span>
@@ -1233,6 +1240,15 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               class={flow_tab_class(@selected_flow == :approval)}
             >
               Approval
+            </button>
+            <button
+              type="button"
+              id="tab-job"
+              phx-click="select_flow"
+              phx-value-flow="job"
+              class={flow_tab_class(@selected_flow == :job)}
+            >
+              Job
             </button>
             <button
               type="button"
@@ -1373,6 +1389,26 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </button>
           </div>
 
+          <div :if={@selected_flow == :job} id="job-controls" class="flex gap-4">
+            <button
+              :if={@run_status != :running}
+              id="start-job"
+              type="button"
+              phx-click="start_job"
+              class="px-6 py-3 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white font-semibold rounded-xl shadow-lg cursor-pointer"
+            >
+              Start Job
+            </button>
+            <button
+              :if={@run_status in [:completed, :failed]}
+              type="button"
+              phx-click="reset"
+              class="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl cursor-pointer"
+            >
+              Reset
+            </button>
+          </div>
+
           <div :if={@selected_flow != :cron} class="mt-4 flex items-center justify-between">
             <div class="flex items-center gap-3">
               <div class={"flex items-center gap-2 px-3 py-1 rounded-full #{status_bg(@run_status)}"}>
@@ -1401,7 +1437,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         </div>
 
         <!-- Main Grid - Side by side on md+ screens, stacked on mobile -->
-        <div :if={@selected_flow != :cron} class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div :if={flow_tab?(@selected_flow)} class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <!-- Workflow -->
           <div
             id="workflow"
@@ -1642,7 +1678,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
         <!-- Flow DSL -->
         <div
-          :if={@selected_flow != :cron}
+          :if={flow_tab?(@selected_flow)}
           id="flow-dsl"
           class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
         >
@@ -1689,7 +1725,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
         <!-- Step Output -->
         <div
-          :if={@selected_flow != :cron}
+          :if={flow_tab?(@selected_flow)}
           id="step-output"
           class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
         >
@@ -1720,6 +1756,52 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                   <p class="text-xs mt-1">Run a flow or click a completed step to view its output</p>
                 </div>
               <% end %>
+            <% end %>
+          </div>
+        </div>
+
+        <!-- Job DSL -->
+        <div
+          :if={@selected_flow == :job}
+          id="job-dsl"
+          class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
+        >
+          <h2 class="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+            <span class="text-amber-400">Job DSL</span>
+            <span class="text-sm font-normal text-gray-400 ml-2">— One-off send_email</span>
+          </h2>
+          <div class="bg-slate-900/80 rounded-xl p-4 max-h-[32rem] overflow-y-auto terminal-scroll">
+            <JobDSL.job_dsl highlighted_source={@job_highlighted_source} />
+          </div>
+          <p class="mt-3 text-sm text-gray-400">
+            Enqueued with <code class="text-amber-400">PgFlow.enqueue/2</code>.
+            <a
+              href="/pgflow/jobs/send_email"
+              class="text-amber-400 hover:text-amber-300 underline underline-offset-2"
+            >
+              View in Dashboard
+            </a>
+          </p>
+        </div>
+
+        <div
+          :if={@selected_flow == :job}
+          id="job-output"
+          class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
+        >
+          <h2 class="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-purple-500"></span>
+            <span class="text-purple-400">Output</span>
+          </h2>
+          <div class="bg-slate-900/80 rounded-xl p-4 max-h-[20rem] overflow-y-auto terminal-scroll">
+            <%= if @output_content do %>
+              <pre class="text-gray-300 text-xs whitespace-pre-wrap font-mono"><%= format_output(@output_content) %></pre>
+            <% else %>
+              <div class="text-gray-600 text-center py-12">
+                <p>No output yet</p>
+                <p class="text-xs mt-1">Start the job to see its return map</p>
+              </div>
             <% end %>
           </div>
         </div>

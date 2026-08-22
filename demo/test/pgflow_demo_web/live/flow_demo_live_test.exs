@@ -176,6 +176,48 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
     assert html =~ ~s(id="workflow")
   end
 
+  test "Job DSL is not rendered on the default Article tab", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/")
+
+    refute html =~ ~s(id="job-dsl")
+    refute html =~ "PgflowDemo.Jobs.SendEmail"
+    assert html =~ ~s(id="tab-job")
+    assert html =~ "Start Flow"
+  end
+
+  test "Job tab shows the SendEmail DSL and hides flow controls", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    html = view |> element("#tab-job") |> render_click()
+
+    assert html =~ ~s(id="job-dsl")
+    assert html =~ "PgflowDemo.Jobs.SendEmail"
+    assert html =~ "Start Job"
+    refute html =~ ~s(id="workflow")
+    refute html =~ ~s(id="flow-dsl")
+    refute html =~ ~s(id="article-form")
+  end
+
+  test "Cron tab still has no Start Job button", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    html = view |> element("#tab-cron") |> render_click()
+
+    refute html =~ "Start Job"
+    assert html =~ ~s(id="cron-dsl")
+  end
+
+  test "switching from Job back to Article restores the flow UI", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    view |> element("#tab-job") |> render_click()
+    html = view |> element("#tab-article") |> render_click()
+
+    refute html =~ ~s(id="job-dsl")
+    assert html =~ "Start Flow"
+    assert html =~ ~s(id="workflow")
+  end
+
   test "task_waiting for await_approval shows Approve and Reject", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     view |> element("#tab-approval") |> render_click()
