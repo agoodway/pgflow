@@ -235,6 +235,56 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
     assert has_element?(view, "button", "Reset")
   end
 
+  test "switching to Job after an Article run does not show leftover flow output", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, "/")
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id",
+       {:task_completed,
+        %{
+          step_slug: "publish",
+          duration_ms: 10,
+          output: %{"published" => true, "slug" => "article-leftover"}
+        }}}
+    )
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id", {:run_completed, %{output: %{"slug" => "article-leftover"}}}}
+    )
+
+    html = view |> element("#tab-job") |> render_click()
+
+    assert html =~ ~s(id="job-output")
+    assert has_element?(view, "#job-output", "No output yet")
+    refute html =~ "article-leftover"
+    assert has_element?(view, "#start-job")
+    assert html =~ "Ready"
+    refute has_element?(view, "button", "Reset")
+  end
+
+  test "Job output survives Cron switch when run_completed arrives off the Job tab", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, "/")
+    view |> element("#tab-job") |> render_click()
+    view |> element("#tab-cron") |> render_click()
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id",
+       {:run_completed, %{output: %{"sent" => true, "to" => "demo@pgflow.dev"}}}}
+    )
+
+    html = view |> element("#tab-job") |> render_click()
+
+    assert html =~ ~s(id="job-output")
+    assert html =~ "demo@pgflow.dev"
+  end
+
   test "task_waiting for await_approval shows Approve and Reject", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     view |> element("#tab-approval") |> render_click()

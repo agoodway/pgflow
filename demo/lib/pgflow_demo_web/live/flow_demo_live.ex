@@ -108,6 +108,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:timer_ref, nil)
       |> assign(:output_step, nil)
       |> assign(:output_content, nil)
+      |> assign(:job_output, nil)
+      |> assign(:job_run, false)
       |> assign(:output_loading, false)
       |> assign(:dsl_segments, FlowDSL.get_segments(flow_module(:article)))
       |> assign(:show_migration, false)
@@ -147,6 +149,13 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         {:noreply, socket}
 
       selected when selected in [:cron, :job] ->
+        socket =
+          if flow_tab?(socket.assigns.selected_flow) do
+            reset_run_state(socket)
+          else
+            socket
+          end
+
         {:noreply, assign(socket, :selected_flow, selected)}
 
       selected ->
@@ -620,7 +629,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp start_selected_job(socket) do
     case Client.enqueue(PgflowDemo.Jobs.SendEmail, @send_email_input) do
       {:ok, run_id} ->
-        {:noreply, subscribe_to_run(socket, run_id, "Job started")}
+        {:noreply,
+         socket
+         |> assign(:job_run, true)
+         |> subscribe_to_run(run_id, "Job started")}
 
       {:error, reason} ->
         {:noreply, assign(socket, :error, format_user_error(reason))}
@@ -661,6 +673,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:timer_ref, nil)
       |> assign(:output_step, nil)
       |> assign(:output_content, nil)
+      |> assign(:job_output, nil)
       |> assign(:output_loading, false)
       |> reconcile_run_state(run_id)
 
@@ -878,6 +891,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     |> assign(:timer_ref, nil)
     |> assign(:output_step, nil)
     |> assign(:output_content, nil)
+    |> assign(:job_output, nil)
+    |> assign(:job_run, false)
     |> assign(:output_loading, false)
     |> assign(:show_migration, false)
   end
@@ -963,11 +978,21 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
-  defp maybe_assign_job_output(%{assigns: %{selected_flow: :job}} = socket, output)
-       when not is_nil(output),
-       do: assign(socket, :output_content, output)
+  defp maybe_assign_job_output(socket, output) when not is_nil(output) do
+    if job_output_run?(socket), do: assign(socket, :job_output, output), else: socket
+  end
 
   defp maybe_assign_job_output(socket, _output), do: socket
+
+  # `job_run` is set in start_selected_job/1 so a SendEmail complete is
+  # captured even after switching to Cron. selected_flow in [:job, :cron]
+  # covers synthetic PubSub tests that never enqueue.
+  defp job_output_run?(%{assigns: %{job_run: true}}), do: true
+
+  defp job_output_run?(%{assigns: %{selected_flow: selected}}) when selected in [:job, :cron],
+    do: true
+
+  defp job_output_run?(_socket), do: false
 
   defp format_user_error(reason) when is_binary(reason), do: "Failed to start flow: #{reason}"
   defp format_user_error(%{message: msg}), do: "Failed to start flow: #{msg}"
@@ -1821,8 +1846,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <span class="text-purple-400">Output</span>
           </h2>
           <div class="bg-slate-900/80 rounded-xl p-4 max-h-[20rem] overflow-y-auto terminal-scroll">
-            <%= if @output_content do %>
-              <pre class="text-gray-300 text-xs whitespace-pre-wrap font-mono"><%= format_output(@output_content) %></pre>
+            <%= if @job_output do %>
+              <pre class="text-gray-300 text-xs whitespace-pre-wrap font-mono"><%= format_output(@job_output) %></pre>
             <% else %>
               <div class="text-gray-600 text-center py-12">
                 <p>No output yet</p>
