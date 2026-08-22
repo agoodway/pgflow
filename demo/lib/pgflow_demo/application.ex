@@ -21,7 +21,10 @@ defmodule PgflowDemo.Application do
          PgflowDemo.Flows.OnboardingFlow,
          PgflowDemo.Flows.ApprovalFlow
        ],
-       jobs: [PgflowDemo.Jobs.ArticleFlowCleanup],
+       jobs: [
+         PgflowDemo.Jobs.ArticleFlowCleanup,
+         PgflowDemo.Jobs.SendEmail
+       ],
        signal_strategy: :notify,
        notify_throttle_ms: 50,
        pubsub: PgflowDemo.PubSub},
