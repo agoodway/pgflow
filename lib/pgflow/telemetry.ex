@@ -22,6 +22,7 @@ defmodule PgFlow.Telemetry do
   - `[:pgflow, :worker, :task, :start]` — Task execution started
   - `[:pgflow, :worker, :task, :stop]` — Task execution completed successfully
   - `[:pgflow, :worker, :task, :exception]` — Task execution failed
+  - `[:pgflow, :worker, :task, :waiting]` — Task parked on `await_signal` (worker slot freed)
 
   ### Step Lifecycle
 
@@ -77,6 +78,7 @@ defmodule PgFlow.Telemetry do
       [:pgflow, :worker, :task, :start],
       [:pgflow, :worker, :task, :stop],
       [:pgflow, :worker, :task, :exception],
+      [:pgflow, :worker, :task, :waiting],
       [:pgflow, :step, :skipped],
       [:pgflow, :run, :started],
       [:pgflow, :run, :completed],

@@ -79,6 +79,25 @@ defmodule PgFlow.Telemetry.PubSubTest do
       assert_receive {:pgflow, ^run_id, {:task_started, _}}
     end
 
+    test "task:waiting broadcasts to per-run and global topics", %{pubsub: pubsub} do
+      run_id = Ecto.UUID.generate()
+      Phoenix.PubSub.subscribe(pubsub, "pgflow:run:#{run_id}")
+      Phoenix.PubSub.subscribe(pubsub, "pgflow:tasks")
+
+      :telemetry.execute(
+        [:pgflow, :worker, :task, :waiting],
+        %{},
+        %{run_id: run_id, step_slug: "await_approval", task_index: 0}
+      )
+
+      assert_receive {:pgflow, ^run_id, {:task_waiting, payload}}
+      assert payload.step_slug == "await_approval"
+      assert payload.task_index == 0
+      assert %DateTime{} = payload.timestamp
+
+      assert_receive {:pgflow, ^run_id, {:task_waiting, _}}
+    end
+
     test "task:stop broadcasts with duration and output", %{pubsub: pubsub} do
       run_id = Ecto.UUID.generate()
       Phoenix.PubSub.subscribe(pubsub, "pgflow:run:#{run_id}")
