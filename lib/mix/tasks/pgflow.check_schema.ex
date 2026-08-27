@@ -29,8 +29,13 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
 
   use Mix.Task
 
-  @required_tables ~w(flows steps deps runs step_states step_tasks workers)
-  @required_functions ~w(start_flow complete_task fail_task start_tasks)
+  alias PgFlow.SchemaCompatibility
+
+  @required_tables ~w(flows steps deps runs step_states step_tasks workers task_signals)
+  @required_functions ~w(
+    start_flow complete_task fail_task start_tasks
+    await_task_signal signal_task expire_waiting_tasks
+  )
 
   @impl Mix.Task
   def run(args) do
@@ -51,6 +56,7 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
       check_schema_exists(repo),
       check_tables_exist(repo),
       check_functions_exist(repo),
+      check_await_signals(repo),
       check_pgmq_extension(repo)
     ]
 
@@ -156,6 +162,17 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
 
       {:error, error} ->
         {:error, "Failed to check functions: #{inspect(error)}"}
+    end
+  end
+
+  defp check_await_signals(repo) do
+    case SchemaCompatibility.check_await_signals(repo) do
+      :ok ->
+        Mix.shell().info("  ✓ PgFlow helpers V05 await-signals objects exist")
+        :ok
+
+      {:error, error} ->
+        {:error, SchemaCompatibility.error_message(error)}
     end
   end
 

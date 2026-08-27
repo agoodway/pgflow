@@ -18,8 +18,6 @@ defmodule PgFlow.FlowCompilerTest do
 
       sql_statements = FlowCompiler.compile(definition)
 
-      assert length(sql_statements) == 2
-
       [flow_sql, step_sql] = sql_statements
 
       assert flow_sql == "SELECT pgflow.create_flow('simple_flow', 3, 5, 60)"
@@ -42,8 +40,6 @@ defmodule PgFlow.FlowCompilerTest do
       }
 
       sql_statements = FlowCompiler.compile(definition)
-
-      assert length(sql_statements) == 5
 
       [flow_sql, step_a_sql, step_b_sql, step_c_sql, step_d_sql] = sql_statements
 
@@ -75,8 +71,6 @@ defmodule PgFlow.FlowCompilerTest do
       }
 
       sql_statements = FlowCompiler.compile(definition)
-
-      assert length(sql_statements) == 4
 
       [_flow_sql, _gen_sql, map_sql, _agg_sql] = sql_statements
 
@@ -155,6 +149,18 @@ defmodule PgFlow.FlowCompilerTest do
 
       assert sql == "SELECT pgflow.create_flow('test''flow', 3, 1, 60)"
     end
+
+    test "preserves an explicit zero retry delay" do
+      definition = %Definition{
+        slug: :immediate_retry,
+        module: TestFlow,
+        opts: [max_attempts: 2, base_delay: 0, timeout: 60],
+        steps: []
+      }
+
+      assert FlowCompiler.create_flow_sql(definition) ==
+               "SELECT pgflow.create_flow('immediate_retry', 2, 0, 60)"
+    end
   end
 
   describe "add_step_sql/2" do
@@ -202,7 +208,7 @@ defmodule PgFlow.FlowCompilerTest do
                "SELECT pgflow.add_step('my_flow', 'custom_step', ARRAY['prev_step']::text[], 5, 10, 300, 60, 'single')"
     end
 
-    test "treats zero values as NULL (use flow defaults)" do
+    test "preserves a zero base delay while treating invalid zero overrides as NULL" do
       step = %Step{
         slug: :step,
         step_type: :single,
@@ -216,7 +222,7 @@ defmodule PgFlow.FlowCompilerTest do
       sql = FlowCompiler.add_step_sql(:my_flow, step)
 
       assert sql ==
-               "SELECT pgflow.add_step('my_flow', 'step', ARRAY[]::text[], NULL, NULL, NULL, NULL, 'single')"
+               "SELECT pgflow.add_step('my_flow', 'step', ARRAY[]::text[], NULL, 0, NULL, NULL, 'single')"
     end
 
     test "omits condition args when none are set" do
@@ -290,8 +296,6 @@ defmodule PgFlow.FlowCompilerTest do
       definition = SimpleFlow.__pgflow_definition__()
       sql_statements = FlowCompiler.compile(definition)
 
-      assert length(sql_statements) == 2
-
       [flow_sql, step_sql] = sql_statements
 
       assert flow_sql =~ "SELECT pgflow.create_flow('simple_flow'"
@@ -302,15 +306,11 @@ defmodule PgFlow.FlowCompilerTest do
       definition = LinearFlow.__pgflow_definition__()
       sql_statements = FlowCompiler.compile(definition)
 
-      # 1 flow + 3 steps
-      assert length(sql_statements) == 4
-
-      [flow_sql | step_sqls] = sql_statements
+      [flow_sql, step_a, step_b, step_c] = sql_statements
 
       assert flow_sql =~ "SELECT pgflow.create_flow('linear_flow'"
 
       # Check step order and dependencies
-      [step_a, step_b, step_c] = step_sqls
       assert step_a =~ "'step_a', ARRAY[]::text[]"
       assert step_b =~ "'step_b', ARRAY['step_a']::text[]"
       assert step_c =~ "'step_c', ARRAY['step_b']::text[]"
@@ -320,13 +320,9 @@ defmodule PgFlow.FlowCompilerTest do
       definition = ParallelFlow.__pgflow_definition__()
       sql_statements = FlowCompiler.compile(definition)
 
-      # 1 flow + 4 steps
-      assert length(sql_statements) == 5
-
-      [_flow_sql | step_sqls] = sql_statements
+      [_, _, _, _, step_d_sql] = sql_statements
 
       # step_d depends on both step_b and step_c
-      step_d_sql = List.last(step_sqls)
       assert step_d_sql =~ "'step_d'"
       assert step_d_sql =~ "ARRAY['step_b', 'step_c']::text[]"
     end
@@ -335,13 +331,9 @@ defmodule PgFlow.FlowCompilerTest do
       definition = MapFlow.__pgflow_definition__()
       sql_statements = FlowCompiler.compile(definition)
 
-      # 1 flow + 2 steps
-      assert length(sql_statements) == 3
-
-      [_flow_sql | step_sqls] = sql_statements
+      [_, map_step_sql, _aggregate_sql] = sql_statements
 
       # First step is a map step
-      [map_step_sql, _aggregate_sql] = step_sqls
       assert map_step_sql =~ "'process_items'"
       assert map_step_sql =~ "'map'"
     end
@@ -387,10 +379,8 @@ defmodule PgFlow.FlowCompilerTest do
       definition = CronTestFlow.__pgflow_definition__()
       sql_statements = FlowCompiler.compile(definition)
 
-      # 1 flow + 1 step + 1 cron schedule
-      assert length(sql_statements) == 3
+      [_, _, cron_sql] = sql_statements
 
-      cron_sql = List.last(sql_statements)
       assert cron_sql =~ "cron.schedule"
       assert cron_sql =~ "'pgflow:cron_test_flow'"
       assert cron_sql =~ "'0 * * * *'"

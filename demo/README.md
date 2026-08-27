@@ -7,6 +7,8 @@ fetch_article → convert_to_markdown → summarize        → publish
                                     ↘ extract_keywords ↗
 ```
 
+The homepage also has an **Approval** tab (`create_order → await_approval → charge`) that parks until you click Approve or Reject — this uses `await_signal` / `Client.signal/3`, not `signal_strategy`. The **Job** tab enqueues a canned fake send-email job (`PgFlow.enqueue/2` / `use PgFlow.Job`). The **Cron** tab shows the hourly `article_flow_cleanup` job DSL.
+
 ## Setup
 
 ```bash
@@ -20,7 +22,7 @@ mix deps.get
 
 # 3. Generate migrations
 #
-#    `pgflow.setup --dashboard` writes a single consumer migration that
+#    Initial installation: `pgflow.setup --dashboard` writes a single consumer migration that
 #    calls `PgFlow.Migration.up/0`, `PgFlow.HelpersMigration.up/0`, and
 #    `PgFlowDashboard.Migration.up/0` — SQL is vendored inside pgflow.
 #
@@ -46,6 +48,24 @@ $EDITOR .env
 
 # 7. Run the server (or `pgflow start` from the repo root for hivemind + docker)
 mix phx.server
+```
+
+When upgrading an existing demo/database to a release whose notes increase the
+helpers version, generate and apply the corresponding helpers upgrade migration
+before starting the new worker release. For V05:
+
+```bash
+mix pgflow.gen.helpers_migration --from-version 4
+mix ecto.migrate
+```
+
+V05 rollback refuses active waits/signals. Drain them first, then roll back.
+
+V05 deliberately defers validation of `valid_status`. In a later, separately
+committed operator migration—not inside the V05 transaction—run:
+
+```sql
+ALTER TABLE pgflow.step_tasks VALIDATE CONSTRAINT valid_status;
 ```
 
 - Demo app: http://localhost:4022

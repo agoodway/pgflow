@@ -83,9 +83,15 @@ if db_available? do
   # `test_helpers.sql` uses realtime.messages for mocking + cleanup.
   {:ok, _} = PgFlow.TestRepo.query("CREATE SCHEMA IF NOT EXISTS realtime")
 
+  # The atlas/Supabase image ships a RANGE-partitioned `realtime.messages`
+  # with no partitions. `CREATE TABLE IF NOT EXISTS` is then a no-op, and
+  # `realtime.send` inserts fail with check_violation (no partition for
+  # `inserted_at`). Drop and replace with the unpartitioned test stub.
+  {:ok, _} = PgFlow.TestRepo.query("DROP TABLE IF EXISTS realtime.messages CASCADE")
+
   {:ok, _} =
     PgFlow.TestRepo.query("""
-    CREATE TABLE IF NOT EXISTS realtime.messages (
+    CREATE TABLE realtime.messages (
       id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
       topic text,
       event text,

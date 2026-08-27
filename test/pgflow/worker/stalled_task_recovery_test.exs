@@ -417,7 +417,7 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
   # --- edge cases ---
 
   describe "recover_stalled_tasks/2 — edge cases" do
-    test "does not touch tasks whose run has failed" do
+    test "does not requeue tasks whose run has failed" do
       %{run_id_bin: rid} = setup_started()
       backdate(rid, 120)
 
@@ -427,7 +427,7 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
       )
 
       assert {:ok, 0} = Flows.recover_stalled_tasks(TestRepo, 60)
-      assert task(rid, "status") == ["started"]
+      assert task(rid, "status") == ["failed"]
     end
 
     test "requeues a task with a null message_id without error" do

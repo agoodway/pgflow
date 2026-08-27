@@ -202,9 +202,11 @@ defmodule PgFlow.FlowStarter do
     }
 
     modules =
-      (Enum.map(flows, &initial_module_state(&1, "flow")) ++
-         Enum.map(jobs, &initial_module_state(&1, "job")))
-      |> Enum.reduce(%{}, fn ms, acc -> Map.put(acc, ms.module, ms) end)
+      Map.new(
+        Enum.map(flows, &initial_module_state(&1, "flow")) ++
+          Enum.map(jobs, &initial_module_state(&1, "job")),
+        &{&1.module, &1}
+      )
 
     state = %State{
       repo: repo,

@@ -334,32 +334,10 @@ defmodule PgFlow.Worker.Server do
         # (the OTP analogue of upstream edge-worker's waitForSlot/notify
         # mechanism) — capture fullness before the task leaves the ledger.
         was_at_capacity = map_size(state.active_tasks) >= state.max_concurrency
-
-        # Cancel the timeout timer
         cancel_task_timeout(task_meta)
-        state = handle_task_success(task_meta, result, state)
-        state = %{state | active_tasks: new_active_tasks}
-
-        # Poll immediately when either:
-        # a) the completed step has downstream dependents — complete_task may
-        #    enqueue downstream tasks via start_ready_steps, and the NOTIFY
-        #    for those inserts may be throttled (pgmq throttle_interval_ms),
-        #    so without this the worker would wait for fallback_poll (30s);
-        # b) this completion freed a slot on a full worker — queued sibling
-        #    tasks (e.g. a map step wider than max_concurrency) sent their
-        #    NOTIFYs at enqueue time, so nothing else picks them up before
-        #    the fallback timer.
-        # A terminal-step completion on a non-full worker still skips the
-        # poll: there is no downstream work and no starving sibling.
-        has_dependents = step_has_dependents?(state.flow_module, task_meta.step_slug)
 
         state =
-          if (has_dependents or was_at_capacity) and
-               Lifecycle.can_accept_work?(state.lifecycle) do
-            schedule_immediate_poll(state)
-          else
-            state
-          end
+          apply_task_result(result, task_meta, new_active_tasks, was_at_capacity, state)
 
         {:noreply, state}
     end
@@ -897,7 +875,9 @@ defmodule PgFlow.Worker.Server do
       task_index: task_index,
       attempt: attempt,
       repo: state.repo,
-      flow_input: flow_input || :not_loaded
+      flow_input: flow_input || :not_loaded,
+      flow_slug: state.flow_slug,
+      message_id: msg_id
     }
 
     # Start task under supervisor
@@ -928,6 +908,14 @@ defmodule PgFlow.Worker.Server do
 
           {:ok, result}
         catch
+          :throw, {:pgflow_await, outcome, attempt, message_id}
+          when outcome in [:parked, :stale, :terminal] ->
+            if attempt == context.attempt and message_id == context.message_id do
+              {:await_control, outcome}
+            else
+              {:error, "invalid await control ownership"}
+            end
+
           kind, reason ->
             duration = System.monotonic_time() - start_time
             stacktrace = __STACKTRACE__
@@ -984,6 +972,76 @@ defmodule PgFlow.Worker.Server do
   end
 
   defp cancel_task_timeout(_task_meta), do: :ok
+
+  # The atomic await query already committed the task transition and archived
+  # the message. The worker only releases its local slot for these outcomes.
+  defp apply_task_result(
+         {:await_control, :parked},
+         task_meta,
+         new_active_tasks,
+         _was_at_capacity,
+         state
+       ) do
+    emit_telemetry([:worker, :task, :waiting], %{}, %{
+      worker_id: state.worker_id,
+      flow_slug: state.flow_slug,
+      run_id: task_meta.run_id,
+      step_slug: task_meta.step_slug,
+      task_index: task_meta.task_index
+    })
+
+    state = %{state | active_tasks: new_active_tasks}
+
+    if Lifecycle.can_accept_work?(state.lifecycle) do
+      schedule_immediate_poll(state)
+    else
+      state
+    end
+  end
+
+  defp apply_task_result(
+         {:await_control, outcome},
+         _task_meta,
+         new_active_tasks,
+         _was_at_capacity,
+         state
+       )
+       when outcome in [:stale, :terminal] do
+    state = %{state | active_tasks: new_active_tasks}
+
+    if Lifecycle.can_accept_work?(state.lifecycle) do
+      schedule_immediate_poll(state)
+    else
+      state
+    end
+  end
+
+  defp apply_task_result(result, task_meta, new_active_tasks, was_at_capacity, state) do
+    state = handle_task_success(task_meta, result, state)
+    state = %{state | active_tasks: new_active_tasks}
+
+    # Poll immediately when either:
+    # a) the completed step has downstream dependents — complete_task may
+    #    enqueue downstream tasks via start_ready_steps, and the NOTIFY
+    #    for those inserts may be throttled (pgmq throttle_interval_ms),
+    #    so without this the worker would wait for fallback_poll (30s);
+    # b) this completion freed a slot on a full worker — queued sibling
+    #    tasks (e.g. a map step wider than max_concurrency) sent their
+    #    NOTIFYs at enqueue time, so nothing else picks them up before
+    #    the fallback timer.
+    # c) a handler failed — fail_task may have requeued it for another
+    #    attempt, even when this is a terminal step on a non-full worker.
+    # A successful terminal-step completion on a non-full worker still skips
+    # the poll: there is no downstream work and no starving sibling.
+    has_dependents = step_has_dependents?(state.flow_module, task_meta.step_slug)
+
+    if (has_dependents or was_at_capacity or match?({:error, _}, result)) and
+         Lifecycle.can_accept_work?(state.lifecycle) do
+      schedule_immediate_poll(state)
+    else
+      state
+    end
+  end
 
   @spec handle_task_success(task_metadata(), term(), state()) :: state()
   defp handle_task_success(task_meta, {:ok, output}, state) do
@@ -1205,8 +1263,8 @@ defmodule PgFlow.Worker.Server do
 
           {task_meta, new_active_tasks} ->
             cancel_task_timeout(task_meta)
-            state = handle_task_success(task_meta, result, state)
-            wait_for_tasks(%{state | active_tasks: new_active_tasks})
+            state = apply_task_result(result, task_meta, new_active_tasks, false, state)
+            wait_for_tasks(state)
         end
 
       {:DOWN, ref, :process, _pid, reason} ->

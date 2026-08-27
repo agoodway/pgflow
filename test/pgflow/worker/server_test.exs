@@ -25,6 +25,7 @@ defmodule PgFlow.Worker.ServerTest do
   alias PgFlow.TestFlows.StringMapFlow
   alias PgFlow.TestRepo
   alias PgFlow.Worker.Server
+  alias PgFlow.WorkerSupervisor
 
   # Use a longer timeout for integration tests
   @moduletag timeout: 30_000
@@ -104,6 +105,25 @@ defmodule PgFlow.Worker.ServerTest do
         # Root steps receive flow_input directly (matching TypeScript reference)
         Process.sleep(input["sleep_ms"] || 100)
         %{completed: true}
+      end
+    end
+  end
+
+  defmodule AwaitDuringShutdownFlow do
+    use PgFlow.Flow
+
+    @flow slug: :await_during_shutdown_flow, max_attempts: 1
+
+    step :approval do
+      fn input, ctx ->
+        test_pid = input["test_process"] |> String.to_existing_atom() |> Process.whereis()
+        send(test_pid, {:await_handler_started, self()})
+
+        receive do
+          :park_during_shutdown -> PgFlow.Context.await_signal(ctx, wait_timeout: 0)
+        after
+          5_000 -> raise "test did not release await handler"
+        end
       end
     end
   end
@@ -608,6 +628,20 @@ defmodule PgFlow.Worker.ServerTest do
     end
   end
 
+  defp get_task_details(run_id, step_slug, task_index) do
+    %{rows: [[status, error_message]]} =
+      TestRepo.query!(
+        """
+        SELECT status, error_message
+        FROM pgflow.step_tasks
+        WHERE run_id = $1 AND step_slug = $2 AND task_index = $3
+        """,
+        [Ecto.UUID.dump!(run_id), step_slug, task_index]
+      )
+
+    %{status: status, error_message: error_message}
+  end
+
   defp wait_for_run_completion(run_id, timeout_ms \\ 5000) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
 
@@ -889,6 +923,67 @@ defmodule PgFlow.Worker.ServerTest do
       {:ok, status} = wait_for_run_completion(run_id, 2000)
       assert status == "completed"
     end
+
+    test "a handler that parks while a supervised worker drains stays waiting" do
+      flow_slug = compile_flow(AwaitDuringShutdownFlow)
+      test_process_name = :pgflow_await_shutdown_test_process
+      Process.register(self(), test_process_name)
+
+      on_exit(fn ->
+        if is_pid(Process.whereis(test_process_name)), do: Process.unregister(test_process_name)
+        :persistent_term.erase({PgFlow, :repo})
+        :persistent_term.erase({PgFlow, :config})
+      end)
+
+      start_supervised!({Task.Supervisor, name: PgFlow.TaskSupervisor})
+
+      start_supervised!(
+        {WorkerSupervisor,
+         repo: TestRepo,
+         max_concurrency: 1,
+         batch_size: 1,
+         signal_strategy: :polling,
+         min_poll_interval: 50,
+         max_poll_interval: 5_000,
+         notify_fallback_interval: 30_000}
+      )
+
+      {:ok, worker_pid} = WorkerSupervisor.start_worker(AwaitDuringShutdownFlow, repo: TestRepo)
+
+      assert Enum.any?(DynamicSupervisor.which_children(WorkerSupervisor), fn
+               {:undefined, ^worker_pid, _type, _modules} -> true
+               _child -> false
+             end)
+
+      run_id = start_flow_run(flow_slug, %{"test_process" => Atom.to_string(test_process_name)})
+
+      assert_receive {:await_handler_started, handler_pid}, 5_000
+      :erlang.trace(worker_pid, true, [:receive])
+
+      on_exit(fn ->
+        if Process.alive?(worker_pid), do: :erlang.trace(worker_pid, false, [:receive])
+        send(handler_pid, :park_during_shutdown)
+      end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          stop_task = Task.async(fn -> WorkerSupervisor.stop_worker(AwaitDuringShutdownFlow) end)
+
+          assert_receive {:trace, ^worker_pid, :receive, {type, _from, :stop}}, 1_000
+          assert type == :"$gen_call"
+
+          send(handler_pid, :park_during_shutdown)
+          assert :ok = Task.await(stop_task, 5_000)
+        end)
+
+      if Process.alive?(worker_pid), do: :erlang.trace(worker_pid, false, [:receive])
+
+      task = get_task_details(run_id, "approval", 0)
+      assert task.status == "waiting"
+      assert task.error_message == nil
+      refute log =~ "Task returned unexpected result"
+      refute log =~ "Failed to mark task as failed"
+    end
   end
 
   describe "worker state" do
@@ -1065,7 +1160,6 @@ defmodule PgFlow.Worker.ServerTest do
       # Map step should produce an array of results (it's the only/leaf step)
       results = run.output["process_items"]
       assert is_list(results)
-      assert length(results) == 5
 
       # Extract processed values and sort for comparison
       processed_values = Enum.map(results, & &1["processed"]) |> Enum.sort()
@@ -2129,10 +2223,14 @@ defmodule PgFlow.Worker.ServerTest do
 
       # Break the invariant by hand: the step goes terminal but its queued
       # message is left behind, exactly what a regressed skip path would do.
-      TestRepo.query!(
-        "UPDATE pgflow.step_states SET status = 'skipped', skipped_at = now(), remaining_tasks = NULL, skip_reason = 'condition_unmet' WHERE run_id = $1 AND step_slug = 'process'",
-        [Ecto.UUID.dump!(run_id)]
-      )
+      TestRepo.transaction(fn ->
+        TestRepo.query!("SET LOCAL session_replication_role = replica")
+
+        TestRepo.query!(
+          "UPDATE pgflow.step_states SET status = 'skipped', skipped_at = now(), remaining_tasks = NULL, skip_reason = 'condition_unmet' WHERE run_id = $1 AND step_slug = 'process'",
+          [Ecto.UUID.dump!(run_id)]
+        )
+      end)
 
       %{rows: [[msg_id]]} =
         TestRepo.query!(
@@ -2254,5 +2352,21 @@ defmodule PgFlow.Worker.ServerTest do
       System.monotonic_time(:millisecond) > deadline -> false
       true -> Process.sleep(50) && wait_until_loop(fun, deadline)
     end
+  end
+end
+
+defmodule PgFlow.Worker.ServerSourceContractTest do
+  use ExUnit.Case, async: true
+
+  test "dispatch ownership and graceful shutdown share the await result dispatcher" do
+    source = File.read!(Path.expand("../../../lib/pgflow/worker/server.ex", __DIR__))
+
+    assert source =~ "{:await_control, outcome}"
+    assert source =~ ~s({:error, "invalid await control ownership"})
+    assert Regex.match?(~r/defp apply_task_result\(\s*\{:await_control, :parked\}/, source)
+    assert source =~ "when outcome in [:stale, :terminal]"
+
+    assert source =~
+             "state = apply_task_result(result, task_meta, new_active_tasks, false, state)"
   end
 end

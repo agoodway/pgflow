@@ -295,7 +295,6 @@ defmodule PgFlow.JobTest do
       end
 
       definition = DefaultStepSlugJob.__pgflow_definition__()
-      assert length(definition.steps) == 1
 
       [step] = definition.steps
       assert step.slug == :default_step_slug_job

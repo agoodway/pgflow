@@ -34,6 +34,7 @@ defmodule PgFlow.Telemetry.PubSub do
     [:pgflow, :worker, :task, :start],
     [:pgflow, :worker, :task, :stop],
     [:pgflow, :worker, :task, :exception],
+    [:pgflow, :worker, :task, :waiting],
     [:pgflow, :step, :skipped]
   ]
 
@@ -76,6 +77,20 @@ defmodule PgFlow.Telemetry.PubSub do
 
     payload =
       {:task_started,
+       %{
+         step_slug: metadata.step_slug,
+         task_index: metadata.task_index,
+         timestamp: DateTime.utc_now()
+       }}
+
+    broadcast(config.pubsub, run_id, payload, :task)
+  end
+
+  def handle_event([:pgflow, :worker, :task, :waiting], _measurements, metadata, config) do
+    run_id = normalize_uuid(metadata.run_id)
+
+    payload =
+      {:task_waiting,
        %{
          step_slug: metadata.step_slug,
          task_index: metadata.task_index,

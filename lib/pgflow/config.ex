@@ -18,6 +18,8 @@ defmodule PgFlow.Config do
     * `:notify_fallback_interval` (optional) - Milliseconds between fallback polls when using `:notify` strategy. Default: `30000`. Max: `600_000` (10 minutes).
     * `:notify_throttle_ms` (optional) - Throttle interval for pgmq LISTEN/NOTIFY trigger. Default: `250`.
     * `:recovery_interval` (optional) - Milliseconds between stalled task recovery sweeps. Default: `15_000`.
+    * `:waiting_recovery_interval` (optional) - Milliseconds between waiting-task timeout sweeps. Default: `15_000`.
+    * `:waiting_recovery_batch_size` (optional) - Maximum waiting tasks expired per recovery transaction. Default: `100`.
     * `:stale_threshold` (optional) - Buffer in seconds added beyond a task's effective (step or flow) `opt_timeout` before it is considered stalled. Default: `60`.
     * `:attach_default_logger` (optional) - Whether to attach the default telemetry logger. Default: `false`.
     * `:pubsub` (optional) - Phoenix.PubSub module for broadcasting telemetry events to LiveViews. Default: `nil` (disabled).
@@ -105,6 +107,16 @@ defmodule PgFlow.Config do
       type: :pos_integer,
       default: 15_000,
       doc: "Milliseconds between stalled task recovery sweeps"
+    ],
+    waiting_recovery_interval: [
+      type: :pos_integer,
+      default: 15_000,
+      doc: "Milliseconds between waiting-task timeout sweeps"
+    ],
+    waiting_recovery_batch_size: [
+      type: :pos_integer,
+      default: 100,
+      doc: "Maximum waiting tasks expired per recovery transaction"
     ],
     stale_threshold: [
       type: :pos_integer,

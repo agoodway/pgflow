@@ -46,6 +46,24 @@ defmodule PgFlow do
 
       {:ok, run_id} = PgFlow.start_flow(MyApp.Flows.ProcessOrder, %{"order_id" => 123})
 
+  ## Awaiting signals
+
+  Handlers may park mid-execution with `PgFlow.Context.await_signal/2` until
+  `PgFlow.signal/3` delivers a JSON payload. This is unrelated to
+  `signal_strategy` / `PgFlow.Signal.Notify`.
+
+      case PgFlow.Context.await_signal(ctx, wait_for: {24, :hours}) do
+        {:ok, %{"decision" => "approved"}} -> charge(input)
+        {:error, :timeout} -> raise "no decision"
+      end
+
+      case PgFlow.signal(run_id, :approval, %{"decision" => "approved"}) do
+        {:ok, outcome} when outcome in [:buffered, :requeued] -> :accepted
+        {:ok, :already_delivered} -> :already_delivered
+        {:ok, outcome} when outcome in [:expired, :terminal, :missing] -> {:not_delivered, outcome}
+        {:error, reason} -> {:error, reason}
+      end
+
   ## Configuration
 
   Add PgFlow to your supervision tree:
@@ -58,6 +76,9 @@ defmodule PgFlow do
   """
 
   alias PgFlow.{Client, Config, FlowRegistry, WorkerSupervisor}
+
+  @type signal_outcome :: Client.signal_outcome()
+  @type waiting_task :: Client.waiting_task()
 
   @doc """
   Returns a child specification for starting PgFlow under a supervisor.
@@ -106,6 +127,35 @@ defmodule PgFlow do
   """
   @spec start_flow(module() | atom() | String.t(), map()) :: {:ok, String.t()} | {:error, term()}
   defdelegate start_flow(flow_module_or_slug, input), to: Client
+
+  @doc """
+  Delivers a JSON payload to a parked or not-yet-awaited task.
+
+  Returns an honest delivery outcome or an error. See
+  `PgFlow.Client.signal/3`. Unrelated to `signal_strategy` /
+  `PgFlow.Signal.Notify`. Maps/lists are validated by the Elixir API; PostgreSQL
+  also rejects null/scalar JSON and payloads larger than 1,048,576 bytes as
+  measured by `pg_column_size/1`.
+  """
+  @spec signal(String.t(), atom() | String.t(), map() | list()) ::
+          {:ok, signal_outcome()} | {:error, term()}
+  defdelegate signal(run_id, step_slug, payload), to: Client
+
+  @doc """
+  Same as `signal/3` with an explicit `task_index` for map tasks.
+  """
+  @spec signal(String.t(), atom() | String.t(), non_neg_integer(), map() | list()) ::
+          {:ok, signal_outcome()} | {:error, term()}
+  defdelegate signal(run_id, step_slug, task_index, payload), to: Client
+
+  @doc """
+  Lists tasks in a run that are currently parked waiting for a signal.
+
+  Results contain only task addressing and waiting timing metadata. Payloads
+  and claim state are not exposed.
+  """
+  @spec get_waiting_tasks(String.t()) :: {:ok, [waiting_task()]} | {:error, term()}
+  defdelegate get_waiting_tasks(run_id), to: Client
 
   @doc """
   Starts a flow and waits for completion.

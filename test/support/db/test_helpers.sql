@@ -8,6 +8,7 @@ create schema if not exists pgflow_tests;
 create or replace function pgflow_tests.reset_db() returns void as $$
 BEGIN
   -- Delete pgflow data
+  DELETE FROM pgflow.task_signals;
   DELETE FROM pgflow.step_tasks;
   DELETE FROM pgflow.step_states;
   DELETE FROM pgflow.runs;

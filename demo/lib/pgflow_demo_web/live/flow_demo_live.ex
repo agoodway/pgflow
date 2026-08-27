@@ -8,7 +8,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   require Logger
 
   alias PgFlow.Client
-  alias PgflowDemoWeb.Components.{CronDSL, FlowDSL, PoweredBy}
+  alias PgflowDemoWeb.Components.{CronDSL, FlowDSL, JobDSL, PoweredBy}
 
   # UI Constants
   @node_radius 10
@@ -17,9 +17,16 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   @default_url "https://www.pgflow.dev/news/pgflow-0-13-1-cli-fix-step-output-storage-for-conditional-execution/"
 
+  @send_email_input %{
+    "to" => "demo@pgflow.dev",
+    "subject" => "Welcome to PgFlow",
+    "body" => "This email was enqueued as a Job."
+  }
+
   @flow_modules %{
     article: PgflowDemo.Flows.ArticleFlow,
-    onboarding: PgflowDemo.Flows.OnboardingFlow
+    onboarding: PgflowDemo.Flows.OnboardingFlow,
+    approval: PgflowDemo.Flows.ApprovalFlow
   }
 
   @flows %{
@@ -55,6 +62,18 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         {:create_account, :send_welcome},
         {:create_account, :finish}
       ]
+    },
+    approval: %{
+      slug: :approval_flow,
+      steps: [
+        %{slug: :create_order, label: "Order", x: 100, y: 40},
+        %{slug: :await_approval, label: "Approve", x: 100, y: 110},
+        %{slug: :charge, label: "Charge", x: 100, y: 180}
+      ],
+      edges: [
+        {:create_order, :await_approval},
+        {:await_approval, :charge}
+      ]
     }
   }
 
@@ -67,6 +86,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:selected_flow, :article)
       |> assign(:plan, "free")
       |> assign(:fail_email, false)
+      |> assign(:approval_submitted, false)
+      |> assign(:approval_error, nil)
       |> assign(:url, @default_url)
       |> assign(:run_id, nil)
       |> assign(:run_status, :idle)
@@ -86,6 +107,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:timer_ref, nil)
       |> assign(:output_step, nil)
       |> assign(:output_content, nil)
+      |> assign(:job_output, nil)
+      |> assign(:job_run, false)
       |> assign(:output_loading, false)
       |> assign(:dsl_segments, FlowDSL.get_segments(flow_module(:article)))
       |> assign(:show_migration, false)
@@ -93,6 +116,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:migration_content, get_migration_content(:article))
       |> assign(:cron_highlighted_source, CronDSL.get_highlighted_source())
       |> assign(:cron_next_run_info, CronDSL.get_next_run_info())
+      |> assign(:job_highlighted_source, JobDSL.get_highlighted_source())
 
     {:ok, socket}
   end
@@ -123,6 +147,16 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       nil ->
         {:noreply, socket}
 
+      selected when selected in [:cron, :job] ->
+        socket =
+          if flow_tab?(socket.assigns.selected_flow) do
+            reset_run_state(socket)
+          else
+            socket
+          end
+
+        {:noreply, assign(socket, :selected_flow, selected)}
+
       selected ->
         {:noreply, switch_flow(socket, selected)}
     end
@@ -142,6 +176,14 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   end
 
   @impl true
+  def handle_event("start_flow", _params, %{assigns: %{selected_flow: :approval}} = socket) do
+    start_selected_flow(socket, :approval_flow, %{
+      "order_id" => "ord_demo",
+      "amount" => 42
+    })
+  end
+
+  @impl true
   def handle_event("start_flow", %{"url" => url}, socket) do
     case validate_url(url) do
       {:error, message} ->
@@ -151,6 +193,31 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         start_selected_flow(socket, :article_flow, %{"url" => valid_url})
     end
   end
+
+  @impl true
+  def handle_event("start_job", _params, %{assigns: %{selected_flow: :job}} = socket) do
+    start_selected_job(socket)
+  end
+
+  @impl true
+  def handle_event(
+        "signal_approval",
+        %{"decision" => decision},
+        %{
+          assigns: %{
+            run_id: run_id,
+            steps: %{await_approval: :waiting},
+            approval_submitted: false
+          }
+        } = socket
+      )
+      when is_binary(run_id) and decision in ["approved", "rejected"] do
+    run_id
+    |> Client.signal(:await_approval, %{"decision" => decision})
+    |> then(&apply_signal_delivery_result(socket, &1))
+  end
+
+  def handle_event("signal_approval", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("reset", _params, socket) do
@@ -225,6 +292,34 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       {:error, _} ->
         {:noreply, socket}
     end
+  end
+
+  @doc false
+  @spec apply_signal_delivery_result(
+          Phoenix.LiveView.Socket.t(),
+          {:ok, Client.signal_outcome()} | {:error, term()}
+        ) :: {:noreply, Phoenix.LiveView.Socket.t()}
+  def apply_signal_delivery_result(socket, {:ok, outcome})
+      when outcome in [:buffered, :requeued, :already_delivered] do
+    {:noreply, assign(socket, approval_submitted: true, approval_error: nil)}
+  end
+
+  def apply_signal_delivery_result(socket, {:ok, outcome}) do
+    {:noreply,
+     assign(socket,
+       approval_submitted: false,
+       approval_error: "Signal was not delivered: #{outcome}"
+     )}
+  end
+
+  def apply_signal_delivery_result(socket, {:error, reason}) do
+    Logger.warning("FlowDemoLive: signal delivery failed: #{inspect(reason)}")
+
+    {:noreply,
+     assign(socket,
+       approval_submitted: false,
+       approval_error: "Signal delivery failed. Please try again."
+     )}
   end
 
   # Shared handler for step clicks from graph nodes and DSL code
@@ -305,10 +400,20 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   # PgFlow PubSub events — new namespaced tuple format from Telemetry.PubSub bridge
 
   @impl true
-  def handle_info(
-        {:pgflow, _run_id, {:task_started, %{step_slug: step_slug, task_index: task_index}}},
-        socket
-      ) do
+  def handle_info({:pgflow, run_id, event}, socket) do
+    if current_run?(socket, run_id) do
+      handle_pgflow_event(event, socket)
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
+  defp handle_pgflow_event(
+         {:task_started, %{step_slug: step_slug, task_index: task_index}},
+         socket
+       ) do
     case to_step_atom(step_slug, socket.assigns.steps_config) do
       nil ->
         {:noreply, socket}
@@ -334,12 +439,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
-  @impl true
-  def handle_info(
-        {:pgflow, _run_id,
-         {:task_completed, %{step_slug: step_slug, duration_ms: duration_ms, output: output}}},
-        socket
-      ) do
+  defp handle_pgflow_event(
+         {:task_completed, %{step_slug: step_slug, duration_ms: duration_ms, output: output}},
+         socket
+       ) do
     case to_step_atom(step_slug, socket.assigns.steps_config) do
       nil ->
         {:noreply, socket}
@@ -371,12 +474,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
-  @impl true
-  def handle_info(
-        {:pgflow, _run_id,
-         {:task_failed, %{step_slug: step_slug, error: error, duration_ms: duration_ms}}},
-        socket
-      ) do
+  defp handle_pgflow_event(
+         {:task_failed, %{step_slug: step_slug, error: error, duration_ms: duration_ms}},
+         socket
+       ) do
     case to_step_atom(step_slug, socket.assigns.steps_config) do
       nil ->
         {:noreply, socket}
@@ -401,11 +502,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
-  @impl true
-  def handle_info(
-        {:pgflow, _run_id, {:step_skipped, %{step_slug: step_slug, skip_reason: reason}}},
-        socket
-      ) do
+  defp handle_pgflow_event(
+         {:step_skipped, %{step_slug: step_slug, skip_reason: reason}},
+         socket
+       ) do
     case to_step_atom(step_slug, socket.assigns.steps_config) do
       nil ->
         {:noreply, socket}
@@ -421,8 +521,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_started, _payload}}, socket) do
+  defp handle_pgflow_event({:run_started, _payload}, socket) do
     {:noreply, assign(socket, :run_status, :running)}
   end
 
@@ -431,26 +530,23 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   # mailbox (delivered between subscribe and the reconcile read). Without
   # these guards that late message would log "Flow Complete"/"Flow Failed" a
   # second time and re-run the terminal bookkeeping.
-  @impl true
-  def handle_info(
-        {:pgflow, _run_id, {:run_completed, _payload}},
-        %{assigns: %{run_status: status}} = socket
-      )
-      when status in [:completed, :failed] do
+  defp handle_pgflow_event(
+         {:run_completed, _payload},
+         %{assigns: %{run_status: status}} = socket
+       )
+       when status in [:completed, :failed] do
     {:noreply, socket}
   end
 
-  @impl true
-  def handle_info(
-        {:pgflow, _run_id, {:run_failed, _payload}},
-        %{assigns: %{run_status: status}} = socket
-      )
-      when status in [:completed, :failed] do
+  defp handle_pgflow_event(
+         {:run_failed, _payload},
+         %{assigns: %{run_status: status}} = socket
+       )
+       when status in [:completed, :failed] do
     {:noreply, socket}
   end
 
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_completed, _payload}}, socket) do
+  defp handle_pgflow_event({:run_completed, payload}, socket) do
     cancel_timer(socket.assigns.timer_ref)
 
     elapsed_ms =
@@ -467,13 +563,13 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:timer_ref, nil)
       |> assign(:error, nil)
       |> assign(:error_step, nil)
+      |> maybe_assign_job_output(payload[:output])
       |> add_log(:success, "Flow Complete", "Total: #{elapsed_ms}ms")
 
     {:noreply, socket}
   end
 
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_failed, %{error: error}}}, socket) do
+  defp handle_pgflow_event({:run_failed, %{error: error}}, socket) do
     cancel_timer(socket.assigns.timer_ref)
 
     elapsed_ms =
@@ -495,10 +591,40 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     {:noreply, socket}
   end
 
-  @impl true
-  def handle_info(_msg, socket), do: {:noreply, socket}
+  defp handle_pgflow_event(
+         {:task_waiting, %{step_slug: step_slug, task_index: task_index}},
+         socket
+       ) do
+    case to_step_atom(step_slug, socket.assigns.steps_config) do
+      nil ->
+        {:noreply, socket}
+
+      step_atom ->
+        steps = update_step_status(socket.assigns.steps, step_atom, :waiting)
+
+        socket =
+          socket
+          |> assign(:steps, steps)
+          |> assign(:active_edges, MapSet.new())
+          |> assign(:highlighted_step, step_atom)
+          |> push_event("scroll_dsl_pane", %{step: to_string(step_atom)})
+          |> add_log(
+            :info,
+            "Waiting",
+            "#{format_step_label(step_atom)} [task #{task_index}]",
+            step_atom
+          )
+
+        {:noreply, socket}
+    end
+  end
+
+  defp handle_pgflow_event(_event, socket), do: {:noreply, socket}
 
   # Helpers
+
+  defp current_run?(socket, run_id),
+    do: is_binary(run_id) and run_id == socket.assigns.run_id
 
   defp flow_config(key), do: Map.fetch!(@flows, key)
   defp flow_module(key), do: Map.fetch!(@flow_modules, key)
@@ -521,66 +647,85 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   defp parse_flow_key("article"), do: :article
   defp parse_flow_key("onboarding"), do: :onboarding
+  defp parse_flow_key("approval"), do: :approval
+  defp parse_flow_key("cron"), do: :cron
+  defp parse_flow_key("job"), do: :job
   defp parse_flow_key(_), do: nil
 
   defp start_selected_flow(socket, flow_slug, input) do
     case Client.start_flow(flow_slug, input) do
       {:ok, run_id} ->
-        socket = cleanup_subscription(socket)
-
-        # `Client.start_flow/2` can synchronously emit `step:skipped` and
-        # `run:completed`/`run:failed` telemetry for a root-only skip that
-        # resolves before any worker gets involved — that broadcast happens
-        # *inside* start_flow, before this function ever sees a run_id.
-        # Subscribing here (immediately once the run_id — and therefore the
-        # topic name — exists) is as early as this LiveView can possibly
-        # subscribe, but it can still be too late for that synchronous
-        # broadcast, which already went out to zero subscribers and is gone
-        # for good. `reconcile_run_state/2` below reads the run's current
-        # DB state right after subscribing so any event that fired (and was
-        # missed) before the subscription existed still lands in the UI —
-        # this is the same subscribe-then-load-snapshot order used by
-        # `PgFlow.LiveClient.subscribe_and_load/3`.
-        Phoenix.PubSub.subscribe(PgflowDemo.PubSub, "pgflow:run:#{run_id}")
-
-        cancel_timer(socket.assigns.timer_ref)
-
-        socket =
-          socket
-          |> assign(:run_id, run_id)
-          |> assign(:run_status, :running)
-          |> assign(:error, nil)
-          |> assign(:error_step, nil)
-          |> assign(:steps, initial_steps(socket.assigns.steps_config))
-          |> assign(:step_outputs, %{})
-          |> assign(:duration, nil)
-          |> assign(:start_time, System.monotonic_time(:millisecond))
-          |> assign(:elapsed_ms, 0)
-          |> assign(:event_log, [
-            log_entry(:info, "Flow started", "Run ID: #{short_id(run_id)}")
-          ])
-          |> assign(:active_edges, MapSet.new())
-          |> assign(:timer_ref, nil)
-          |> assign(:output_step, nil)
-          |> assign(:output_content, nil)
-          |> assign(:output_loading, false)
-          |> reconcile_run_state(run_id)
-
-        # Only tick the elapsed-time clock if the run is (still) actually
-        # running — reconcile_run_state/2 may have already resolved it to
-        # :completed/:failed above.
-        timer_ref =
-          if socket.assigns.run_status == :running, do: maybe_start_tick_timer(socket)
-
-        {:noreply, assign(socket, :timer_ref, timer_ref)}
+        {:noreply, subscribe_to_run(socket, run_id, "Flow started")}
 
       {:error, reason} ->
         {:noreply, assign(socket, :error, format_user_error(reason))}
     end
   end
 
+  defp start_selected_job(socket) do
+    case Client.enqueue(PgflowDemo.Jobs.SendEmail, @send_email_input) do
+      {:ok, run_id} ->
+        {:noreply,
+         socket
+         |> assign(:job_run, true)
+         |> subscribe_to_run(run_id, "Job started")}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, :error, format_user_error(reason))}
+    end
+  end
+
+  # `Client.start_flow/2` and `Client.enqueue/2` can synchronously emit
+  # `step:skipped` and `run:completed`/`run:failed` telemetry that broadcasts
+  # *inside* the call, before this function ever sees a run_id. Subscribing
+  # here (immediately once the run_id — and therefore the topic name — exists)
+  # is as early as this LiveView can possibly subscribe, but it can still be
+  # too late for that synchronous broadcast, which already went out to zero
+  # subscribers and is gone for good. `reconcile_run_state/2` below reads the
+  # run's current DB state right after subscribing so any event that fired
+  # (and was missed) before the subscription existed still lands in the UI —
+  # this is the same subscribe-then-load-snapshot order used by
+  # `PgFlow.LiveClient.subscribe_and_load/3`.
+  defp subscribe_to_run(socket, run_id, log_title) do
+    socket = cleanup_subscription(socket)
+    Phoenix.PubSub.subscribe(PgflowDemo.PubSub, "pgflow:run:#{run_id}")
+    cancel_timer(socket.assigns.timer_ref)
+
+    socket =
+      socket
+      |> assign(:run_id, run_id)
+      |> assign(:run_status, :running)
+      |> assign(:error, nil)
+      |> assign(:error_step, nil)
+      |> assign(:approval_submitted, false)
+      |> assign(:approval_error, nil)
+      |> assign(:steps, initial_steps(socket.assigns.steps_config))
+      |> assign(:step_outputs, %{})
+      |> assign(:duration, nil)
+      |> assign(:start_time, System.monotonic_time(:millisecond))
+      |> assign(:elapsed_ms, 0)
+      |> assign(:event_log, [
+        log_entry(:info, log_title, "Run ID: #{short_id(run_id)}")
+      ])
+      |> assign(:active_edges, MapSet.new())
+      |> assign(:timer_ref, nil)
+      |> assign(:output_step, nil)
+      |> assign(:output_content, nil)
+      |> assign(:job_output, nil)
+      |> assign(:output_loading, false)
+      |> reconcile_run_state(run_id)
+
+    # Only tick the elapsed-time clock if the run is (still) actually
+    # running — reconcile_run_state/2 may have already resolved it to
+    # :completed/:failed above.
+    timer_ref =
+      if socket.assigns.run_status == :running, do: maybe_start_tick_timer(socket)
+
+    assign(socket, :timer_ref, timer_ref)
+  end
+
   # Reads the run's current state from the DB and merges it into the socket.
-  # Called right after subscribing in start_selected_flow/3 so a run that
+  # Called right after subscribing in subscribe_to_run/3 so a run that
   # already finished (or partially progressed) before the subscription
   # existed is still reflected in the UI instead of leaving it stuck on
   # "running". Exposed (not `defp`) so it can be exercised directly in
@@ -605,12 +750,29 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
+  # Maps task rows onto the LiveView steps map. Public get_waiting_tasks/1
+  # results have no status field because every returned task is waiting;
+  # legacy/internal rows with an explicit non-waiting status are ignored so
+  # step_states remain source of truth for started/completed/failed/skipped.
+  @doc false
+  def apply_waiting_task_statuses(steps, task_rows, steps_config) do
+    Enum.reduce(task_rows, steps, &apply_waiting_task_status(&1, &2, steps_config))
+  end
+
   defp apply_run_snapshot(socket, run) do
     steps_config = socket.assigns.steps_config
 
+    # step_states has no "waiting" status (parked tasks stay "started" there).
+    # Overlay from step_tasks so a missed task_waiting PubSub event still
+    # shows Approve/Reject. Do not map step_states "started" to :waiting.
+    steps =
+      socket.assigns.steps
+      |> merge_step_statuses(run.step_states, steps_config)
+      |> apply_waiting_task_statuses(waiting_task_rows(run.run_id), steps_config)
+
     socket =
       socket
-      |> assign(:steps, merge_step_statuses(socket.assigns.steps, run.step_states, steps_config))
+      |> assign(:steps, steps)
       |> assign(
         :step_outputs,
         merge_step_outputs(socket.assigns.step_outputs, run.step_states, steps_config)
@@ -631,6 +793,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         |> assign(:active_edges, MapSet.new())
         |> assign(:error, nil)
         |> assign(:error_step, nil)
+        |> maybe_assign_job_output(run.output)
         |> add_log(:success, "Flow Complete", "Total: #{duration}ms")
 
       "failed" ->
@@ -663,6 +826,68 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       end
     end)
   end
+
+  defp apply_waiting_task_status(row, steps, steps_config) do
+    row = normalize_task_row(row)
+
+    with status when status in [nil, "waiting"] <- Map.get(row, "status"),
+         step_slug when not is_nil(step_slug) <- Map.get(row, "step_slug"),
+         step_atom when not is_nil(step_atom) <- to_step_atom(step_slug, steps_config) do
+      Map.put(steps, step_atom, :waiting)
+    else
+      _ -> steps
+    end
+  end
+
+  # Preserve the legacy lookup contract for task rows while accepting public
+  # string-keyed maps: truthy atom values win, otherwise string values apply.
+  defp normalize_task_row(row) do
+    row
+    |> Enum.reduce(%{}, &collect_task_row_field/2)
+    |> Map.new(&resolve_task_row_field/1)
+  end
+
+  defp collect_task_row_field({key, value}, fields) when is_atom(key) do
+    Map.update(fields, Atom.to_string(key), %{atom: value, string: nil}, &%{&1 | atom: value})
+  end
+
+  defp collect_task_row_field({key, value}, fields) when is_binary(key) do
+    Map.update(fields, key, %{atom: nil, string: value}, &%{&1 | string: value})
+  end
+
+  defp collect_task_row_field(_field, fields), do: fields
+
+  defp resolve_task_row_field({field, %{atom: atom_value, string: string_value}}) do
+    {field, atom_value || string_value}
+  end
+
+  @doc false
+  @spec load_waiting_task_rows(
+          String.t(),
+          (String.t() -> {:ok, [map()]} | {:error, term()})
+        ) :: [map()]
+  def load_waiting_task_rows(run_id, lookup \\ &Client.get_waiting_tasks/1) do
+    do_load_waiting_task_rows(run_id, lookup, 1)
+  end
+
+  defp do_load_waiting_task_rows(run_id, lookup, retries_remaining) do
+    case lookup.(run_id) do
+      {:ok, tasks} ->
+        tasks
+
+      {:error, _reason} when retries_remaining > 0 ->
+        do_load_waiting_task_rows(run_id, lookup, retries_remaining - 1)
+
+      {:error, reason} ->
+        Logger.warning(
+          "FlowDemoLive: failed to load waiting tasks for run #{run_id}: #{inspect(reason)}"
+        )
+
+        []
+    end
+  end
+
+  defp waiting_task_rows(run_id), do: load_waiting_task_rows(run_id)
 
   defp step_state_status("completed"), do: :completed
   defp step_state_status("failed"), do: :failed
@@ -731,6 +956,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     |> assign(:step_outputs, %{})
     |> assign(:error, nil)
     |> assign(:error_step, nil)
+    |> assign(:approval_submitted, false)
+    |> assign(:approval_error, nil)
     |> assign(:duration, nil)
     |> assign(:start_time, nil)
     |> assign(:elapsed_ms, 0)
@@ -740,6 +967,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     |> assign(:timer_ref, nil)
     |> assign(:output_step, nil)
     |> assign(:output_content, nil)
+    |> assign(:job_output, nil)
+    |> assign(:job_run, false)
     |> assign(:output_loading, false)
     |> assign(:show_migration, false)
   end
@@ -825,6 +1054,22 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
+  defp maybe_assign_job_output(socket, output) when not is_nil(output) do
+    if job_output_run?(socket), do: assign(socket, :job_output, output), else: socket
+  end
+
+  defp maybe_assign_job_output(socket, _output), do: socket
+
+  # `job_run` is set in start_selected_job/1 so a SendEmail complete is
+  # captured even after switching to Cron. selected_flow in [:job, :cron]
+  # covers synthetic PubSub tests that never enqueue.
+  defp job_output_run?(%{assigns: %{job_run: true}}), do: true
+
+  defp job_output_run?(%{assigns: %{selected_flow: selected}}) when selected in [:job, :cron],
+    do: true
+
+  defp job_output_run?(_socket), do: false
+
   defp format_user_error(reason) when is_binary(reason), do: "Failed to start flow: #{reason}"
   defp format_user_error(%{message: msg}), do: "Failed to start flow: #{msg}"
   defp format_user_error(_), do: "Failed to start flow. Please try again."
@@ -849,16 +1094,19 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   defp step_color(:pending), do: "#4B5563"
   defp step_color(:running), do: "#8B5CF6"
+  defp step_color(:waiting), do: "#F59E0B"
   defp step_color(:completed), do: "#10B981"
   defp step_color(:failed), do: "#EF4444"
   defp step_color(:skipped), do: "#64748B"
 
   defp node_stroke(:running), do: "#A78BFA"
+  defp node_stroke(:waiting), do: "#FBBF24"
   defp node_stroke(:completed), do: "#34D399"
   defp node_stroke(:skipped), do: "#94A3B8"
   defp node_stroke(_), do: "#6B7280"
 
   defp node_label_fill(:running), do: "#A78BFA"
+  defp node_label_fill(:waiting), do: "#FBBF24"
   defp node_label_fill(:completed), do: "#34D399"
   defp node_label_fill(:skipped), do: "#94A3B8"
   defp node_label_fill(_), do: "#D1D5DB"
@@ -866,6 +1114,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   defp node_style(:completed), do: "cursor: pointer"
   defp node_style(:skipped), do: "cursor: default; opacity: 0.55"
   defp node_style(_), do: "cursor: default"
+
+  defp flow_tab?(tab), do: tab in [:article, :onboarding, :approval]
 
   defp flow_tab_class(true),
     do:
@@ -1062,7 +1312,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         </div>
 
         <!-- Interactive tip -->
-        <div class="mb-6 px-4 py-3 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center gap-3">
+        <div
+          :if={flow_tab?(@selected_flow)}
+          class="mb-6 px-4 py-3 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center gap-3"
+        >
           <span class="text-purple-400 text-lg" title="Tip">ⓘ</span>
           <p class="text-purple-300/80 text-sm">
             Click on
@@ -1073,9 +1326,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             <a href="#flow-dsl" class="text-orange-400 hover:underline underline-offset-2">
               Flow DSL
             </a>
-            steps, <a href="#cron-dsl" class="text-amber-400 hover:underline underline-offset-2">
-              Cron DSL
-            </a>, or
+            steps, or
             <a href="#event-log" class="text-cyan-400 hover:underline underline-offset-2">
               Event Log
             </a>
@@ -1089,7 +1340,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
         <!-- Input -->
         <div class="backdrop-blur-xl bg-white/5 rounded-2xl p-6 mb-6 border border-white/10">
-          <div class="flex gap-2 mb-4">
+          <div class={["flex gap-2", @selected_flow != :cron && "mb-4"]}>
             <button
               type="button"
               id="tab-article"
@@ -1107,6 +1358,33 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               class={flow_tab_class(@selected_flow == :onboarding)}
             >
               Onboarding
+            </button>
+            <button
+              type="button"
+              id="tab-approval"
+              phx-click="select_flow"
+              phx-value-flow="approval"
+              class={flow_tab_class(@selected_flow == :approval)}
+            >
+              Approval
+            </button>
+            <button
+              type="button"
+              id="tab-job"
+              phx-click="select_flow"
+              phx-value-flow="job"
+              class={flow_tab_class(@selected_flow == :job)}
+            >
+              Job
+            </button>
+            <button
+              type="button"
+              id="tab-cron"
+              phx-click="select_flow"
+              phx-value-flow="cron"
+              class={flow_tab_class(@selected_flow == :cron)}
+            >
+              Cron
             </button>
           </div>
 
@@ -1190,7 +1468,86 @@ defmodule PgflowDemoWeb.FlowDemoLive do
             </button>
           </form>
 
-          <div class="mt-4 flex items-center justify-between">
+          <form
+            :if={@selected_flow == :approval}
+            id="approval-form"
+            phx-submit="start_flow"
+            class="flex flex-wrap items-center gap-4"
+          >
+            <button
+              :if={@run_status != :running}
+              type="submit"
+              class="px-6 py-3 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white font-semibold rounded-xl shadow-lg"
+            >
+              Start Flow
+            </button>
+            <button
+              :if={@run_status in [:completed, :failed]}
+              type="button"
+              phx-click="reset"
+              class="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl"
+            >
+              Reset
+            </button>
+          </form>
+
+          <div
+            :if={
+              @selected_flow == :approval and Map.get(@steps, :await_approval) == :waiting and
+                not @approval_submitted
+            }
+            id="approval-actions"
+            class="mt-4 flex gap-3"
+          >
+            <button
+              id="approval-approve"
+              type="button"
+              phx-click="signal_approval"
+              phx-value-decision="approved"
+              class="px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl"
+            >
+              Approve
+            </button>
+            <button
+              id="approval-reject"
+              type="button"
+              phx-click="signal_approval"
+              phx-value-decision="rejected"
+              class="px-6 py-3 bg-red-600 hover:bg-red-500 text-white font-semibold rounded-xl"
+            >
+              Reject
+            </button>
+          </div>
+
+          <p
+            :if={@selected_flow == :approval and @approval_error}
+            id="approval-error"
+            class="mt-3 text-sm text-red-300"
+          >
+            {@approval_error}
+          </p>
+
+          <div :if={@selected_flow == :job} id="job-controls" class="flex gap-4">
+            <button
+              :if={@run_status != :running}
+              id="start-job"
+              type="button"
+              phx-click="start_job"
+              class="px-6 py-3 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 text-white font-semibold rounded-xl shadow-lg cursor-pointer"
+            >
+              Start Job
+            </button>
+            <button
+              :if={@run_status in [:completed, :failed]}
+              type="button"
+              phx-click="reset"
+              class="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl cursor-pointer"
+            >
+              Reset
+            </button>
+          </div>
+
+          <div :if={@selected_flow != :cron} class="mt-4 flex items-center justify-between">
             <div class="flex items-center gap-3">
               <div class={"flex items-center gap-2 px-3 py-1 rounded-full #{status_bg(@run_status)}"}>
                 <div class={"w-2 h-2 rounded-full #{if @run_status == :running, do: "animate-pulse"} #{status_color(@run_status)} bg-current"}>
@@ -1218,7 +1575,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
         </div>
 
         <!-- Main Grid - Side by side on md+ screens, stacked on mobile -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div :if={flow_tab?(@selected_flow)} class="grid grid-cols-1 md:grid-cols-2 gap-6">
           <!-- Workflow -->
           <div
             id="workflow"
@@ -1380,6 +1737,17 @@ defmodule PgflowDemoWeb.FlowDemoLive do
                       class="edge-active"
                     />
                   <% end %>
+                  <%= if status == :waiting do %>
+                    <circle
+                      cx={step.x}
+                      cy={step.y}
+                      r="4"
+                      fill="none"
+                      stroke="white"
+                      stroke-width="1"
+                      stroke-dasharray="2 2"
+                    />
+                  <% end %>
                   <rect
                     x={step.x - String.length(step.label) * 2.2 - 4}
                     y={step.y + @node_radius + 2}
@@ -1448,6 +1816,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
         <!-- Flow DSL -->
         <div
+          :if={flow_tab?(@selected_flow)}
           id="flow-dsl"
           class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
         >
@@ -1494,6 +1863,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
         <!-- Step Output -->
         <div
+          :if={flow_tab?(@selected_flow)}
           id="step-output"
           class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
         >
@@ -1528,8 +1898,55 @@ defmodule PgflowDemoWeb.FlowDemoLive do
           </div>
         </div>
 
+        <!-- Job DSL -->
+        <div
+          :if={@selected_flow == :job}
+          id="job-dsl"
+          class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
+        >
+          <h2 class="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+            <span class="text-amber-400">Job DSL</span>
+            <span class="text-sm font-normal text-gray-400 ml-2">— One-off send_email</span>
+          </h2>
+          <div class="bg-slate-900/80 rounded-xl p-4 max-h-[32rem] overflow-y-auto terminal-scroll">
+            <JobDSL.job_dsl highlighted_source={@job_highlighted_source} />
+          </div>
+          <p class="mt-3 text-sm text-gray-400">
+            Enqueued with <code class="text-amber-400">PgFlow.enqueue/2</code>.
+            <a
+              href="/pgflow/jobs/send_email"
+              class="text-amber-400 hover:text-amber-300 underline underline-offset-2"
+            >
+              View in Dashboard
+            </a>
+          </p>
+        </div>
+
+        <div
+          :if={@selected_flow == :job}
+          id="job-output"
+          class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
+        >
+          <h2 class="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-purple-500"></span>
+            <span class="text-purple-400">Output</span>
+          </h2>
+          <div class="bg-slate-900/80 rounded-xl p-4 max-h-[20rem] overflow-y-auto terminal-scroll">
+            <%= if @job_output do %>
+              <pre class="text-gray-300 text-xs whitespace-pre-wrap font-mono"><%= format_output(@job_output) %></pre>
+            <% else %>
+              <div class="text-gray-600 text-center py-12">
+                <p>No output yet</p>
+                <p class="text-xs mt-1">Start the job to see its return map</p>
+              </div>
+            <% end %>
+          </div>
+        </div>
+
         <!-- Cron DSL -->
         <div
+          :if={@selected_flow == :cron}
           id="cron-dsl"
           class="mt-6 backdrop-blur-xl bg-white/5 rounded-2xl p-6 border border-white/10 scroll-mt-4"
         >

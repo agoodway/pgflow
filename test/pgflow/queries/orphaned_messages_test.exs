@@ -61,10 +61,14 @@ defmodule PgFlow.Queries.OrphanedMessagesTest do
     } do
       # Simulate a broken skip path: the step goes terminal but its queued
       # message is left behind (the invariant says SQL always archives it).
-      TestRepo.query!(
-        "UPDATE pgflow.step_states SET status = 'skipped', skipped_at = now(), remaining_tasks = NULL, skip_reason = 'condition_unmet' WHERE run_id = $1 AND step_slug = 'root_step'",
-        [run_id]
-      )
+      TestRepo.transaction(fn ->
+        TestRepo.query!("SET LOCAL session_replication_role = replica")
+
+        TestRepo.query!(
+          "UPDATE pgflow.step_states SET status = 'skipped', skipped_at = now(), remaining_tasks = NULL, skip_reason = 'condition_unmet' WHERE run_id = $1 AND step_slug = 'root_step'",
+          [run_id]
+        )
+      end)
 
       assert {:ok, [orphan]} = Flows.orphaned_queue_messages(TestRepo, @flow_slug, [msg_id])
       assert orphan.step_status == "skipped"

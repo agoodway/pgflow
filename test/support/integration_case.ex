@@ -1,7 +1,6 @@
 defmodule PgFlow.IntegrationCase do
   @moduledoc """
-  This module defines the setup for integration tests that require
-  the full pgflow database schema.
+  Shared setup for integration tests that require the full pgflow database schema.
 
   Uses `pgflow_tests.reset_db()` before each test to ensure a clean state,
   matching the TypeScript/Deno reference implementation test approach.

@@ -73,7 +73,6 @@ defmodule PgFlow.FlowRegistryTest do
       :ok = FlowRegistry.register(LinearFlow)
 
       flows = FlowRegistry.list()
-      assert length(flows) == 2
 
       modules = Enum.map(flows, & &1.module) |> Enum.sort()
       assert modules == Enum.sort([SimpleFlow, LinearFlow])
@@ -84,8 +83,8 @@ defmodule PgFlow.FlowRegistryTest do
 
       flows = FlowRegistry.list()
       # list/0 filters to only module-keyed entries
-      assert length(flows) == 1
-      assert hd(flows).module == SimpleFlow
+      assert [flow] = flows
+      assert flow.module == SimpleFlow
     end
   end
 

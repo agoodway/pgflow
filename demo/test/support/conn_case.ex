@@ -1,7 +1,7 @@
 defmodule PgflowDemoWeb.ConnCase do
   @moduledoc """
-  This module defines the test case to be used by
-  tests that require setting up a connection.
+  Provides endpoint-connected tests with Phoenix connection helpers and
+  transactional database isolation when a test uses the repository.
 
   Such tests rely on `Phoenix.ConnTest` and also
   import other functionality to make it easier

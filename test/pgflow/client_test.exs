@@ -3,6 +3,7 @@ defmodule PgFlow.ClientTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.Client
+  alias PgFlow.Queries.{Flows, Signals, Workers}
   alias PgFlow.TestRepo
 
   @moduletag timeout: 30_000
@@ -71,6 +72,36 @@ defmodule PgFlow.ClientTest do
     end
 
     flow_slug
+  end
+
+  defp park_client_test_task(run_id) do
+    worker_id = Ecto.UUID.generate()
+    {:ok, _} = Workers.register_worker(TestRepo, worker_id, "client_test_flow", "elixir:test")
+    {:ok, messages} = Flows.read(TestRepo, "client_test_flow", 30, 1)
+    message_ids = Enum.map(messages, fn [message_id | _] -> message_id end)
+    {:ok, _} = Flows.start_tasks(TestRepo, "client_test_flow", message_ids, worker_id)
+
+    %{rows: [[attempts_count, message_id]]} =
+      TestRepo.query!(
+        """
+        SELECT attempts_count, message_id
+        FROM pgflow.step_tasks
+        WHERE run_id = $1 AND step_slug = 'process' AND task_index = 0
+        """,
+        [Ecto.UUID.dump!(run_id)]
+      )
+
+    assert :parked =
+             Signals.await_task_signal(
+               TestRepo,
+               run_id,
+               "process",
+               0,
+               attempts_count,
+               message_id,
+               nil,
+               true
+             )
   end
 
   # ── start_flow ─────────────────────────────────────────────────────
@@ -151,5 +182,116 @@ defmodule PgFlow.ClientTest do
       {:ok, run_id} = Client.start_flow(ClientTestFlow, %{"value" => 42})
       assert is_binary(run_id)
     end
+  end
+
+  # ── signal/3,4 ─────────────────────────────────────────────────────
+
+  describe "signal/3 and signal/4" do
+    test "returns the typed outcome for a buffered payload targeting an existing run" do
+      {:ok, run_id} = Client.start_flow(ClientTestFlow, %{"value" => 1})
+      assert {:ok, :buffered} = Client.signal(run_id, :process, %{"decision" => "approved"})
+    end
+
+    test "returns missing for an unknown run without storing a row" do
+      run_id = Ecto.UUID.generate()
+      assert {:ok, :missing} = Client.signal(run_id, :process, %{"ok" => true})
+
+      assert %{rows: [[0]]} =
+               TestRepo.query!("SELECT count(*) FROM pgflow.task_signals WHERE run_id = $1", [
+                 Ecto.UUID.dump!(run_id)
+               ])
+    end
+
+    test "returns terminal for a terminal target without storing a signal row" do
+      {:ok, run_id} = Client.start_flow(ClientTestFlow, %{"value" => 1})
+
+      TestRepo.query!(
+        """
+        UPDATE pgflow.step_states
+        SET status = 'failed', failed_at = now()
+        WHERE run_id = $1 AND step_slug = $2
+        """,
+        [Ecto.UUID.dump!(run_id), "process"]
+      )
+
+      assert {:ok, :terminal} =
+               PgFlow.signal(run_id, :process, %{"decision" => "too_late"})
+
+      assert %{rows: [[0]]} =
+               TestRepo.query!(
+                 """
+                 SELECT count(*)
+                 FROM pgflow.task_signals
+                 WHERE run_id = $1 AND step_slug = $2 AND task_index = $3
+                 """,
+                 [Ecto.UUID.dump!(run_id), "process", 0]
+               )
+    end
+
+    test "lists waiting tasks without exposing payloads or claim state" do
+      {:ok, run_id} = Client.start_flow(ClientTestFlow, %{"value" => 1})
+      park_client_test_task(run_id)
+
+      assert {:ok, [waiting_task]} = Client.get_waiting_tasks(run_id)
+
+      assert %{
+               step_slug: "process",
+               task_index: 0,
+               wait_deadline_at: deadline,
+               waiting_since: %DateTime{}
+             } = waiting_task
+
+      assert is_nil(deadline) or match?(%DateTime{}, deadline)
+
+      assert Enum.sort(Map.keys(waiting_task)) ==
+               Enum.sort([:step_slug, :task_index, :wait_deadline_at, :waiting_since])
+    end
+  end
+end
+
+defmodule PgFlow.ClientPublicContractTest do
+  use ExUnit.Case, async: false
+
+  alias PgFlow.Client
+
+  setup do
+    repo_key = {PgFlow, :repo}
+    missing = make_ref()
+    previous_persistent_repo = :persistent_term.get(repo_key, missing)
+    previous_env_repo = Application.get_env(:pgflow, :repo, missing)
+
+    :persistent_term.erase(repo_key)
+    Application.delete_env(:pgflow, :repo)
+
+    on_exit(fn ->
+      if previous_persistent_repo == missing do
+        :persistent_term.erase(repo_key)
+      else
+        :persistent_term.put(repo_key, previous_persistent_repo)
+      end
+
+      if previous_env_repo == missing do
+        Application.delete_env(:pgflow, :repo)
+      else
+        Application.put_env(:pgflow, :repo, previous_env_repo)
+      end
+    end)
+
+    :ok
+  end
+
+  test "signal validates the run UUID before resolving the repo" do
+    assert {:error, :invalid_run_id} = Client.signal("not-a-uuid", :process, %{"ok" => true})
+    assert {:error, :invalid_run_id} = PgFlow.signal("not-a-uuid", :process, %{"ok" => true})
+  end
+
+  test "signal returns the established repo configuration error" do
+    assert {:error, "Repo not configured"} =
+             Client.signal(Ecto.UUID.generate(), :process, %{"ok" => true})
+  end
+
+  test "waiting-task discovery validates UUIDs and returns configuration errors" do
+    assert {:error, :invalid_run_id} = Client.get_waiting_tasks("not-a-uuid")
+    assert {:error, "Repo not configured"} = Client.get_waiting_tasks(Ecto.UUID.generate())
   end
 end

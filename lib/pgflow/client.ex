@@ -25,12 +25,16 @@ defmodule PgFlow.Client do
   require Logger
 
   alias PgFlow.Queries.Flows
+  alias PgFlow.Queries.Signals
   alias PgFlow.Schema.Run
   alias PgFlow.Telemetry
 
   @allowed_step_types ["single", "map"]
   @skip_modes [:fail, :skip, :skip_cascade]
   @skip_mode_strings ~w(fail skip skip_cascade skip-cascade)
+
+  @type signal_outcome :: Signals.signal_outcome()
+  @type waiting_task :: Signals.waiting_task()
 
   @doc """
   Starts a flow run with the given input.
@@ -77,6 +81,78 @@ defmodule PgFlow.Client do
   @spec enqueue(module(), map()) :: {:ok, String.t()} | {:error, term()}
   def enqueue(job_module, input) when is_atom(job_module) and is_map(input) do
     start_flow(job_module, input)
+  end
+
+  @doc """
+  Delivers a JSON payload to a task addressed by `run_id` + `step_slug`
+  (`task_index` 0).
+
+  Returns the delivery outcome. An early signal is `:buffered` until
+  `PgFlow.Context.await_signal/2` consumes it. Signalling a `waiting` task
+  returns `:requeued`; duplicate, expired, terminal, and missing targets are
+  reported without being mistaken for successful delivery.
+
+  Before the signal is claimed by `await_signal/2`, repeated deliveries replace
+  the buffered payload (last write wins). A signal payload is immutable after claim;
+  later deliveries return `:already_delivered` without changing it.
+
+  Invalid run IDs and repository/query failures return `{:error, reason}`.
+
+  The Elixir API accepts only maps and lists. The database independently rejects
+  SQL `NULL`, JSON `null`, and scalar JSON, and enforces a 1 MiB ceiling
+  (`pg_column_size(payload) <= 1_048_576`). PgFlow does not authenticate or
+  authorize signal callers. Before calling this function, the application must
+  authenticate the caller, authorize tenant and run ownership, validate the
+  payload shape, and enforce an application-appropriate size limit (which may be
+  smaller than the database ceiling).
+
+  This is unrelated to `signal_strategy` / `PgFlow.Signal.Notify`, which only
+  wake workers on pgmq inserts.
+  """
+  @spec signal(String.t(), atom() | String.t(), map() | list()) ::
+          {:ok, signal_outcome()} | {:error, term()}
+  def signal(run_id, step_slug, payload) when is_map(payload) or is_list(payload) do
+    signal(run_id, step_slug, 0, payload)
+  end
+
+  @doc """
+  Same as `signal/3` with an explicit `task_index` for map tasks.
+
+  It has the same security boundary: PgFlow does not authenticate or authorize
+  signal callers; the application must authenticate, authorize tenant and run
+  ownership, validate payload shape, and enforce an application-appropriate
+  payload-size limit before calling it. The same 1 MiB database ceiling and JSON
+  shape checks described by `signal/3` apply.
+  """
+  @spec signal(String.t(), atom() | String.t(), non_neg_integer(), map() | list()) ::
+          {:ok, signal_outcome()} | {:error, term()}
+  def signal(run_id, step_slug, task_index, payload)
+      when (is_map(payload) or is_list(payload)) and is_integer(task_index) and task_index >= 0 do
+    with {:ok, _uuid} <- Ecto.UUID.cast(run_id),
+         {:ok, repo} <- get_repo() do
+      Signals.signal_task(repo, run_id, to_string(step_slug), task_index, payload)
+    else
+      :error -> {:error, :invalid_run_id}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Lists the tasks currently parked waiting for a signal in `run_id`.
+
+  Each result contains only the task address (`step_slug`, `task_index`) and
+  waiting timing (`wait_deadline_at`, `waiting_since`). Signal payloads and
+  claim state are intentionally not exposed.
+  """
+  @spec get_waiting_tasks(String.t()) :: {:ok, [waiting_task()]} | {:error, term()}
+  def get_waiting_tasks(run_id) do
+    with {:ok, _uuid} <- Ecto.UUID.cast(run_id),
+         {:ok, repo} <- get_repo() do
+      Signals.list_waiting_tasks(repo, run_id)
+    else
+      :error -> {:error, :invalid_run_id}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @doc """

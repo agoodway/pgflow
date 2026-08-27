@@ -5,14 +5,14 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
 
   # These tests exercise handle_info/2 directly by sending synthetic
   # {:pgflow, run_id, event} messages to the LiveView process — the same
-  # shape PgFlow.Client broadcasts over PubSub. The handlers don't check
-  # the message's run_id against socket.assigns.run_id, so no real flow
-  # run or PubSub subscription is required to reach this code path.
+  # shape PgFlow.Client broadcasts over PubSub. The LiveView process state
+  # is given a run_id without starting a real flow or PubSub subscription.
 
   test "clears the error banner when a step_skipped arrives for the step that set it", %{
     conn: conn
   } do
     {:ok, view, _html} = live(conn, "/")
+    set_run_assigns(view, run_id: "fake-run-id")
 
     send(
       view.pid,
@@ -35,6 +35,7 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
 
   test "leaves the error banner when step_skipped arrives for a different step", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
+    set_run_assigns(view, run_id: "fake-run-id")
 
     send(
       view.pid,
@@ -57,6 +58,7 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
 
   test "clears the error banner when the run completes successfully", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
+    set_run_assigns(view, run_id: "fake-run-id")
 
     send(
       view.pid,
@@ -81,6 +83,7 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
     conn: conn
   } do
     {:ok, view, _html} = live(conn, "/")
+    set_run_assigns(view, run_id: "fake-run-id")
 
     send(view.pid, {:pgflow, "fake-run-id", {:run_completed, %{output: %{}}}})
     send(view.pid, {:pgflow, "fake-run-id", {:run_completed, %{output: %{}}}})
@@ -91,6 +94,7 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
 
   test "a late run_failed after the run already completed is ignored", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
+    set_run_assigns(view, run_id: "fake-run-id")
 
     send(view.pid, {:pgflow, "fake-run-id", {:run_completed, %{output: %{}}}})
     send(view.pid, {:pgflow, "fake-run-id", {:run_failed, %{error: "too late"}}})
@@ -108,6 +112,7 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
   test "run_failed clears the stale error_step so a later step_skipped for it doesn't clear the run-failure banner",
        %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
+    set_run_assigns(view, run_id: "fake-run-id")
 
     send(
       view.pid,
@@ -131,6 +136,396 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
 
     html = render(view)
     assert html =~ "Flow failed: unrecoverable"
+  end
+
+  test "Approval tab renders a start form without the article URL field", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    html = view |> element("#tab-approval") |> render_click()
+    assert html =~ "Start Flow"
+    refute html =~ ~s(name="url")
+    assert html =~ "create_order" or html =~ "await_approval"
+  end
+
+  test "Cron DSL is not rendered on the default Article tab", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/")
+
+    refute html =~ ~s(id="cron-dsl")
+    refute html =~ "Scheduled cleanup job"
+    assert html =~ ~s(id="tab-cron")
+    assert html =~ "Start Flow"
+  end
+
+  test "Cron tab shows the scheduled job DSL and hides flow controls", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    html = view |> element("#tab-cron") |> render_click()
+
+    assert html =~ ~s(id="cron-dsl")
+    assert html =~ "Scheduled cleanup job"
+    assert html =~ "article_flow_cleanup"
+    refute html =~ "Start Flow"
+    refute html =~ ~s(id="workflow")
+    refute html =~ ~s(id="flow-dsl")
+    refute html =~ ~s(id="article-form")
+  end
+
+  test "switching from Cron back to Article restores the flow UI", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    view |> element("#tab-cron") |> render_click()
+    html = view |> element("#tab-article") |> render_click()
+
+    refute html =~ ~s(id="cron-dsl")
+    assert html =~ "Start Flow"
+    assert html =~ ~s(id="workflow")
+  end
+
+  test "Job DSL is not rendered on the default Article tab", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/")
+
+    refute html =~ ~s(id="job-dsl")
+    refute html =~ "PgflowDemo.Jobs.SendEmail"
+    assert html =~ ~s(id="tab-job")
+    assert html =~ "Start Flow"
+  end
+
+  test "Job tab shows the SendEmail DSL and hides flow controls", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    html = view |> element("#tab-job") |> render_click()
+
+    assert html =~ ~s(id="job-dsl")
+    assert html =~ "PgflowDemo.Jobs.SendEmail"
+    assert html =~ "Start Job"
+    refute html =~ ~s(id="workflow")
+    refute html =~ ~s(id="flow-dsl")
+    refute html =~ ~s(id="article-form")
+  end
+
+  test "Cron tab still has no Start Job button", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    html = view |> element("#tab-cron") |> render_click()
+
+    refute html =~ "Start Job"
+    assert html =~ ~s(id="cron-dsl")
+  end
+
+  test "switching from Job back to Article restores the flow UI", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    view |> element("#tab-job") |> render_click()
+    html = view |> element("#tab-article") |> render_click()
+
+    refute html =~ ~s(id="job-dsl")
+    assert html =~ "Start Flow"
+    assert html =~ ~s(id="workflow")
+  end
+
+  test "Job tab shows run output after run_completed", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    view |> element("#tab-job") |> render_click()
+    set_run_assigns(view, run_id: "fake-run-id", job_run: true)
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id",
+       {:run_completed, %{output: %{"sent" => true, "to" => "demo@pgflow.dev"}}}}
+    )
+
+    html = render(view)
+    assert html =~ ~s(id="job-output")
+    assert html =~ "sent"
+    assert html =~ "demo@pgflow.dev"
+    assert has_element?(view, "button", "Reset")
+  end
+
+  test "switching to Job after an Article run does not show leftover flow output", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, "/")
+    set_run_assigns(view, run_id: "fake-run-id")
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id",
+       {:task_completed,
+        %{
+          step_slug: "publish",
+          duration_ms: 10,
+          output: %{"published" => true, "slug" => "article-leftover"}
+        }}}
+    )
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id", {:run_completed, %{output: %{"slug" => "article-leftover"}}}}
+    )
+
+    html = view |> element("#tab-job") |> render_click()
+
+    assert html =~ ~s(id="job-output")
+    assert has_element?(view, "#job-output", "No output yet")
+    refute html =~ "article-leftover"
+    assert has_element?(view, "#start-job")
+    assert html =~ "Ready"
+    refute has_element?(view, "button", "Reset")
+  end
+
+  test "Job output survives Cron switch when run_completed arrives off the Job tab", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, "/")
+    view |> element("#tab-job") |> render_click()
+    set_run_assigns(view, run_id: "fake-run-id", job_run: true)
+    view |> element("#tab-cron") |> render_click()
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id",
+       {:run_completed, %{output: %{"sent" => true, "to" => "demo@pgflow.dev"}}}}
+    )
+
+    html = view |> element("#tab-job") |> render_click()
+
+    assert html =~ ~s(id="job-output")
+    assert html =~ "demo@pgflow.dev"
+  end
+
+  test "task_waiting for await_approval shows Approve and Reject", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    view |> element("#tab-approval") |> render_click()
+    set_run_assigns(view, run_id: "fake-run-id")
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id", {:task_waiting, %{step_slug: "await_approval", task_index: 0}}}
+    )
+
+    html = render(view)
+    assert html =~ "Waiting"
+    assert has_element?(view, "#approval-approve")
+    assert has_element?(view, "#approval-reject")
+  end
+
+  test "apply_waiting_task_statuses overlays waiting tasks over started/running steps" do
+    steps_config = [
+      %{slug: :create_order},
+      %{slug: :await_approval},
+      %{slug: :charge}
+    ]
+
+    steps = %{create_order: :completed, await_approval: :running, charge: :pending}
+
+    task_rows = [
+      %{step_slug: "create_order", status: "completed"},
+      %{step_slug: "await_approval", status: "waiting"},
+      %{step_slug: "charge", status: "queued"}
+    ]
+
+    result =
+      PgflowDemoWeb.FlowDemoLive.apply_waiting_task_statuses(steps, task_rows, steps_config)
+
+    assert result[:create_order] == :completed
+    assert result[:await_approval] == :waiting
+    assert result[:charge] == :pending
+  end
+
+  test "apply_waiting_task_statuses ignores unknown slugs and non-waiting rows" do
+    steps_config = [%{slug: :await_approval}]
+    steps = %{await_approval: :running}
+
+    result =
+      PgflowDemoWeb.FlowDemoLive.apply_waiting_task_statuses(
+        steps,
+        [
+          %{step_slug: "await_approval", status: "started"},
+          %{step_slug: "unknown_step", status: "waiting"}
+        ],
+        steps_config
+      )
+
+    assert result[:await_approval] == :running
+    refute Map.has_key?(result, :unknown_step)
+  end
+
+  test "apply_waiting_task_statuses accepts public waiting-task maps without a status field" do
+    steps_config = [%{slug: :await_approval}]
+    steps = %{await_approval: :running}
+
+    result =
+      PgflowDemoWeb.FlowDemoLive.apply_waiting_task_statuses(
+        steps,
+        [
+          %{
+            step_slug: "await_approval",
+            task_index: 0,
+            wait_deadline_at: nil,
+            waiting_since: ~U[2026-08-27 12:00:00Z]
+          }
+        ],
+        steps_config
+      )
+
+    assert result[:await_approval] == :waiting
+  end
+
+  test "apply_waiting_task_statuses preserves atom then string fallback for mixed task rows" do
+    steps_config = [%{slug: :await_approval}]
+    steps = %{await_approval: :running}
+
+    result =
+      PgflowDemoWeb.FlowDemoLive.apply_waiting_task_statuses(
+        steps,
+        [
+          %{"step_slug" => "await_approval", "status" => "waiting", step_slug: nil, status: nil},
+          %{
+            "step_slug" => "unknown",
+            "status" => "queued",
+            step_slug: "await_approval",
+            status: "waiting"
+          }
+        ],
+        steps_config
+      )
+
+    assert result == %{await_approval: :waiting}
+  end
+
+  test "task_started after waiting hides Approve and Reject", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    view |> element("#tab-approval") |> render_click()
+    set_run_assigns(view, run_id: "fake-run-id")
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id", {:task_waiting, %{step_slug: "await_approval", task_index: 0}}}
+    )
+
+    assert has_element?(view, "#approval-approve")
+
+    send(
+      view.pid,
+      {:pgflow, "fake-run-id", {:task_started, %{step_slug: "await_approval", task_index: 0}}}
+    )
+
+    html = render(view)
+    refute has_element?(view, "#approval-approve")
+    refute has_element?(view, "#approval-reject")
+    assert html =~ "Started"
+  end
+
+  test "events from a stale run leave status, errors, and outputs unchanged", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    set_run_assigns(view,
+      run_id: "run-b",
+      run_status: :running,
+      error: "keep this error",
+      error_step: :fetch_article,
+      output_content: %{"keep" => true},
+      step_outputs: %{fetch_article: true}
+    )
+
+    baseline = run_assigns(view)
+
+    stale_run_ids = ["run-a", nil, :run_a, 123]
+
+    events = [
+      {:run_started, %{}},
+      {:task_started, %{step_slug: "fetch_article", task_index: 0}},
+      {:task_waiting, %{step_slug: "fetch_article", task_index: 0}},
+      {:task_completed, %{step_slug: "fetch_article", duration_ms: 1, output: %{"new" => true}}},
+      {:task_failed, %{step_slug: "fetch_article", error: "new error", duration_ms: 1}},
+      {:step_skipped, %{step_slug: "fetch_article", skip_reason: "condition_unmet"}},
+      {:run_completed, %{output: %{"new" => true}}},
+      {:run_failed, %{error: "new error"}}
+    ]
+
+    Enum.each(stale_run_ids, fn stale_run_id ->
+      Enum.each(events, fn event ->
+        send(view.pid, {:pgflow, stale_run_id, event})
+        _ = render(view)
+        assert run_assigns(view) == baseline
+      end)
+    end)
+  end
+
+  test "malformed approval decisions leave approval actions available", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    view |> element("#tab-approval") |> render_click()
+
+    set_run_assigns(view,
+      run_id: "run-b",
+      run_status: :running,
+      steps: %{create_order: :completed, await_approval: :waiting, charge: :pending}
+    )
+
+    render_click(view, "signal_approval", %{"decision" => "forged"})
+
+    assert has_element?(view, "#approval-actions")
+  end
+
+  test "typed signal outcomes set submission and delivery error state" do
+    Enum.each([:buffered, :requeued, :already_delivered], fn outcome ->
+      socket = fake_signal_socket()
+
+      assert {:noreply, result} =
+               PgflowDemoWeb.FlowDemoLive.apply_signal_delivery_result(socket, {:ok, outcome})
+
+      assert result.assigns.approval_submitted
+      assert result.assigns.approval_error == nil
+    end)
+
+    socket = fake_signal_socket()
+
+    assert {:noreply, undelivered} =
+             PgflowDemoWeb.FlowDemoLive.apply_signal_delivery_result(socket, {:ok, :ignored})
+
+    refute undelivered.assigns.approval_submitted
+    assert undelivered.assigns.approval_error == "Signal was not delivered: ignored"
+
+    assert {:noreply, failed} =
+             PgflowDemoWeb.FlowDemoLive.apply_signal_delivery_result(socket, {:error, :offline})
+
+    refute failed.assigns.approval_submitted
+    assert failed.assigns.approval_error == "Signal delivery failed. Please try again."
+  end
+
+  test "submitted approval hides both decision buttons", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    view |> element("#tab-approval") |> render_click()
+
+    set_run_assigns(view,
+      run_id: "run-b",
+      run_status: :running,
+      approval_submitted: true,
+      steps: %{create_order: :completed, await_approval: :waiting, charge: :pending}
+    )
+
+    refute has_element?(view, "#approval-actions")
+    refute has_element?(view, "#approval-approve")
+    refute has_element?(view, "#approval-reject")
+  end
+
+  test "signal delivery errors are visible beside approval actions", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    view |> element("#tab-approval") |> render_click()
+
+    set_run_assigns(view,
+      run_id: "run-b",
+      run_status: :running,
+      approval_error: "Signal delivery failed. Please try again.",
+      steps: %{create_order: :completed, await_approval: :waiting, charge: :pending}
+    )
+
+    send(
+      view.pid,
+      {:pgflow, "run-b", {:task_started, %{step_slug: "await_approval", task_index: 0}}}
+    )
+
+    assert has_element?(view, "#approval-error", "Signal delivery failed. Please try again.")
   end
 
   # Task 4: the demo must not get stuck showing "running" when a run's
@@ -257,5 +652,32 @@ defmodule PgflowDemoWeb.FlowDemoLiveTest do
         event_log: []
       }
     }
+  end
+
+  defp fake_signal_socket do
+    %Phoenix.LiveView.Socket{
+      assigns: %{
+        __changed__: %{},
+        approval_submitted: false,
+        approval_error: nil
+      }
+    }
+  end
+
+  defp set_run_assigns(view, assigns) do
+    :sys.replace_state(view.pid, fn state ->
+      %{state | socket: Phoenix.Component.assign(state.socket, assigns)}
+    end)
+
+    _ = render(view)
+    :ok
+  end
+
+  defp run_assigns(view) do
+    view.pid
+    |> :sys.get_state()
+    |> Map.fetch!(:socket)
+    |> Map.fetch!(:assigns)
+    |> Map.delete(:__changed__)
   end
 end

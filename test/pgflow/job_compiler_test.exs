@@ -18,8 +18,6 @@ defmodule PgFlow.JobCompilerTest do
 
       sql_statements = JobCompiler.compile(definition)
 
-      assert length(sql_statements) == 3
-
       [flow_sql, step_sql, update_sql] = sql_statements
 
       assert flow_sql == "SELECT pgflow.create_flow('send_email', 3, 5, 60)"
@@ -66,8 +64,6 @@ defmodule PgFlow.JobCompilerTest do
       definition = CompilerTestJob.__pgflow_definition__()
       sql_statements = JobCompiler.compile(definition)
 
-      assert length(sql_statements) == 3
-
       [flow_sql, step_sql, update_sql] = sql_statements
 
       assert flow_sql =~ "create_flow('compiler_test_job'"
@@ -90,16 +86,13 @@ defmodule PgFlow.JobCompilerTest do
       definition = CronTestJob.__pgflow_definition__()
       sql_statements = JobCompiler.compile(definition)
 
-      # 1 flow + 1 step + 1 cron schedule + 1 update flow_type
-      assert length(sql_statements) == 4
+      [_, _, cron_sql, update_sql] = sql_statements
 
-      cron_sql = Enum.at(sql_statements, 2)
       assert cron_sql =~ "cron.schedule"
       assert cron_sql =~ "'pgflow:cron_test_job'"
       assert cron_sql =~ "'*/10 * * * *'"
       assert cron_sql =~ ~s("scheduled":true)
 
-      update_sql = List.last(sql_statements)
       assert update_sql =~ "flow_type = 'job'"
     end
 

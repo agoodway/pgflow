@@ -459,10 +459,7 @@ defmodule PgFlow.Queries.Flows do
         upsert_flow_transaction(repo, slug, max_attempts, base_delay, timeout, steps)
       end)
 
-    case tx_result do
-      {:ok, status_map} -> {:ok, status_map}
-      {:error, reason} -> {:error, reason}
-    end
+    tx_result
   end
 
   defp upsert_flow_transaction(repo, slug, max_attempts, base_delay, timeout, steps) do
@@ -525,11 +522,8 @@ defmodule PgFlow.Queries.Flows do
          {:ok, _} <- delete_runs(repo, slug),
          {:ok, _} <- delete_deps(repo, slug),
          {:ok, _} <- delete_steps(repo, slug),
-         {:ok, _} <- delete_flow_record(repo, slug),
-         :ok <- drop_queue(repo, slug) do
-      :ok
-    else
-      {:error, reason} -> {:error, reason}
+         {:ok, _} <- delete_flow_record(repo, slug) do
+      drop_queue(repo, slug)
     end
   end
 

@@ -102,9 +102,7 @@ defmodule PgFlow.FlowTest do
       steps = definition.steps
 
       step_d = Enum.find(steps, &(&1.slug == :step_d))
-      assert :step_b in step_d.depends_on
-      assert :step_c in step_d.depends_on
-      assert length(step_d.depends_on) == 2
+      assert Enum.sort(step_d.depends_on) == [:step_b, :step_c]
     end
 
     test "allows step-level option overrides" do

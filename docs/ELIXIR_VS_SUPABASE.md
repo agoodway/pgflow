@@ -215,6 +215,7 @@ The real question is where the poll loop lives and what tradeoffs that creates:
 | Telemetry events           | No         | Yes    | 12 events across flow/step/task/worker         |
 | Structured logging         | No         | Yes    | Fancy (dev) and simple (prod) formats          |
 | Mix tasks                  | N/A        | Yes    | gen.flow, setup, stamp, check_schema, etc.     |
+| Await-signals              | No         | Yes    | Elixir helper extension; requires equivalent runtime support elsewhere |
 
 ## Shared SQL Core
 
@@ -241,9 +242,40 @@ The Elixir implementation adds the following extensions that are **not present**
 | Change                  | Table          | Description                                                                        |
 |-------------------------|----------------|------------------------------------------------------------------------------------|
 | `flow_type` column      | `pgflow.flows` | Distinguishes background jobs from multi-step DAG workflows in the dashboard.     |
-| Extension SQL functions | `pgflow`       | `register_worker`, `mark_worker_stopped`, `recover_stalled_tasks`, `flow_exists`, `get_flow_input`, `get_step_output` — installed via `mix pgflow.gen.helpers_migration`. |
+| `waiting` task status   | `pgflow.step_tasks` | V05 widens the core-compatible task lifecycle so Elixir workers can release a slot while awaiting a signal. |
+| Await-signal state      | `pgflow.task_signals` | V05 adds durable payload, deadline, timeout, and claim state keyed to a core step state. |
+| Extension SQL functions | `pgflow`       | `register_worker`, `mark_worker_stopped`, `recover_stalled_tasks`, `flow_exists`, `get_flow_input`, `get_step_output` — installed or version-upgraded via `mix pgflow.gen.helpers_migration [--from-version N]`. |
 
-These additions are backward-compatible: existing flow records default to `flow_type = 'flow'`, and extension functions don't modify core pgflow tables. TypeScript workers can safely ignore them.
+These additions preserve core cross-runtime compatibility, but they are not all
+schema-neutral: V05 deliberately widens and mutates `pgflow.step_tasks` while
+awaited Elixir work is parked or resumed. Existing flow records still default
+to `flow_type = 'flow'`; TypeScript workers can ignore helper-only objects but
+must not claim an awaited task unless they implement the equivalent lifecycle.
+
+Await-signals is deliberately not unrestricted cross-language parity. Its
+helpers share PostgreSQL state, but `PgFlow.Context.await_signal/2` parks and
+replays an Elixir handler through the Elixir worker runtime. A TypeScript/Deno
+worker can share the core schema, but cannot execute an awaited Elixir handler
+without equivalent runtime support.
+
+For existing Elixir installations, helpers are versioned independently of the
+initial setup migration. When release notes raise the helpers version, generate
+and apply the matching upgrade before starting that worker release. For V05:
+
+```bash
+mix pgflow.gen.helpers_migration --from-version 4
+mix ecto.migrate
+```
+
+V05 rollback refuses active waits/signals; operators must drain them before
+rolling back.
+
+V05 deliberately defers validation of `valid_status`. In a later, separately
+committed operator migration—not inside the V05 transaction—run:
+
+```sql
+ALTER TABLE pgflow.step_tasks VALIDATE CONSTRAINT valid_status;
+```
 
 ## Compilation
 

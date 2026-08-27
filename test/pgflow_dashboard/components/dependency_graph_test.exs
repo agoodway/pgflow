@@ -23,6 +23,48 @@ defmodule PgFlowDashboard.Components.DependencyGraphTest do
     assert html =~ ~r/<svg[^>]+role="group"[^>]+aria-label="Flow dependency graph"/
   end
 
+  test "renders steps from JSON-shaped string-key maps" do
+    html =
+      render_component(&DependencyGraph.dependency_graph/1,
+        steps: [%{"step_slug" => "send_welcome", "deps" => []}]
+      )
+
+    assert html =~ "Send Welcome"
+  end
+
+  test "preserves string dependencies when a step has atom and string keys" do
+    html =
+      render_component(&DependencyGraph.dependency_graph/1,
+        steps: [%{step_slug: "parent", deps: []}, %{"deps" => ["parent"], step_slug: "child"}]
+      )
+
+    assert_graph_edge(html)
+  end
+
+  test "falls back to a string step slug when its atom key is nil" do
+    html =
+      render_component(&DependencyGraph.dependency_graph/1,
+        steps: [
+          %{step_slug: "parent", deps: []},
+          %{"step_slug" => "child", step_slug: nil, deps: ["parent"]}
+        ]
+      )
+
+    assert_graph_edge(html)
+  end
+
+  test "falls back to string dependencies when atom dependencies are nil" do
+    html =
+      render_component(&DependencyGraph.dependency_graph/1,
+        steps: [
+          %{step_slug: "parent", deps: []},
+          %{"deps" => ["parent"], step_slug: "child", deps: nil}
+        ]
+      )
+
+    assert_graph_edge(html)
+  end
+
   test "distinguishes skipped nodes from pending nodes without relying on the icon" do
     skipped_html =
       render_component(&DependencyGraph.dependency_graph/1,
@@ -55,6 +97,12 @@ defmodule PgFlowDashboard.Components.DependencyGraphTest do
     assert html =~ "max-w-none"
     assert html =~ "font-mono"
     refute html =~ "max-w-2xl"
+  end
+
+  defp assert_graph_edge(html) do
+    assert html =~ "Parent"
+    assert html =~ "Child"
+    assert html =~ "marker-end=\"url(#arrowhead)\""
   end
 
   test "allocates enough intrinsic width for adjacent long labels" do

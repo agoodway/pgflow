@@ -571,7 +571,7 @@ defmodule PgFlow.QueriesTest do
           [Ecto.UUID.dump!(run_id2)]
         )
 
-      assert length(rows) == 1
+      assert [_run] = rows
     end
 
     test "does not prune runs within retention period" do

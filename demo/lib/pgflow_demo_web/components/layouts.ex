@@ -1,7 +1,6 @@
 defmodule PgflowDemoWeb.Layouts do
   @moduledoc """
-  This module holds layouts and related functionality
-  used by your application.
+  Shared page-shell components and embedded layout templates for the demo.
   """
   use PgflowDemoWeb, :html
 

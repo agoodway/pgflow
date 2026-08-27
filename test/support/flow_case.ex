@@ -1,6 +1,6 @@
 defmodule PgFlow.FlowCase do
   @moduledoc """
-  This module defines the setup for tests that require flow execution.
+  Shared setup for tests that require flow execution.
 
   Provides helpers for testing PgFlow workflows including starting flows,
   waiting for completion, and asserting on step outputs.
