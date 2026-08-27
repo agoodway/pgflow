@@ -127,7 +127,7 @@ defmodule PgFlow.Sql.SplitterTest do
       """
 
       statements = Splitter.split(sql)
-      assert length(statements) == 2
+      assert [_, _] = statements
       rejoined = Splitter.join(statements)
       assert rejoined =~ "--SPLIT--"
       assert rejoined =~ "CREATE TABLE t (id int)"

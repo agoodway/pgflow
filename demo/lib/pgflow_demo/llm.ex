@@ -70,10 +70,25 @@ defmodule PgflowDemo.LLM do
     with {:ok, response} <-
            ReqLLM.generate_object(model_spec(), prompt, schema, request_opts()),
          {:ok, object} <- ReqLLM.Response.unwrap_object(response) do
-      {:ok, object["keywords"] || object[:keywords] || []}
+      {:ok, extract_keyword_values(object)}
     else
       {:error, reason} -> {:error, format_error(reason)}
     end
+  end
+
+  @doc false
+  @spec extract_keyword_values(map()) :: [String.t()]
+  def extract_keyword_values(object) do
+    %{string: string_value, atom: atom_value} = normalize_keyword_values(object)
+    string_value || atom_value || []
+  end
+
+  defp normalize_keyword_values(object) do
+    Enum.reduce(object, %{string: nil, atom: nil}, fn
+      {"keywords", value}, values -> %{values | string: value}
+      {:keywords, value}, values -> %{values | atom: value}
+      _field, values -> values
+    end)
   end
 
   @doc """

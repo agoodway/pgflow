@@ -842,17 +842,21 @@ defmodule PgFlow.ConditionalStepsTest do
   # Skips a started step the way SQL does, minus the message archiving, to leave
   # a stale-but-visible message behind for the worker to read.
   defp skip_step_leaving_message_visible(run_id, step_slug) do
-    TestRepo.query!(
-      """
-      UPDATE pgflow.step_states
-      SET status = 'skipped',
-          skip_reason = 'condition_unmet',
-          skipped_at = now(),
-          remaining_tasks = NULL
-      WHERE run_id = $1 AND step_slug = $2
-      """,
-      [Ecto.UUID.dump!(run_id), step_slug]
-    )
+    TestRepo.transaction(fn ->
+      TestRepo.query!("SET LOCAL session_replication_role = replica")
+
+      TestRepo.query!(
+        """
+        UPDATE pgflow.step_states
+        SET status = 'skipped',
+            skip_reason = 'condition_unmet',
+            skipped_at = now(),
+            remaining_tasks = NULL
+        WHERE run_id = $1 AND step_slug = $2
+        """,
+        [Ecto.UUID.dump!(run_id), step_slug]
+      )
+    end)
   end
 
   defp get_step_output(run_id, step_slug) do

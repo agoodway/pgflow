@@ -101,6 +101,14 @@ defmodule PgFlow.Worker.ExecutorTest do
       assert ctx.repo == FakeRepo
       assert ctx.flow_input == :not_loaded
     end
+
+    test "propagates optional dispatch identity for worker-issued tasks" do
+      task = build_task(%{flow_slug: "approval", message_id: 42})
+
+      assert {:ok, ctx} = Executor.build_context(task, FakeRepo)
+      assert ctx.flow_slug == "approval"
+      assert ctx.message_id == 42
+    end
   end
 
   describe "get_handler/2" do
@@ -159,6 +167,13 @@ defmodule PgFlow.Worker.ExecutorTest do
       assert is_binary(error_msg)
       assert error_msg =~ "Intentional failure"
     end
+  end
+
+  test "documents the executor boundary for parked task lifecycle" do
+    source = File.read!("lib/pgflow/worker/executor.ex")
+
+    assert source =~ "does not own the parked-task lifecycle"
+    assert source =~ "worker-issued dispatch identity"
   end
 
   # Helper to build a minimal context for prepare_input tests

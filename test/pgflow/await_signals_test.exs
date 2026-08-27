@@ -7,7 +7,7 @@ defmodule PgFlow.AwaitSignalsTest do
   use ExUnit.Case
 
   alias Ecto.Adapters.SQL.Sandbox
-  alias PgFlow.Queries.Flows
+  alias PgFlow.Queries.{Flows, Signals, Workers}
   alias PgFlow.TestRepo
   alias PgFlow.Worker.{Server, WaitingTaskRecovery}
 
@@ -51,34 +51,99 @@ defmodule PgFlow.AwaitSignalsTest do
     end
   end
 
+  defmodule RetryAfterSignalFlow do
+    use PgFlow.Flow
+    @flow slug: :retry_after_signal_flow, max_attempts: 2, base_delay: 0, timeout: 30
+
+    step :approval do
+      fn input, ctx ->
+        {:ok, payload} =
+          PgFlow.Context.await_signal(ctx, wait_timeout: 0, wait_for: {1, :hour})
+
+        if ctx.attempt == 1 do
+          raise "fail after signal"
+        else
+          Map.merge(input, payload)
+        end
+      end
+    end
+  end
+
+  defmodule TerminalFailMapFlow do
+    use PgFlow.Flow
+    @flow slug: :terminal_fail_map_flow, max_attempts: 1, base_delay: 0, timeout: 30
+
+    map :approval, max_attempts: 1, when_exhausted: :fail do
+      fn input, ctx -> PgFlow.AwaitSignalsTest.terminal_sibling_handler(input, ctx) end
+    end
+  end
+
+  defmodule TerminalSkipMapFlow do
+    use PgFlow.Flow
+    @flow slug: :terminal_skip_map_flow, max_attempts: 1, base_delay: 0, timeout: 30
+
+    map :approval, max_attempts: 1, when_exhausted: :skip do
+      fn input, ctx -> PgFlow.AwaitSignalsTest.terminal_sibling_handler(input, ctx) end
+    end
+  end
+
+  defmodule TerminalSkipCascadeMapFlow do
+    use PgFlow.Flow
+    @flow slug: :terminal_skip_cascade_map_flow, max_attempts: 1, base_delay: 0, timeout: 30
+
+    map :approval, max_attempts: 1, when_exhausted: :skip_cascade do
+      fn input, ctx -> PgFlow.AwaitSignalsTest.terminal_sibling_handler(input, ctx) end
+    end
+  end
+
+  defmodule SignalWinsRaceFlow do
+    use PgFlow.Flow
+    @flow slug: :signal_wins_race_flow, max_attempts: 1, timeout: 30
+
+    step :approval do
+      fn input, _ctx -> input end
+    end
+  end
+
+  defmodule TerminalWinsRaceFlow do
+    use PgFlow.Flow
+    @flow slug: :terminal_wins_race_flow, max_attempts: 1, timeout: 30
+
+    step :root do
+      fn input, _ctx -> input end
+    end
+
+    step :approval, depends_on: [:root] do
+      fn input, _ctx -> input end
+    end
+  end
+
   defp compile_flow(flow_module) do
     definition = flow_module.__pgflow_definition__()
     flow_slug = Atom.to_string(definition.slug)
 
-    TestRepo.query!("SELECT pgflow.create_flow($1, $2, $3, $4)", [
-      flow_slug,
-      definition.opts[:max_attempts] || 3,
-      definition.opts[:base_delay] || 1,
-      definition.opts[:timeout] || 30
-    ])
-
-    for step <- definition.steps do
-      TestRepo.query!(
-        "SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8)",
-        [
-          flow_slug,
-          Atom.to_string(step.slug),
-          Enum.map(step.depends_on, &Atom.to_string/1),
-          step.max_attempts,
-          step.base_delay,
-          step.timeout,
-          step.start_delay,
-          Atom.to_string(step.step_type)
-        ]
-      )
-    end
+    Enum.each(PgFlow.FlowCompiler.compile(definition), &TestRepo.query!/1)
 
     flow_slug
+  end
+
+  def terminal_sibling_handler(%{"action" => "wait"}, ctx) do
+    {:ok, payload} = PgFlow.Context.await_signal(ctx, wait_timeout: 0, wait_for: {1, :hour})
+    payload
+  end
+
+  def terminal_sibling_handler(%{"action" => "fail"}, ctx) do
+    assert_task_zero_waiting(ctx.run_id)
+    raise "terminal sibling exhausted"
+  end
+
+  defp assert_task_zero_waiting(run_id) do
+    case wait_until(fn ->
+           match?(%{status: "waiting"}, get_task_details(run_id, "approval", 0))
+         end) do
+      :ok -> :ok
+      {:error, :timeout} -> raise "task index 0 did not enter waiting before sibling failure"
+    end
   end
 
   defp start_worker(flow_module, task_supervisor, opts \\ []) do
@@ -125,7 +190,7 @@ defmodule PgFlow.AwaitSignalsTest do
     %{rows: rows} =
       TestRepo.query!(
         """
-        SELECT status, attempts_count, error_message
+        SELECT status, attempts_count, error_message, message_id
         FROM pgflow.step_tasks
         WHERE run_id = $1 AND step_slug = $2 AND task_index = $3
         """,
@@ -133,8 +198,13 @@ defmodule PgFlow.AwaitSignalsTest do
       )
 
     case rows do
-      [[status, attempts, error]] ->
-        %{status: status, attempts_count: attempts, error_message: error}
+      [[status, attempts, error, message_id]] ->
+        %{
+          status: status,
+          attempts_count: attempts,
+          error_message: error,
+          message_id: message_id
+        }
 
       [] ->
         nil
@@ -165,6 +235,152 @@ defmodule PgFlow.AwaitSignalsTest do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
 
     wait_loop(run_id, deadline)
+  end
+
+  defp start_and_park_task(flow_module) do
+    flow_slug = compile_flow(flow_module)
+    run_id = start_flow_run(flow_slug, %{})
+    worker_id = Ecto.UUID.generate()
+    {:ok, _} = Workers.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+    {:ok, messages} = Flows.read(TestRepo, flow_slug, 30, 1)
+    msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
+    {:ok, _} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
+    task = get_task_details(run_id, "approval", 0)
+
+    assert :parked =
+             Signals.await_task_signal(
+               TestRepo,
+               run_id,
+               "approval",
+               0,
+               task.attempts_count,
+               task.message_id,
+               nil,
+               true
+             )
+
+    {flow_slug, run_id}
+  end
+
+  defp start_started_task(flow_module) do
+    flow_slug = compile_flow(flow_module)
+    run_id = start_flow_run(flow_slug, %{})
+    worker_id = Ecto.UUID.generate()
+    {:ok, _} = Workers.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+    {:ok, messages} = Flows.read(TestRepo, flow_slug, 30, 1)
+    msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
+    {:ok, _} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
+    {flow_slug, run_id, get_task_details(run_id, "approval", 0)}
+  end
+
+  defp independent_connection do
+    opts =
+      TestRepo.config()
+      |> Keyword.take([:hostname, :port, :username, :password, :database, :socket_dir, :ssl])
+
+    {:ok, connection} = Postgrex.start_link(opts)
+    connection
+  end
+
+  defp signal_in_open_transaction(parent, run_id, decision) do
+    connection = independent_connection()
+
+    result =
+      Postgrex.transaction(connection, fn connection ->
+        %{rows: [[backend_pid]]} = Postgrex.query!(connection, "SELECT pg_backend_pid()", [])
+        send(parent, {:signal_query_started, self(), backend_pid})
+
+        %{rows: [[outcome]]} =
+          Postgrex.query!(
+            connection,
+            "SELECT outcome FROM pgflow.signal_task($1, $2, $3, cast($4 as text)::jsonb)",
+            [Ecto.UUID.dump!(run_id), "approval", 0, Jason.encode!(%{"decision" => decision})]
+          )
+
+        send(parent, {:signal_query_finished, self(), outcome})
+
+        receive do
+          :commit -> outcome
+        end
+      end)
+
+    GenServer.stop(connection)
+    result
+  end
+
+  defp fail_run_in_open_transaction(parent, run_id) do
+    connection = independent_connection()
+
+    result =
+      Postgrex.transaction(connection, fn connection ->
+        %{rows: [[backend_pid]]} = Postgrex.query!(connection, "SELECT pg_backend_pid()", [])
+        send(parent, {:terminal_query_started, self(), backend_pid})
+
+        Postgrex.query!(
+          connection,
+          "UPDATE pgflow.runs SET status = 'failed', failed_at = now() WHERE run_id = $1",
+          [Ecto.UUID.dump!(run_id)]
+        )
+
+        send(parent, {:terminal_query_finished, self()})
+
+        receive do
+          :commit -> :failed
+        end
+      end)
+
+    GenServer.stop(connection)
+    result
+  end
+
+  defp await_in_open_transaction(parent, run_id, task) do
+    connection = independent_connection()
+
+    result =
+      Postgrex.transaction(connection, fn connection ->
+        %{rows: [[backend_pid]]} = Postgrex.query!(connection, "SELECT pg_backend_pid()", [])
+        send(parent, {:await_query_started, self(), backend_pid})
+
+        %{rows: [[outcome, payload]]} =
+          Postgrex.query!(
+            connection,
+            """
+            SELECT outcome, payload
+            FROM pgflow.await_task_signal($1, 'approval', 0, $2, $3, NULL, true)
+            """,
+            [Ecto.UUID.dump!(run_id), task.attempts_count, task.message_id]
+          )
+
+        send(parent, {:await_query_finished, self(), outcome, payload})
+
+        receive do
+          :commit -> {outcome, payload}
+        end
+      end)
+
+    GenServer.stop(connection)
+    result
+  end
+
+  defp expire_once(parent) do
+    connection = independent_connection()
+
+    %{rows: [[backend_pid]]} = Postgrex.query!(connection, "SELECT pg_backend_pid()", [])
+    send(parent, {:expire_query_started, self(), backend_pid})
+
+    %{rows: [[count]]} =
+      Postgrex.query!(connection, "SELECT pgflow.expire_waiting_tasks(100)", [])
+
+    send(parent, {:expire_query_finished, self(), count})
+    GenServer.stop(connection)
+    count
+  end
+
+  defp backend_blocked?(backend_pid) do
+    %{rows: [[blocked?]]} =
+      TestRepo.query!("SELECT cardinality(pg_blocking_pids($1)) > 0", [backend_pid])
+
+    blocked?
   end
 
   defp wait_loop(run_id, deadline) do
@@ -211,10 +427,193 @@ defmodule PgFlow.AwaitSignalsTest do
 
     refute_received {[:pgflow, :worker, :task, :exception], _, _, _}
 
-    assert :ok = PgFlow.signal(run_id, :approval, %{"decision" => "approved"})
+    assert {:ok, :requeued} =
+             PgFlow.signal(run_id, :approval, %{"decision" => "approved"})
 
     {:ok, status} = wait_for_run_completion(run_id)
     assert status == "completed"
+  end
+
+  test "a claimed signal is replayed after a normal handler retry", %{
+    task_supervisor: task_supervisor
+  } do
+    compile_flow(RetryAfterSignalFlow)
+    start_worker(RetryAfterSignalFlow, task_supervisor)
+    run_id = start_flow_run("retry_after_signal_flow", %{"order_id" => 1})
+
+    assert :ok =
+             wait_until(fn ->
+               match?(%{status: "waiting"}, get_task_details(run_id, "approval", 0))
+             end)
+
+    assert {:ok, :requeued} =
+             Signals.signal_task(TestRepo, run_id, "approval", 0, %{
+               "decision" => "approved"
+             })
+
+    assert {:ok, "completed"} = wait_for_run_completion(run_id)
+    assert get_task_details(run_id, "approval", 0).attempts_count == 2
+  end
+
+  for {flow_module, flow_slug, expected_status} <- [
+        {TerminalFailMapFlow, "terminal_fail_map_flow", "failed"},
+        {TerminalSkipMapFlow, "terminal_skip_map_flow", "completed"},
+        {TerminalSkipCascadeMapFlow, "terminal_skip_cascade_map_flow", "completed"}
+      ] do
+    @flow_module flow_module
+    @flow_slug flow_slug
+    @expected_status expected_status
+
+    test "terminal #{flow_slug} settles a waiting sibling and rejects its old signal address", %{
+      task_supervisor: task_supervisor
+    } do
+      compile_flow(@flow_module)
+      start_worker(@flow_module, task_supervisor)
+
+      run_id =
+        start_flow_run(@flow_slug, [
+          %{"action" => "wait"},
+          %{"action" => "fail"}
+        ])
+
+      assert {:ok, @expected_status} = wait_for_run_completion(run_id)
+
+      assert %{status: "failed", message_id: nil} =
+               get_task_details(run_id, "approval", 0)
+
+      assert %{rows: [[0]]} =
+               TestRepo.query!(
+                 "SELECT count(*) FROM pgflow.task_signals WHERE run_id = $1",
+                 [Ecto.UUID.dump!(run_id)]
+               )
+
+      queued_before_signal = queued_message_count(@flow_slug)
+      task_messages_before_signal = task_message_count(@flow_slug, run_id, "approval", 0)
+      assert task_messages_before_signal == 0
+
+      assert {:ok, :terminal} =
+               Signals.signal_task(TestRepo, run_id, "approval", 0, %{
+                 "decision" => "late"
+               })
+
+      assert queued_message_count(@flow_slug) == queued_before_signal
+
+      assert task_message_count(@flow_slug, run_id, "approval", 0) ==
+               task_messages_before_signal
+
+      assert %{rows: [[0]]} =
+               TestRepo.query!(
+                 "SELECT count(*) FROM pgflow.task_signals WHERE run_id = $1",
+                 [Ecto.UUID.dump!(run_id)]
+               )
+    end
+  end
+
+  test "terminal cleanup wins after a concurrent signal requeues", %{} do
+    {flow_slug, run_id} = start_and_park_task(SignalWinsRaceFlow)
+    parent = self()
+    signal = Task.async(fn -> signal_in_open_transaction(parent, run_id, "approved") end)
+
+    assert_receive {:signal_query_started, signal_pid, _signal_backend_pid}, 5_000
+    assert_receive {:signal_query_finished, ^signal_pid, "requeued"}, 5_000
+    terminal = Task.async(fn -> fail_run_in_open_transaction(parent, run_id) end)
+    assert_receive {:terminal_query_started, terminal_pid, terminal_backend_pid}, 5_000
+    assert :ok = wait_until(fn -> backend_blocked?(terminal_backend_pid) end)
+
+    send(signal_pid, :commit)
+    assert {:ok, "requeued"} = Task.await(signal, 5_000)
+    assert_receive {:terminal_query_finished, ^terminal_pid}, 5_000
+    send(terminal_pid, :commit)
+    assert {:ok, :failed} = Task.await(terminal, 5_000)
+
+    assert %{status: "failed", message_id: nil} = get_task_details(run_id, "approval", 0)
+    assert task_message_count(flow_slug, run_id, "approval", 0) == 0
+    assert signal_count(run_id) == 0
+  end
+
+  test "a signal blocked behind terminal cleanup cannot buffer or requeue", %{} do
+    flow_slug = compile_flow(TerminalWinsRaceFlow)
+    run_id = start_flow_run(flow_slug, %{})
+    assert get_task_details(run_id, "approval", 0) == nil
+    parent = self()
+    terminal = Task.async(fn -> fail_run_in_open_transaction(parent, run_id) end)
+    assert_receive {:terminal_query_started, terminal_pid, _terminal_backend_pid}, 5_000
+    assert_receive {:terminal_query_finished, ^terminal_pid}, 5_000
+
+    signal = Task.async(fn -> signal_in_open_transaction(parent, run_id, "late") end)
+    assert_receive {:signal_query_started, signal_pid, signal_backend_pid}, 5_000
+    assert :ok = wait_until(fn -> backend_blocked?(signal_backend_pid) end)
+
+    send(terminal_pid, :commit)
+    assert {:ok, :failed} = Task.await(terminal, 5_000)
+    assert_receive {:signal_query_finished, ^signal_pid, "terminal"}, 5_000
+    send(signal_pid, :commit)
+    assert {:ok, "terminal"} = Task.await(signal, 5_000)
+
+    assert %{status: "failed", message_id: nil} = get_task_details(run_id, "root", 0)
+    assert get_task_details(run_id, "approval", 0) == nil
+    assert task_message_count(flow_slug, run_id, "root", 0) == 0
+    assert signal_count(run_id) == 0
+  end
+
+  test "an await blocked behind a terminal run cannot return a buffered payload or park", %{} do
+    {flow_slug, run_id, task} = start_started_task(SignalWinsRaceFlow)
+
+    assert {:ok, :buffered} =
+             Signals.signal_task(TestRepo, run_id, "approval", 0, %{"decision" => "approved"})
+
+    parent = self()
+    terminal = Task.async(fn -> fail_run_in_open_transaction(parent, run_id) end)
+    assert_receive {:terminal_query_started, terminal_pid, _terminal_backend_pid}, 5_000
+    assert_receive {:terminal_query_finished, ^terminal_pid}, 5_000
+
+    awaiter = Task.async(fn -> await_in_open_transaction(parent, run_id, task) end)
+    assert_receive {:await_query_started, await_pid, await_backend_pid}, 5_000
+    assert :ok = wait_until(fn -> backend_blocked?(await_backend_pid) end)
+
+    send(terminal_pid, :commit)
+    assert {:ok, :failed} = Task.await(terminal, 5_000)
+    assert_receive {:await_query_finished, ^await_pid, "terminal", nil}, 5_000
+    send(await_pid, :commit)
+    assert {:ok, {"terminal", nil}} = Task.await(awaiter, 5_000)
+
+    assert get_run_status(run_id) == "failed"
+
+    assert %{status: "failed", message_id: nil, error_message: "abandoned: run became failed"} =
+             get_task_details(run_id, "approval", 0)
+
+    assert task_message_count(flow_slug, run_id, "approval", 0) == 0
+    assert signal_count(run_id) == 0
+  end
+
+  test "terminal cleanup locked first makes expiry skip without counting or requeueing", %{} do
+    {flow_slug, run_id} = start_and_park_task(SignalWinsRaceFlow)
+
+    TestRepo.query!(
+      """
+      UPDATE pgflow.task_signals
+      SET wait_deadline_at = now() - interval '1 second'
+      WHERE run_id = $1 AND step_slug = 'approval' AND task_index = 0
+      """,
+      [Ecto.UUID.dump!(run_id)]
+    )
+
+    parent = self()
+    terminal = Task.async(fn -> fail_run_in_open_transaction(parent, run_id) end)
+    assert_receive {:terminal_query_started, terminal_pid, _terminal_backend_pid}, 5_000
+    assert_receive {:terminal_query_finished, ^terminal_pid}, 5_000
+
+    sweeper = Task.async(fn -> expire_once(parent) end)
+    assert_receive {:expire_query_started, sweeper_pid, _sweeper_backend_pid}, 5_000
+    assert_receive {:expire_query_finished, ^sweeper_pid, 0}, 5_000
+    assert Task.await(sweeper, 5_000) == 0
+
+    send(terminal_pid, :commit)
+    assert {:ok, :failed} = Task.await(terminal, 5_000)
+    assert get_run_status(run_id) == "failed"
+    assert %{status: "failed", message_id: nil} = get_task_details(run_id, "approval", 0)
+    assert task_message_count(flow_slug, run_id, "approval", 0) == 0
+    assert signal_count(run_id) == 0
   end
 
   defmodule TimeoutFlow do
@@ -243,10 +642,15 @@ defmodule PgFlow.AwaitSignalsTest do
              end)
 
     TestRepo.query!(
-      "UPDATE pgflow.task_signals SET wait_deadline_at = now() - interval '1 second'"
+      """
+      UPDATE pgflow.task_signals
+      SET wait_deadline_at = now() - interval '1 second'
+      WHERE run_id = $1 AND step_slug = $2 AND task_index = $3
+      """,
+      [Ecto.UUID.dump!(run_id), "gate", 0]
     )
 
-    assert {:ok, _} = PgFlow.Queries.Signals.expire_waiting_tasks(TestRepo)
+    assert {:ok, 1} = Signals.expire_waiting_tasks(TestRepo, 100)
 
     {:ok, status} = wait_for_run_completion(run_id)
     assert status == "failed"
@@ -273,14 +677,15 @@ defmodule PgFlow.AwaitSignalsTest do
     {:ok, pid} =
       WaitingTaskRecovery.start_link(
         repo: TestRepo,
-        waiting_recovery_interval: 60_000
+        waiting_recovery_interval: 60_000,
+        waiting_recovery_batch_size: 1
       )
 
     # Park via SQL wrappers (no worker) so the sweeper is what requeues.
     worker_id = Ecto.UUID.generate()
 
     {:ok, _} =
-      PgFlow.Queries.Workers.register_worker(
+      Workers.register_worker(
         TestRepo,
         worker_id,
         "await_timeout_flow",
@@ -291,14 +696,48 @@ defmodule PgFlow.AwaitSignalsTest do
     msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
     {:ok, _} = Flows.start_tasks(TestRepo, "await_timeout_flow", msg_ids, worker_id)
 
-    deadline = DateTime.add(DateTime.utc_now(), -60, :second)
-    assert :ok = PgFlow.Queries.Signals.park_waiting_task(TestRepo, run_id, "gate", 0, deadline)
+    task = get_task_details(run_id, "gate", 0)
+
+    assert :parked =
+             Signals.await_task_signal(
+               TestRepo,
+               run_id,
+               "gate",
+               0,
+               task.attempts_count,
+               task.message_id,
+               60,
+               true
+             )
+
+    TestRepo.query!(
+      """
+      UPDATE pgflow.task_signals
+      SET wait_deadline_at = now() - interval '1 second'
+      WHERE run_id = $1 AND step_slug = 'gate' AND task_index = 0
+      """,
+      [Ecto.UUID.dump!(run_id)]
+    )
 
     send(pid, :recover)
     _ = :sys.get_state(pid)
 
-    assert {:error, :timeout} =
-             PgFlow.Queries.Signals.consume_task_signal(TestRepo, run_id, "gate", 0)
+    {:ok, resumed_messages} = Flows.read(TestRepo, "await_timeout_flow", 30, 10)
+    resumed_message_ids = Enum.map(resumed_messages, fn [message_id | _] -> message_id end)
+    {:ok, _} = Flows.start_tasks(TestRepo, "await_timeout_flow", resumed_message_ids, worker_id)
+    resumed_task = get_task_details(run_id, "gate", 0)
+
+    assert :timeout =
+             Signals.await_task_signal(
+               TestRepo,
+               run_id,
+               "gate",
+               0,
+               resumed_task.attempts_count,
+               resumed_task.message_id,
+               nil,
+               false
+             )
 
     GenServer.stop(pid)
   end
@@ -327,7 +766,9 @@ defmodule PgFlow.AwaitSignalsTest do
                match?(%{status: "waiting"}, get_task_details(run_id, "approve", 0))
              end)
 
-    assert :ok = PgFlow.signal(run_id, :approve, %{"decision" => "approved"})
+    assert {:ok, :requeued} =
+             PgFlow.signal(run_id, :approve, %{"decision" => "approved"})
+
     {:ok, status} = wait_for_run_completion(run_id)
     assert status == "completed"
   end
@@ -335,7 +776,10 @@ defmodule PgFlow.AwaitSignalsTest do
   test "early signal before handler runs", %{task_supervisor: task_supervisor} do
     compile_flow(ApprovalFlow)
     run_id = start_flow_run("await_approval_flow", %{"order_id" => 1})
-    assert :ok = PgFlow.signal(run_id, :approval, %{"decision" => "approved"})
+
+    assert {:ok, :buffered} =
+             PgFlow.signal(run_id, :approval, %{"decision" => "approved"})
+
     start_worker(ApprovalFlow, task_supervisor)
     {:ok, status} = wait_for_run_completion(run_id)
     assert status == "completed"
@@ -344,10 +788,45 @@ defmodule PgFlow.AwaitSignalsTest do
   test "last write wins", %{task_supervisor: task_supervisor} do
     compile_flow(ApprovalFlow)
     run_id = start_flow_run("await_approval_flow", %{"order_id" => 1})
-    assert :ok = PgFlow.signal(run_id, :approval, %{"decision" => "rejected"})
-    assert :ok = PgFlow.signal(run_id, :approval, %{"decision" => "approved"})
+
+    assert {:ok, :buffered} =
+             PgFlow.signal(run_id, :approval, %{"decision" => "rejected"})
+
+    assert {:ok, :buffered} =
+             PgFlow.signal(run_id, :approval, %{"decision" => "approved"})
+
     start_worker(ApprovalFlow, task_supervisor)
     {:ok, status} = wait_for_run_completion(run_id)
     assert status == "completed"
+  end
+
+  defp queued_message_count(queue_name) do
+    %{rows: [[count]]} = TestRepo.query!("SELECT count(*) FROM pgmq.q_#{queue_name}")
+    count
+  end
+
+  defp task_message_count(queue_name, run_id, step_slug, task_index) do
+    %{rows: [[count]]} =
+      TestRepo.query!(
+        """
+        SELECT count(*)
+        FROM pgmq.q_#{queue_name}
+        WHERE message->>'run_id' = $1
+          AND message->>'step_slug' = $2
+          AND (message->>'task_index')::integer = $3
+        """,
+        [run_id, step_slug, task_index]
+      )
+
+    count
+  end
+
+  defp signal_count(run_id) do
+    %{rows: [[count]]} =
+      TestRepo.query!("SELECT count(*) FROM pgflow.task_signals WHERE run_id = $1", [
+        Ecto.UUID.dump!(run_id)
+      ])
+
+    count
   end
 end

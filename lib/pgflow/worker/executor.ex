@@ -3,8 +3,8 @@ defmodule PgFlow.Worker.Executor do
   Task execution logic for flow steps.
 
   This module handles the execution of step handlers with proper timeout handling,
-  output serialization, and error handling. It manages the complete lifecycle of
-  a task execution:
+  output serialization, and error handling. It manages the in-process handler
+  execution lifecycle:
 
   1. Building execution context with run metadata
   2. Retrieving the handler function from the flow module
@@ -34,6 +34,10 @@ defmodule PgFlow.Worker.Executor do
 
   Handler outputs must be JSON-serializable. The executor validates and converts
   outputs to ensure they can be stored in the database.
+
+  This executor does not own the parked-task lifecycle. Calling
+  `PgFlow.Context.await_signal/2` requires worker-issued dispatch identity and
+  must run through `PgFlow.Worker.Server`, which persists and resumes parked work.
 
   ## Usage
 
@@ -84,6 +88,11 @@ defmodule PgFlow.Worker.Executor do
   - `:attempt` - Current attempt number
   - `:input` - Task input data map
   - `:deps` - Dependency outputs map
+
+  Worker-issued task maps may also include `:flow_slug` and `:message_id`; these
+  fields are propagated into the context as the dispatch identity required by
+  `PgFlow.Context.await_signal/2`. `execute/4` alone does not persist or resume a
+  parked task.
 
   ## Returns
 
@@ -139,6 +148,9 @@ defmodule PgFlow.Worker.Executor do
   The context provides step handlers with metadata about the current execution
   environment and utilities for accessing flow data.
 
+  Optional `:flow_slug` and `:message_id` values are copied from a worker-issued
+  task. Both are needed when the handler calls `PgFlow.Context.await_signal/2`.
+
   ## Parameters
 
     * `task` - Task map with execution details
@@ -175,9 +187,11 @@ defmodule PgFlow.Worker.Executor do
     ctx =
       Context.new(
         run_id: task.run_id,
+        flow_slug: Map.get(task, :flow_slug),
         step_slug: task.step_slug,
         task_index: task.task_index,
         attempt: task.attempt,
+        message_id: Map.get(task, :message_id),
         repo: repo
       )
 

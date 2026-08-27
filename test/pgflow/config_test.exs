@@ -48,6 +48,7 @@ defmodule PgFlow.ConfigTest do
           max_poll_interval: 10_000,
           notify_fallback_interval: 60_000,
           notify_throttle_ms: 500,
+          waiting_recovery_batch_size: 25,
           attach_default_logger: false
         )
 
@@ -61,6 +62,7 @@ defmodule PgFlow.ConfigTest do
       assert config[:max_poll_interval] == 10_000
       assert config[:notify_fallback_interval] == 60_000
       assert config[:notify_throttle_ms] == 500
+      assert config[:waiting_recovery_batch_size] == 25
       assert config[:attach_default_logger] == false
     end
   end
@@ -152,6 +154,11 @@ defmodule PgFlow.ConfigTest do
       assert config[:waiting_recovery_interval] == 15_000
     end
 
+    test "applies default 100 for :waiting_recovery_batch_size" do
+      config = Config.validate!(repo: ValidTestRepo)
+      assert config[:waiting_recovery_batch_size] == 100
+    end
+
     test "applies default 60 for :stale_threshold" do
       config = Config.validate!(repo: ValidTestRepo)
       assert config[:stale_threshold] == 60
@@ -217,6 +224,12 @@ defmodule PgFlow.ConfigTest do
     test "raises when :batch_size is not a positive integer" do
       assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
         Config.validate!(repo: ValidTestRepo, batch_size: 0)
+      end
+    end
+
+    test "raises when :waiting_recovery_batch_size is not a positive integer" do
+      assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
+        Config.validate!(repo: ValidTestRepo, waiting_recovery_batch_size: 0)
       end
     end
 

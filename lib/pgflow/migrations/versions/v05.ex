@@ -1,6 +1,6 @@
 defmodule PgFlow.Migrations.Versions.V05 do
   @moduledoc """
-  Adds awaiting-signals: `waiting` task status, `task_signals` store, park/signal/consume/expire.
+  Adds awaiting-signals: `waiting` task status, `task_signals` store, and atomic await/signal/expiry.
   """
 
   use EctoEvolver.Version,

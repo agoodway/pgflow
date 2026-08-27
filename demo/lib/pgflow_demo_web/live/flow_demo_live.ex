@@ -5,12 +5,9 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
   use PgflowDemoWeb, :live_view
 
-  import Ecto.Query, only: [from: 2]
-
   require Logger
 
   alias PgFlow.Client
-  alias PgFlow.Schema.StepTask
   alias PgflowDemoWeb.Components.{CronDSL, FlowDSL, JobDSL, PoweredBy}
 
   # UI Constants
@@ -89,6 +86,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:selected_flow, :article)
       |> assign(:plan, "free")
       |> assign(:fail_email, false)
+      |> assign(:approval_submitted, false)
+      |> assign(:approval_error, nil)
       |> assign(:url, @default_url)
       |> assign(:run_id, nil)
       |> assign(:run_status, :idle)
@@ -201,16 +200,24 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   end
 
   @impl true
-  def handle_event("signal_approval", %{"decision" => decision}, socket)
-      when decision in ["approved", "rejected"] do
-    run_id = socket.assigns.run_id
-
-    if run_id && socket.assigns.steps[:await_approval] == :waiting do
-      _ = Client.signal(run_id, :await_approval, %{"decision" => decision})
-    end
-
-    {:noreply, socket}
+  def handle_event(
+        "signal_approval",
+        %{"decision" => decision},
+        %{
+          assigns: %{
+            run_id: run_id,
+            steps: %{await_approval: :waiting},
+            approval_submitted: false
+          }
+        } = socket
+      )
+      when is_binary(run_id) and decision in ["approved", "rejected"] do
+    run_id
+    |> Client.signal(:await_approval, %{"decision" => decision})
+    |> then(&apply_signal_delivery_result(socket, &1))
   end
+
+  def handle_event("signal_approval", _params, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("reset", _params, socket) do
@@ -285,6 +292,34 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       {:error, _} ->
         {:noreply, socket}
     end
+  end
+
+  @doc false
+  @spec apply_signal_delivery_result(
+          Phoenix.LiveView.Socket.t(),
+          {:ok, Client.signal_outcome()} | {:error, term()}
+        ) :: {:noreply, Phoenix.LiveView.Socket.t()}
+  def apply_signal_delivery_result(socket, {:ok, outcome})
+      when outcome in [:buffered, :requeued, :already_delivered] do
+    {:noreply, assign(socket, approval_submitted: true, approval_error: nil)}
+  end
+
+  def apply_signal_delivery_result(socket, {:ok, outcome}) do
+    {:noreply,
+     assign(socket,
+       approval_submitted: false,
+       approval_error: "Signal was not delivered: #{outcome}"
+     )}
+  end
+
+  def apply_signal_delivery_result(socket, {:error, reason}) do
+    Logger.warning("FlowDemoLive: signal delivery failed: #{inspect(reason)}")
+
+    {:noreply,
+     assign(socket,
+       approval_submitted: false,
+       approval_error: "Signal delivery failed. Please try again."
+     )}
   end
 
   # Shared handler for step clicks from graph nodes and DSL code
@@ -365,10 +400,20 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   # PgFlow PubSub events — new namespaced tuple format from Telemetry.PubSub bridge
 
   @impl true
-  def handle_info(
-        {:pgflow, _run_id, {:task_started, %{step_slug: step_slug, task_index: task_index}}},
-        socket
-      ) do
+  def handle_info({:pgflow, run_id, event}, socket) do
+    if current_run?(socket, run_id) do
+      handle_pgflow_event(event, socket)
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
+  defp handle_pgflow_event(
+         {:task_started, %{step_slug: step_slug, task_index: task_index}},
+         socket
+       ) do
     case to_step_atom(step_slug, socket.assigns.steps_config) do
       nil ->
         {:noreply, socket}
@@ -394,12 +439,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
-  @impl true
-  def handle_info(
-        {:pgflow, _run_id,
-         {:task_completed, %{step_slug: step_slug, duration_ms: duration_ms, output: output}}},
-        socket
-      ) do
+  defp handle_pgflow_event(
+         {:task_completed, %{step_slug: step_slug, duration_ms: duration_ms, output: output}},
+         socket
+       ) do
     case to_step_atom(step_slug, socket.assigns.steps_config) do
       nil ->
         {:noreply, socket}
@@ -431,12 +474,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
-  @impl true
-  def handle_info(
-        {:pgflow, _run_id,
-         {:task_failed, %{step_slug: step_slug, error: error, duration_ms: duration_ms}}},
-        socket
-      ) do
+  defp handle_pgflow_event(
+         {:task_failed, %{step_slug: step_slug, error: error, duration_ms: duration_ms}},
+         socket
+       ) do
     case to_step_atom(step_slug, socket.assigns.steps_config) do
       nil ->
         {:noreply, socket}
@@ -461,11 +502,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
-  @impl true
-  def handle_info(
-        {:pgflow, _run_id, {:step_skipped, %{step_slug: step_slug, skip_reason: reason}}},
-        socket
-      ) do
+  defp handle_pgflow_event(
+         {:step_skipped, %{step_slug: step_slug, skip_reason: reason}},
+         socket
+       ) do
     case to_step_atom(step_slug, socket.assigns.steps_config) do
       nil ->
         {:noreply, socket}
@@ -481,8 +521,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_started, _payload}}, socket) do
+  defp handle_pgflow_event({:run_started, _payload}, socket) do
     {:noreply, assign(socket, :run_status, :running)}
   end
 
@@ -491,26 +530,23 @@ defmodule PgflowDemoWeb.FlowDemoLive do
   # mailbox (delivered between subscribe and the reconcile read). Without
   # these guards that late message would log "Flow Complete"/"Flow Failed" a
   # second time and re-run the terminal bookkeeping.
-  @impl true
-  def handle_info(
-        {:pgflow, _run_id, {:run_completed, _payload}},
-        %{assigns: %{run_status: status}} = socket
-      )
-      when status in [:completed, :failed] do
+  defp handle_pgflow_event(
+         {:run_completed, _payload},
+         %{assigns: %{run_status: status}} = socket
+       )
+       when status in [:completed, :failed] do
     {:noreply, socket}
   end
 
-  @impl true
-  def handle_info(
-        {:pgflow, _run_id, {:run_failed, _payload}},
-        %{assigns: %{run_status: status}} = socket
-      )
-      when status in [:completed, :failed] do
+  defp handle_pgflow_event(
+         {:run_failed, _payload},
+         %{assigns: %{run_status: status}} = socket
+       )
+       when status in [:completed, :failed] do
     {:noreply, socket}
   end
 
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_completed, payload}}, socket) do
+  defp handle_pgflow_event({:run_completed, payload}, socket) do
     cancel_timer(socket.assigns.timer_ref)
 
     elapsed_ms =
@@ -533,8 +569,7 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     {:noreply, socket}
   end
 
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_failed, %{error: error}}}, socket) do
+  defp handle_pgflow_event({:run_failed, %{error: error}}, socket) do
     cancel_timer(socket.assigns.timer_ref)
 
     elapsed_ms =
@@ -556,11 +591,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     {:noreply, socket}
   end
 
-  @impl true
-  def handle_info(
-        {:pgflow, _run_id, {:task_waiting, %{step_slug: step_slug, task_index: task_index}}},
-        socket
-      ) do
+  defp handle_pgflow_event(
+         {:task_waiting, %{step_slug: step_slug, task_index: task_index}},
+         socket
+       ) do
     case to_step_atom(step_slug, socket.assigns.steps_config) do
       nil ->
         {:noreply, socket}
@@ -585,10 +619,12 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
-  @impl true
-  def handle_info(_msg, socket), do: {:noreply, socket}
+  defp handle_pgflow_event(_event, socket), do: {:noreply, socket}
 
   # Helpers
+
+  defp current_run?(socket, run_id),
+    do: is_binary(run_id) and run_id == socket.assigns.run_id
 
   defp flow_config(key), do: Map.fetch!(@flows, key)
   defp flow_module(key), do: Map.fetch!(@flow_modules, key)
@@ -661,6 +697,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
       |> assign(:run_status, :running)
       |> assign(:error, nil)
       |> assign(:error_step, nil)
+      |> assign(:approval_submitted, false)
+      |> assign(:approval_error, nil)
       |> assign(:steps, initial_steps(socket.assigns.steps_config))
       |> assign(:step_outputs, %{})
       |> assign(:duration, nil)
@@ -712,21 +750,13 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end
   end
 
-  # Maps task rows onto the LiveView steps map. Only `status == "waiting"`
-  # is applied; other task statuses are ignored so step_states remain source
-  # of truth for started/completed/failed/skipped.
+  # Maps task rows onto the LiveView steps map. Public get_waiting_tasks/1
+  # results have no status field because every returned task is waiting;
+  # legacy/internal rows with an explicit non-waiting status are ignored so
+  # step_states remain source of truth for started/completed/failed/skipped.
   @doc false
   def apply_waiting_task_statuses(steps, task_rows, steps_config) do
-    Enum.reduce(task_rows, steps, fn row, acc ->
-      if task_row_status(row) == "waiting" do
-        case to_step_atom(task_row_step_slug(row), steps_config) do
-          nil -> acc
-          step_atom -> Map.put(acc, step_atom, :waiting)
-        end
-      else
-        acc
-      end
-    end)
+    Enum.reduce(task_rows, steps, &apply_waiting_task_status(&1, &2, steps_config))
   end
 
   defp apply_run_snapshot(socket, run) do
@@ -797,23 +827,67 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     end)
   end
 
-  defp task_row_status(row), do: Map.get(row, :status) || Map.get(row, "status")
-  defp task_row_step_slug(row), do: Map.get(row, :step_slug) || Map.get(row, "step_slug")
+  defp apply_waiting_task_status(row, steps, steps_config) do
+    row = normalize_task_row(row)
 
-  defp waiting_task_rows(run_id) do
-    from(t in StepTask,
-      where: t.run_id == ^run_id and t.status == "waiting",
-      select: %{step_slug: t.step_slug, status: t.status}
-    )
-    |> PgflowDemo.Repo.all()
-  rescue
-    error ->
-      Logger.warning(
-        "FlowDemoLive: failed to load waiting tasks for run #{run_id}: #{inspect(error)}"
-      )
-
-      []
+    with status when status in [nil, "waiting"] <- Map.get(row, "status"),
+         step_slug when not is_nil(step_slug) <- Map.get(row, "step_slug"),
+         step_atom when not is_nil(step_atom) <- to_step_atom(step_slug, steps_config) do
+      Map.put(steps, step_atom, :waiting)
+    else
+      _ -> steps
+    end
   end
+
+  # Preserve the legacy lookup contract for task rows while accepting public
+  # string-keyed maps: truthy atom values win, otherwise string values apply.
+  defp normalize_task_row(row) do
+    row
+    |> Enum.reduce(%{}, &collect_task_row_field/2)
+    |> Map.new(&resolve_task_row_field/1)
+  end
+
+  defp collect_task_row_field({key, value}, fields) when is_atom(key) do
+    Map.update(fields, Atom.to_string(key), %{atom: value, string: nil}, &%{&1 | atom: value})
+  end
+
+  defp collect_task_row_field({key, value}, fields) when is_binary(key) do
+    Map.update(fields, key, %{atom: nil, string: value}, &%{&1 | string: value})
+  end
+
+  defp collect_task_row_field(_field, fields), do: fields
+
+  defp resolve_task_row_field({field, %{atom: atom_value, string: string_value}}) do
+    {field, atom_value || string_value}
+  end
+
+  @doc false
+  @spec load_waiting_task_rows(
+          String.t(),
+          (String.t() -> {:ok, [map()]} | {:error, term()})
+        ) :: [map()]
+  def load_waiting_task_rows(run_id, lookup \\ &Client.get_waiting_tasks/1) do
+    do_load_waiting_task_rows(run_id, lookup, 1)
+  end
+
+  defp do_load_waiting_task_rows(run_id, lookup, retries_remaining) do
+    case lookup.(run_id) do
+      {:ok, tasks} ->
+        tasks
+
+      {:error, _reason} when retries_remaining > 0 ->
+        do_load_waiting_task_rows(run_id, lookup, retries_remaining - 1)
+
+      {:error, reason} ->
+        Logger.warning(
+          "FlowDemoLive: failed to load waiting tasks for run #{run_id}: #{inspect(reason)}"
+        )
+
+        []
+    end
+  end
+
+  defp waiting_task_rows(run_id), do: load_waiting_task_rows(run_id)
 
   defp step_state_status("completed"), do: :completed
   defp step_state_status("failed"), do: :failed
@@ -882,6 +956,8 @@ defmodule PgflowDemoWeb.FlowDemoLive do
     |> assign(:step_outputs, %{})
     |> assign(:error, nil)
     |> assign(:error_step, nil)
+    |> assign(:approval_submitted, false)
+    |> assign(:approval_error, nil)
     |> assign(:duration, nil)
     |> assign(:start_time, nil)
     |> assign(:elapsed_ms, 0)
@@ -1416,7 +1492,10 @@ defmodule PgflowDemoWeb.FlowDemoLive do
           </form>
 
           <div
-            :if={@selected_flow == :approval and Map.get(@steps, :await_approval) == :waiting}
+            :if={
+              @selected_flow == :approval and Map.get(@steps, :await_approval) == :waiting and
+                not @approval_submitted
+            }
             id="approval-actions"
             class="mt-4 flex gap-3"
           >
@@ -1439,6 +1518,14 @@ defmodule PgflowDemoWeb.FlowDemoLive do
               Reject
             </button>
           </div>
+
+          <p
+            :if={@selected_flow == :approval and @approval_error}
+            id="approval-error"
+            class="mt-3 text-sm text-red-300"
+          >
+            {@approval_error}
+          </p>
 
           <div :if={@selected_flow == :job} id="job-controls" class="flex gap-4">
             <button

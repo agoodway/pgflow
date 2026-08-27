@@ -53,7 +53,7 @@ defmodule PgFlow.WorkerSupervisor do
     spec = %{
       id: flow_module,
       start: {__MODULE__, :start_worker_process, [flow_module, repo]},
-      restart: :permanent
+      restart: :transient
     }
 
     case DynamicSupervisor.start_child(__MODULE__, spec) do
@@ -141,8 +141,17 @@ defmodule PgFlow.WorkerSupervisor do
     __MODULE__
     |> DynamicSupervisor.which_children()
     |> Enum.find_value(fn
-      {^flow_module, pid, _type, _modules} when is_pid(pid) -> pid
-      _other -> nil
+      {_id, pid, _type, _modules} when is_pid(pid) ->
+        if worker_for_flow?(pid, flow_module), do: pid
+
+      _other ->
+        nil
     end)
+  end
+
+  defp worker_for_flow?(pid, flow_module) do
+    WorkerServer.get_state(pid).flow_module == flow_module
+  catch
+    :exit, _reason -> false
   end
 end

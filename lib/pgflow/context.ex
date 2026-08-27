@@ -148,15 +148,38 @@ defmodule PgFlow.Context do
 
   If a payload is already buffered for this `run_id` + `step_slug` (+
   `task_index`), it is consumed immediately. Otherwise this live-waits up to
-  `:wait_timeout` milliseconds, then parks the task as `waiting` and throws
-  `{:pgflow_await, :parked}` so the worker can free the slot.
+  `:wait_timeout` milliseconds, then atomically consumes or parks the task as
+  `waiting` so the worker can free the slot.
+
+  ## Handler and retry contract
+
+  This function requires the worker-issued context passed to a running handler;
+  hand-built contexts without the worker's current `message_id` are rejected.
+
+  Parking ends the current handler execution. When the task is resumed, the
+  handler starts again from its top, so every effect before this call must be
+  idempotent. V1 supports one await point per task.
+
+  Handler code must not catch PgFlow's internal await control throw; doing so allows execution to
+  continue after the database has already parked the task.
+
+  Do not call this function inside a caller-owned `Repo.transaction/1` (or
+  equivalent transaction): it raises `PgFlow.AwaitSignalTransactionError`.
+  The first PostgreSQL-computed `:wait_for` deadline is retained across retries.
+  After a signal is accepted, or after the deadline times out, the result is
+  replayed on an ordinary handler retry until the task reaches terminal
+  completion or failure.
 
   ## Options
 
-    * `:wait_for` - Total wait budget from first park. `:infinity` (default),
-      an integer number of seconds, or `{n, :seconds | :minutes | :hours | :days}`.
-    * `:wait_timeout` - Milliseconds to block in-process before parking
-      (default: `5_000`). `0` parks immediately when the buffer is empty.
+  * `:wait_for` - Total wait budget from first park. `:infinity` (default),
+      a positive integer number of seconds, or `{n, unit}` where `unit` is one
+      of `:second`, `:seconds`, `:minute`, `:minutes`, `:hour`, `:hours`,
+      `:day`, or `:days`.
+  * `:wait_timeout` - Milliseconds to block in-process before parking
+      (default: `5_000`). `0` parks immediately when the buffer is empty. It
+      is polling time only, not a durable wait deadline, and must not exceed
+      the handler's configured task timeout.
 
   ## Returns
 
@@ -166,81 +189,108 @@ defmodule PgFlow.Context do
   """
   @spec await_signal(t(), keyword()) :: {:ok, map() | list()} | {:error, :timeout}
   def await_signal(%__MODULE__{} = ctx, opts \\ []) when is_list(opts) do
-    wait_timeout = Keyword.get(opts, :wait_timeout, @default_wait_timeout_ms)
-    wait_for = Keyword.get(opts, :wait_for, :infinity)
+    ensure_not_in_transaction!(ctx.repo)
+    ensure_dispatch_identity!(ctx)
+
+    wait_timeout =
+      normalize_wait_timeout!(Keyword.get(opts, :wait_timeout, @default_wait_timeout_ms))
+
+    wait_for_seconds = normalize_wait_for!(Keyword.get(opts, :wait_for, :infinity))
     step_slug = to_string(ctx.step_slug)
-    task_index = ctx.task_index
 
-    case consume(ctx, step_slug, task_index) do
-      {:ok, payload} ->
-        {:ok, payload}
-
-      {:error, :timeout} ->
-        {:error, :timeout}
-
-      :empty ->
-        case live_wait(ctx, step_slug, task_index, wait_timeout) do
-          {:ok, payload} -> {:ok, payload}
-          {:error, :timeout} -> {:error, :timeout}
-          :empty -> park_and_throw(ctx, step_slug, task_index, wait_for)
-        end
+    case await_once(ctx, step_slug, wait_for_seconds, false) do
+      :empty -> live_wait_or_park(ctx, step_slug, wait_timeout, wait_for_seconds)
+      outcome -> handle_await_outcome(ctx, outcome)
     end
   end
 
-  defp consume(ctx, step_slug, task_index) do
-    case Signals.consume_task_signal(ctx.repo, ctx.run_id, step_slug, task_index) do
-      {:ok, payload} -> {:ok, payload}
-      {:error, :timeout} -> {:error, :timeout}
-      :empty -> :empty
-      {:error, err} -> raise "Failed to consume task signal: #{inspect(err)}"
-    end
+  defp ensure_not_in_transaction!(repo) do
+    if repo.in_transaction?(), do: raise(PgFlow.AwaitSignalTransactionError)
   end
 
-  defp live_wait(_ctx, _step_slug, _task_index, timeout_ms) when timeout_ms <= 0, do: :empty
+  defp ensure_dispatch_identity!(%__MODULE__{message_id: message_id}) when is_integer(message_id),
+    do: :ok
 
-  defp live_wait(ctx, step_slug, task_index, timeout_ms) do
+  defp ensure_dispatch_identity!(_ctx) do
+    raise ArgumentError,
+          "PgFlow.Context.await_signal/2 requires a worker-issued context with a message_id"
+  end
+
+  defp normalize_wait_timeout!(value) when is_integer(value) and value >= 0, do: value
+
+  defp normalize_wait_timeout!(_value),
+    do: raise(ArgumentError, "wait_timeout must be a non-negative integer number of milliseconds")
+
+  defp normalize_wait_for!(:infinity), do: nil
+  defp normalize_wait_for!(seconds) when is_integer(seconds) and seconds > 0, do: seconds
+
+  defp normalize_wait_for!({n, unit})
+       when is_integer(n) and n > 0 and unit in [:second, :seconds], do: n
+
+  defp normalize_wait_for!({n, unit})
+       when is_integer(n) and n > 0 and unit in [:minute, :minutes],
+       do: n * 60
+
+  defp normalize_wait_for!({n, unit}) when is_integer(n) and n > 0 and unit in [:hour, :hours],
+    do: n * 3_600
+
+  defp normalize_wait_for!({n, unit}) when is_integer(n) and n > 0 and unit in [:day, :days],
+    do: n * 86_400
+
+  defp normalize_wait_for!(_value),
+    do:
+      raise(
+        ArgumentError,
+        "wait_for must be :infinity or a positive duration in seconds, minutes, hours, or days"
+      )
+
+  defp await_once(ctx, step_slug, wait_for_seconds, park?) do
+    Signals.await_task_signal(
+      ctx.repo,
+      ctx.run_id,
+      step_slug,
+      ctx.task_index,
+      ctx.attempt,
+      ctx.message_id,
+      wait_for_seconds,
+      park?
+    )
+  end
+
+  defp live_wait_or_park(ctx, step_slug, 0, wait_for_seconds) do
+    handle_await_outcome(ctx, await_once(ctx, step_slug, wait_for_seconds, true))
+  end
+
+  defp live_wait_or_park(ctx, step_slug, timeout_ms, wait_for_seconds) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
-    live_wait_loop(ctx, step_slug, task_index, deadline)
+    live_wait_loop(ctx, step_slug, deadline, wait_for_seconds)
   end
 
-  defp live_wait_loop(ctx, step_slug, task_index, deadline) do
+  defp live_wait_loop(ctx, step_slug, deadline, wait_for_seconds) do
     remaining = deadline - System.monotonic_time(:millisecond)
 
     if remaining <= 0 do
-      consume(ctx, step_slug, task_index)
+      handle_await_outcome(ctx, await_once(ctx, step_slug, wait_for_seconds, true))
     else
       Process.sleep(min(@live_wait_poll_ms, remaining))
 
-      case consume(ctx, step_slug, task_index) do
-        :empty -> live_wait_loop(ctx, step_slug, task_index, deadline)
-        other -> other
+      case await_once(ctx, step_slug, wait_for_seconds, false) do
+        :empty -> live_wait_loop(ctx, step_slug, deadline, wait_for_seconds)
+        outcome -> handle_await_outcome(ctx, outcome)
       end
     end
   end
 
-  defp park_and_throw(ctx, step_slug, task_index, wait_for) do
-    deadline = wait_deadline_at(wait_for)
+  defp handle_await_outcome(_ctx, {:ok, payload}), do: {:ok, payload}
+  defp handle_await_outcome(_ctx, :timeout), do: {:error, :timeout}
+  defp handle_await_outcome(_ctx, :empty), do: :empty
 
-    case Signals.park_waiting_task(ctx.repo, ctx.run_id, step_slug, task_index, deadline) do
-      :ok -> throw({:pgflow_await, :parked})
-      {:error, err} -> raise "Failed to park waiting task: #{inspect(err)}"
-    end
+  defp handle_await_outcome(ctx, outcome) when outcome in [:parked, :stale, :terminal] do
+    throw({:pgflow_await, outcome, ctx.attempt, ctx.message_id})
   end
 
-  defp wait_deadline_at(:infinity), do: nil
+  defp handle_await_outcome(_ctx, :missing), do: raise("await_signal task no longer exists")
 
-  defp wait_deadline_at(seconds) when is_integer(seconds),
-    do: DateTime.add(DateTime.utc_now(), seconds, :second)
-
-  defp wait_deadline_at({n, unit}) when is_integer(n) and unit in [:second, :seconds],
-    do: wait_deadline_at(n)
-
-  defp wait_deadline_at({n, unit}) when is_integer(n) and unit in [:minute, :minutes],
-    do: wait_deadline_at(n * 60)
-
-  defp wait_deadline_at({n, unit}) when is_integer(n) and unit in [:hour, :hours],
-    do: wait_deadline_at(n * 3600)
-
-  defp wait_deadline_at({n, unit}) when is_integer(n) and unit in [:day, :days],
-    do: wait_deadline_at(n * 86_400)
+  defp handle_await_outcome(_ctx, {:error, reason}),
+    do: raise("await_signal database error: #{inspect(reason)}")
 end

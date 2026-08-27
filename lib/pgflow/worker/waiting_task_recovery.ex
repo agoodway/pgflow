@@ -13,6 +13,7 @@ defmodule PgFlow.Worker.WaitingTaskRecovery do
   alias PgFlow.Queries.Signals
 
   @default_interval 15_000
+  @default_batch_size 100
 
   @doc """
   Starts the waiting-task recovery GenServer.
@@ -21,6 +22,7 @@ defmodule PgFlow.Worker.WaitingTaskRecovery do
 
     * `:repo` - (required) The Ecto repository module
     * `:waiting_recovery_interval` - Milliseconds between sweeps (default: `15_000`)
+    * `:waiting_recovery_batch_size` - Maximum tasks expired per sweep (default: `100`)
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(config) when is_list(config) do
@@ -31,15 +33,16 @@ defmodule PgFlow.Worker.WaitingTaskRecovery do
   def init(config) do
     repo = Keyword.fetch!(config, :repo)
     interval = Keyword.get(config, :waiting_recovery_interval, @default_interval)
+    batch_size = Keyword.get(config, :waiting_recovery_batch_size, @default_batch_size)
 
-    state = %{repo: repo, interval: interval}
+    state = %{repo: repo, interval: interval, batch_size: batch_size}
     schedule_recovery(state)
     {:ok, state}
   end
 
   @impl true
   def handle_info(:recover, state) do
-    case Signals.expire_waiting_tasks(state.repo) do
+    case Signals.expire_waiting_tasks(state.repo, state.batch_size) do
       {:ok, 0} ->
         :ok
 

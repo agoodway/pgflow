@@ -154,6 +154,12 @@ defmodule PgFlow.Flow.StepTest do
       assert step.base_delay == 2000
     end
 
+    test "converts tuple with zero base_delay option" do
+      step = Step.from_tuple({:immediate_retry_step, base_delay: 0})
+
+      assert step.base_delay == 0
+    end
+
     test "converts tuple with timeout option" do
       step = Step.from_tuple({:slow_step, timeout: 60_000})
 
@@ -164,6 +170,12 @@ defmodule PgFlow.Flow.StepTest do
       step = Step.from_tuple({:scheduled_step, start_delay: 5000})
 
       assert step.start_delay == 5000
+    end
+
+    test "converts tuple with zero start_delay option" do
+      step = Step.from_tuple({:immediate_step, start_delay: 0})
+
+      assert step.start_delay == 0
     end
 
     test "converts tuple with all options" do
@@ -202,7 +214,6 @@ defmodule PgFlow.Flow.StepTest do
       step = Step.from_tuple({:test, depends_on: [:single_dep]})
 
       assert step.depends_on == [:single_dep]
-      assert length(step.depends_on) == 1
     end
 
     test "handles empty depends_on list" do
@@ -215,7 +226,6 @@ defmodule PgFlow.Flow.StepTest do
       step = Step.from_tuple({:test, depends_on: [:dep1, :dep2, :dep3]})
 
       assert step.depends_on == [:dep1, :dep2, :dep3]
-      assert length(step.depends_on) == 3
     end
   end
 

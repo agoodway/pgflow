@@ -336,11 +336,13 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
 
   # Graph layout algorithm
   defp layout_graph([_ | _] = steps) do
+    steps = Enum.map(steps, &normalize_step/1)
+
     # Build dependency map
     dep_map =
       Map.new(steps, fn step ->
-        slug = step[:step_slug] || step["step_slug"]
-        deps = step[:deps] || step["deps"] || []
+        slug = step.step_slug
+        deps = step.deps
         {slug, deps}
       end)
 
@@ -351,13 +353,13 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
     level_groups =
       steps
       |> Enum.group_by(fn step ->
-        slug = step[:step_slug] || step["step_slug"]
+        slug = step.step_slug
         Map.get(levels, slug, 0)
       end)
 
     labels =
       Map.new(steps, fn step ->
-        slug = step[:step_slug] || step["step_slug"]
+        slug = step.step_slug
         {slug, format_label(slug)}
       end)
 
@@ -371,7 +373,7 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
           level_groups
           |> Map.get(level, [])
           |> Enum.map(fn step ->
-            slug = step[:step_slug] || step["step_slug"]
+            slug = step.step_slug
             label_width(Map.fetch!(labels, slug))
           end)
           |> Enum.max(fn -> 120 end)
@@ -389,7 +391,7 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
         level_steps
         |> Enum.with_index()
         |> Enum.map(fn {step, idx} ->
-          slug = step[:step_slug] || step["step_slug"]
+          slug = step.step_slug
           label = Map.fetch!(labels, slug)
           x = Map.fetch!(level_centers, level)
           y = @padding_top + @node_spacing_y * idx + @node_spacing_y * (max_width - count) / 2
@@ -410,8 +412,8 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
     # Build edges
     edges =
       Enum.flat_map(steps, fn step ->
-        to_slug = step[:step_slug] || step["step_slug"]
-        deps = step[:deps] || step["deps"] || []
+        to_slug = step.step_slug
+        deps = step.deps
 
         Enum.map(deps, fn from_slug ->
           {from_x, from_y} = Map.get(node_positions, from_slug, {0, 0})
@@ -435,6 +437,27 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
   end
 
   defp layout_graph(_), do: {[], [], 200, 100}
+
+  defp normalize_step(step) do
+    %{
+      step_slug: preferred_step_field(step, :step_slug, "step_slug", nil),
+      deps: preferred_step_field(step, :deps, "deps", [])
+    }
+  end
+
+  defp preferred_step_field(step, atom_key, string_key, default) do
+    case Map.get(step, atom_key) do
+      value when value in [nil, false] -> fallback_step_field(step, string_key, default)
+      value -> value
+    end
+  end
+
+  defp fallback_step_field(step, string_key, default) do
+    case Map.get(step, string_key) do
+      value when value in [nil, false] -> default
+      value -> value
+    end
+  end
 
   defp calculate_levels(dep_map) do
     # Initialize all nodes at level 0

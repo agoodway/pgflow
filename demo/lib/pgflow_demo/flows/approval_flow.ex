@@ -22,9 +22,11 @@ defmodule PgflowDemo.Flows.ApprovalFlow do
   end
 
   step :await_approval, depends_on: [:create_order], max_attempts: 1 do
-    fn _deps, ctx ->
+    fn deps, ctx ->
+      order = deps["create_order"]
+
       case PgFlow.Context.await_signal(ctx, wait_for: {1, :hour}, wait_timeout: 0) do
-        {:ok, %{"decision" => "approved"}} -> %{"decision" => "approved"}
+        {:ok, %{"decision" => "approved"}} -> Map.put(order, "decision", "approved")
         {:ok, _} -> raise "rejected"
         {:error, :timeout} -> raise "no decision"
       end
@@ -33,11 +35,13 @@ defmodule PgflowDemo.Flows.ApprovalFlow do
 
   step :charge, depends_on: [:await_approval] do
     fn deps, _ctx ->
+      approved = deps["await_approval"]
+
       %{
         "charged" => true,
-        "order_id" => deps["create_order"]["order_id"],
-        "amount" => deps["create_order"]["amount"],
-        "decision" => deps["await_approval"]["decision"]
+        "order_id" => approved["order_id"],
+        "amount" => approved["amount"],
+        "decision" => approved["decision"]
       }
     end
   end

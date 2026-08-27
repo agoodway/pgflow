@@ -1,6 +1,6 @@
 # PgFlow Architecture
 
-PgFlow is a native Elixir implementation of [pgflow](https://pgflow.dev) - a PostgreSQL-based workflow engine built on pgmq. It shares the same database schema and SQL functions as the TypeScript/Deno version, allowing workers from both runtimes to process the same flows side-by-side.
+PgFlow is a native Elixir implementation of [pgflow](https://pgflow.dev) - a PostgreSQL-based workflow engine built on pgmq. It shares the core database schema and SQL functions with the TypeScript/Deno version, allowing compatible workers from both runtimes to process the same flows side-by-side.
 
 ## Design Principles
 
@@ -25,7 +25,7 @@ PgFlow is a native Elixir implementation of [pgflow](https://pgflow.dev) - a Pos
     -------------------------------------------------
 ```
 
-**Compatibility:** Same pgflow.* schema, same core SQL functions, same pgmq message format. Elixir and TypeScript workers can run side-by-side processing the same flows.
+**Compatibility:** Same pgflow.* schema, same core SQL functions, same pgmq message format. Elixir and TypeScript workers can run side-by-side processing compatible flows. Await-signals is an Elixir helper extension: a TypeScript/Deno worker cannot execute an awaited Elixir handler without equivalent runtime support.
 
 **Elixir extensions:** Adds helper SQL functions for OTP worker lifecycle. Backward-compatible - TypeScript workers can safely ignore them.
 
@@ -263,6 +263,15 @@ Handlers may call `PgFlow.Context.await_signal/2` to park a task as `waiting`
 until `PgFlow.signal/3` delivers a JSON payload. This is unrelated to
 `signal_strategy: :notify`, which only wakes workers on pgmq inserts.
 
+Parking restarts the handler from its top when it is resumed, so pre-await
+effects must be idempotent. V1 supports one await point per task. Awaiting from
+a caller-owned `Repo.transaction/1` is unsupported and raises
+`PgFlow.AwaitSignalTransactionError`. PostgreSQL computes and retains the first
+`:wait_for` deadline across retries; an accepted signal or timeout is replayed
+on ordinary handler retry until terminal completion or failure. `:wait_timeout`
+is in-process polling time and must not exceed the handler's configured task
+timeout.
+
 Parked tasks are not stalled: `recover_stalled_tasks` still selects only
 `st.status = 'started'`. `WaitingTaskRecovery` re-queues `waiting` tasks
 whose `wait_deadline_at` has passed so the next `await_signal` returns
@@ -275,8 +284,27 @@ case PgFlow.Context.await_signal(ctx, wait_for: {24, :hours}, wait_timeout: 5_00
   {:error, :timeout} -> raise "no decision"
 end
 
-PgFlow.signal(run_id, :approval, %{"decision" => "approved"})
+case PgFlow.signal(run_id, :approval, %{"decision" => "approved"}) do
+  {:ok, outcome} when outcome in [:buffered, :requeued] -> :accepted
+  {:ok, :already_delivered} -> :idempotent_success
+  {:ok, outcome} when outcome in [:expired, :terminal, :missing] -> {:not_delivered, outcome}
+  {:error, reason} -> {:retry, reason}
+end
 ```
+
+Controllers and webhooks must authenticate the caller, authorize tenant and
+run ownership, validate payload shape, and enforce an application-appropriate
+payload size limit before calling `PgFlow.signal/3`. The Elixir API accepts
+maps/lists only. PostgreSQL independently rejects SQL `NULL`, JSON `null`, and
+scalar JSON and enforces a hard 1 MiB ceiling using
+`pg_column_size(payload) <= 1_048_576`.
+
+The V05 RPCs use `SECURITY INVOKER`, and `EXECUTE` is revoked from `PUBLIC` for
+`await_task_signal`, `signal_task`, and `expire_waiting_tasks`. Owners retain
+their privileges. Deployments with separate worker and ingress roles must grant
+the exact function signatures explicitly, along with the underlying table and
+pgmq privileges needed by invoker execution; the ingress role normally receives
+only `signal_task`, while the worker role receives await and expiry.
 
 ## OTP Integration
 

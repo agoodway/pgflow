@@ -256,7 +256,7 @@ defmodule PgFlow.Flow.Definition do
   def validate_map_step_constraints(%__MODULE__{slug: flow_slug, steps: steps}) do
     invalid_map_steps =
       Enum.filter(steps, fn step ->
-        step.step_type == :map and length(step.depends_on) != 1
+        step.step_type == :map and not match?([_], step.depends_on)
       end)
 
     case invalid_map_steps do

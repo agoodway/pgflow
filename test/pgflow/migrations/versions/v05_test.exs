@@ -26,10 +26,11 @@ defmodule PgFlow.Migrations.Versions.V05Test do
       up = up_sql()
       assert up =~ "waiting"
       assert up =~ "task_signals"
-      assert up =~ "park_waiting_task"
+      assert up =~ "await_task_signal"
       assert up =~ "signal_task"
-      assert up =~ "consume_task_signal"
       assert up =~ "expire_waiting_tasks"
+      refute up =~ "CREATE OR REPLACE FUNCTION $SCHEMA$.park_waiting_task("
+      refute up =~ "CREATE OR REPLACE FUNCTION $SCHEMA$.consume_task_signal("
       assert File.exists?(@down_path)
     end
   end
@@ -37,10 +38,11 @@ defmodule PgFlow.Migrations.Versions.V05Test do
   describe "down SQL reverses those objects" do
     test "drops functions and task_signals and restores valid_status without waiting" do
       down = down_sql()
-      assert down =~ "park_waiting_task"
+      assert down =~ "await_task_signal"
       assert down =~ "signal_task"
-      assert down =~ "consume_task_signal"
       assert down =~ "expire_waiting_tasks"
+      assert down =~ "DROP FUNCTION IF EXISTS $SCHEMA$.park_waiting_task"
+      assert down =~ "DROP FUNCTION IF EXISTS $SCHEMA$.consume_task_signal"
       assert down =~ "DROP TABLE"
       assert down =~ "task_signals"
       assert down =~ "valid_status"

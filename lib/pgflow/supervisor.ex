@@ -23,7 +23,7 @@ defmodule PgFlow.Supervisor do
   use Supervisor
   require Logger
 
-  alias PgFlow.{Config, FlowStarter, Telemetry, WorkerSupervisor}
+  alias PgFlow.{Config, FlowStarter, SchemaCompatibility, Telemetry, WorkerSupervisor}
   alias PgFlow.Signal
   alias PgFlow.Worker.{StalledTaskRecovery, WaitingTaskRecovery}
 
@@ -42,16 +42,27 @@ defmodule PgFlow.Supervisor do
   """
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(config) when is_list(config) do
+    start_link(config, [])
+  end
+
+  @doc false
+  @spec start_link(keyword(), keyword()) :: Supervisor.on_start()
+  def start_link(config, compatibility_opts)
+      when is_list(config) and is_list(compatibility_opts) do
+    config = Config.validate!(config)
+    repo = Keyword.fetch!(config, :repo)
+
+    SchemaCompatibility.await_await_signals!(repo, compatibility_opts)
+
     Supervisor.start_link(__MODULE__, config, name: __MODULE__)
   end
 
   @impl true
   def init(config) do
-    # Ensure config has all defaults applied, even if started directly
-    # (e.g. {PgFlow.Supervisor, repo: MyRepo} without going through PgFlow.start_link)
+    # Preserve callback safety for direct `Supervisor.start_link/2` callers.
     config = Config.validate!(config)
-
     repo = Keyword.fetch!(config, :repo)
+
     flows = Keyword.get(config, :flows, [])
     jobs = Keyword.get(config, :jobs, [])
     attach_logger = Keyword.get(config, :attach_default_logger, false)

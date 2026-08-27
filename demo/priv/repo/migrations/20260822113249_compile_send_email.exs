@@ -13,7 +13,9 @@ defmodule PgFlow.Repo.Migrations.CompileSendEmail do
 
   def up do
     execute "SELECT pgflow.create_flow('send_email', 3, 1, 30)"
+
     execute "SELECT pgflow.add_step('send_email', 'deliver', ARRAY[]::text[], 3, 1, 30, NULL, 'single')"
+
     execute "UPDATE pgflow.flows SET flow_type = 'job' WHERE flow_slug = 'send_email'"
   end
 

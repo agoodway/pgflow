@@ -261,8 +261,6 @@ defmodule Mix.Tasks.Pgflow.Gen.FlowMigrationTest do
       end)
 
       files = File.ls!(@test_migrations_path) |> Enum.sort()
-      assert length(files) == 2
-
       [first_file, second_file] = files
       first_timestamp = String.slice(first_file, 0, 14)
       second_timestamp = String.slice(second_file, 0, 14)

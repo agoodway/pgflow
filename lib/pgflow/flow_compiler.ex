@@ -97,7 +97,7 @@ defmodule PgFlow.FlowCompiler do
     base_delay = Keyword.get(opts, :base_delay, 1)
     timeout = Keyword.get(opts, :timeout, 60)
 
-    "SELECT pgflow.create_flow(#{sql_value(flow_slug)}, #{sql_value(max_attempts)}, #{sql_value(base_delay)}, #{sql_value(timeout)})"
+    "SELECT pgflow.create_flow(#{sql_value(flow_slug)}, #{sql_value(max_attempts)}, #{sql_base_delay(base_delay)}, #{sql_value(timeout)})"
   end
 
   @doc """
@@ -129,7 +129,7 @@ defmodule PgFlow.FlowCompiler do
       sql_value(Atom.to_string(step.slug)),
       sql_array(step.depends_on),
       sql_value(step.max_attempts),
-      sql_value(step.base_delay),
+      sql_base_delay(step.base_delay),
       sql_value(step.timeout),
       sql_value(step.start_delay),
       sql_value(Atom.to_string(step.step_type))
@@ -155,6 +155,10 @@ defmodule PgFlow.FlowCompiler do
   defp sql_value(value) when is_binary(value), do: "'#{escape(value)}'"
   defp sql_value(value) when is_integer(value), do: Integer.to_string(value)
   defp sql_value(value) when is_atom(value), do: sql_value(Atom.to_string(value))
+
+  @spec sql_base_delay(nil | non_neg_integer()) :: String.t()
+  defp sql_base_delay(nil), do: "NULL"
+  defp sql_base_delay(value) when is_integer(value) and value >= 0, do: Integer.to_string(value)
 
   @spec sql_array([atom()]) :: String.t()
   defp sql_array([]), do: "ARRAY[]::text[]"

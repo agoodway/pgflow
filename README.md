@@ -16,7 +16,9 @@ A native Elixir implementation of [pgflow](https://pgflow.dev) — a PostgreSQL-
 - **Parallel processing** — Steps run concurrently when dependencies allow. Fan-out with `map` for array processing.
 - **Conditional steps** — Elixir supports pgflow 0.14 conditional steps (`if` / `if_not` / `when_unmet` / `when_exhausted`).
 - **Awaiting signals** — Park a Job or Flow task mid-handler with `Context.await_signal/2` until `PgFlow.signal/3` delivers a JSON payload. Unrelated to `signal_strategy: :notify`, which only wakes workers on pgmq inserts.
-- **Cross-language** — Same flows can be processed by Elixir or Deno (Supabase) workers side-by-side.
+- **Cross-language core** — Elixir and Deno (Supabase) workers share the core
+  schema and can process compatible flows side-by-side. Awaited Elixir handlers
+  require the Elixir runtime (or an equivalent runtime implementation).
 
 ## Further Reading
 
@@ -98,9 +100,40 @@ mix pgflow.setup
 mix ecto.migrate
 ```
 
-The generated `setup_pgflow.exs` migration just calls `PgFlow.Migration.up/0`
-and `PgFlow.HelpersMigration.up/0` — new pgflow releases bump the vendored
-SQL, not your migration list.
+Initial installation uses `mix pgflow.setup`. Existing installations must
+generate and apply a new version-aware helpers upgrade migration whenever the
+PgFlow release notes increase the helpers version. For V05, run the following
+and apply it before starting the new worker release:
+
+```bash
+mix pgflow.gen.helpers_migration --from-version 4
+mix ecto.migrate
+```
+
+V05 rollback refuses to proceed while active waits or signals exist. Drain
+those waits/signals as an operator action before rolling the migration back.
+
+V05's await-signal SQL functions are `SECURITY INVOKER` and revoke `EXECUTE`
+from `PUBLIC`. The migration owner retains its privileges. If workers and
+signal ingress use separate database roles, explicitly grant only the entry
+points each role needs (plus the underlying table and pgmq privileges required
+by invoker execution):
+
+```sql
+GRANT EXECUTE ON FUNCTION pgflow.await_task_signal(uuid, text, integer, integer, bigint, bigint, boolean)
+  TO my_pgflow_worker_role;
+GRANT EXECUTE ON FUNCTION pgflow.expire_waiting_tasks(integer)
+  TO my_pgflow_worker_role;
+GRANT EXECUTE ON FUNCTION pgflow.signal_task(uuid, text, integer, jsonb)
+  TO my_signal_ingress_role;
+```
+
+V05 deliberately defers validation of `valid_status`. In a later, separately
+committed operator migration—not inside the V05 transaction—run:
+
+```sql
+ALTER TABLE pgflow.step_tasks VALIDATE CONSTRAINT valid_status;
+```
 
 ### 2. Define a Flow
 
@@ -233,8 +266,30 @@ step :approval do
 end
 
 # From a controller, webhook, or IEx:
-PgFlow.signal(run_id, :approval, %{"decision" => "approved"})
+case PgFlow.signal(run_id, :approval, %{"decision" => "approved"}) do
+  {:ok, outcome} when outcome in [:buffered, :requeued] -> :accepted
+  {:ok, :already_delivered} -> :idempotent_success
+  {:ok, outcome} when outcome in [:expired, :terminal, :missing] -> {:not_delivered, outcome}
+  {:error, reason} -> {:retry, reason}
+end
 ```
+
+Before a signal is claimed by `await_signal/2`, repeated deliveries replace its
+buffered payload (last write wins). A signal payload is immutable after claim;
+later deliveries return `:already_delivered` without changing it.
+
+Before calling `PgFlow.signal/3`, application controllers and webhooks must
+authenticate the caller, authorize tenant and run ownership, validate the JSON
+payload shape, and enforce an application-appropriate payload size limit.
+PgFlow's Elixir API accepts maps and lists; PostgreSQL also rejects SQL `NULL`,
+JSON `null`, and scalar JSON and imposes a hard 1 MiB ceiling
+(`pg_column_size(payload) <= 1_048_576`). PgFlow reports the typed delivery
+outcome; it does not provide an HTTP authorization boundary.
+
+Await resumes by restarting the handler from the top. Make pre-await effects
+idempotent; V1 permits one await point per task. `:wait_timeout` is in-process
+polling time and must not exceed the handler's configured task timeout; use
+`:wait_for` for the durable PostgreSQL deadline.
 
 ## Cron Scheduling
 
@@ -261,7 +316,7 @@ Run these once when adding pgflow to a project. Migrations are applied via `mix 
 | `mix pgflow.gen.postgres_extensions_migration`   | Migration: citext, pg_trgm, pgcrypto, pg_cron               |
 | `mix pgflow.gen.pgmq_migration`                  | Migration: pgmq via SQL-only install                        |
 | `mix pgflow.setup`                               | Wrapper migration: core schema + helpers                    |
-| `mix pgflow.gen.helpers_migration`               | Migration: Elixir helpers standalone (setup bundles these)  |
+| `mix pgflow.gen.helpers_migration [--from-version N]` | Elixir helpers: initial install, or version-aware upgrade from N |
 | `mix pgflow.stamp`                               | Adopt an existing pgflow schema into EctoEvolver tracking   |
 
 ### Per-flow / per-job
@@ -336,7 +391,12 @@ Without a database at `localhost:54323` the suite silently excludes every `:inte
 
 ## Compatibility with PgFlow TypeScript/Deno
 
-This Elixir implementation is compatible with the TypeScript/Deno version — same PostgreSQL schema, same SQL functions, same PGMQ message format. Workers can run side-by-side. See [ELIXIR_VS_SUPABASE.md](docs/ELIXIR_VS_SUPABASE.md) for a detailed comparison and schema divergences.
+This Elixir implementation shares the core PostgreSQL schema, SQL functions,
+and PGMQ message format with the TypeScript/Deno version, so compatible workers
+can run side-by-side. Await-signals is an Elixir helper extension: a
+TypeScript/Deno worker cannot execute an awaited Elixir handler without
+equivalent runtime support. See [ELIXIR_VS_SUPABASE.md](docs/ELIXIR_VS_SUPABASE.md)
+for the detailed comparison and schema divergences.
 
 ## License
 

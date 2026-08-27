@@ -13,8 +13,11 @@ defmodule PgFlow.Repo.Migrations.CompileApprovalFlow do
 
   def up do
     execute "SELECT pgflow.create_flow('approval_flow', 3, 1, 30)"
+
     execute "SELECT pgflow.add_step('approval_flow', 'create_order', ARRAY[]::text[], 3, 1, 30, NULL, 'single')"
+
     execute "SELECT pgflow.add_step('approval_flow', 'await_approval', ARRAY['create_order']::text[], 1, 1, 30, NULL, 'single')"
+
     execute "SELECT pgflow.add_step('approval_flow', 'charge', ARRAY['await_approval']::text[], 3, 1, 30, NULL, 'single')"
   end
 
