@@ -130,7 +130,7 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
                     width={bar_width}
                     row_height={@row_height}
                     status={step.status}
-                    duration_ms={step.duration_ms}
+                    duration_ms={step_duration_ms(step)}
                   />
 
                 <% step.status == "skipped" -> %>
@@ -265,6 +265,16 @@ defmodule PgFlowDashboard.Components.GanttTimeline do
       </text>
     <% end %>
     """
+  end
+
+  defp step_duration_ms(step) do
+    Map.get_lazy(step, :duration_ms, fn ->
+      finished_at = step.completed_at || step.skipped_at || step.failed_at
+
+      if step.started_at && finished_at do
+        max(DateTime.diff(finished_at, step.started_at, :millisecond), 0)
+      end
+    end)
   end
 
   defp calc_position(datetime, run_start, total_duration_ms, chart_width) do

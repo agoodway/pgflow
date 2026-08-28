@@ -5,6 +5,22 @@ defmodule PgFlowDashboard.Components.DependencyGraphTest do
 
   alias PgFlowDashboard.Components.DependencyGraph
 
+  test "shapes stored steps and dependencies for presentation" do
+    steps = [
+      %PgFlow.Schema.Step{flow_slug: "checkout", step_slug: "charge", step_index: 1},
+      %PgFlow.Schema.Step{flow_slug: "checkout", step_slug: "receipt", step_index: 2}
+    ]
+
+    deps = [
+      %PgFlow.Schema.Dep{flow_slug: "checkout", step_slug: "receipt", dep_slug: "charge"}
+    ]
+
+    assert [
+             %{step_slug: "charge", deps: []},
+             %{step_slug: "receipt", deps: ["charge"]}
+           ] = DependencyGraph.with_dependencies(steps, deps)
+  end
+
   test "renders interactive nodes as keyboard-focusable controls" do
     html =
       render_component(&DependencyGraph.dependency_graph/1,

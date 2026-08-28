@@ -7,6 +7,8 @@ defmodule PgFlow.Schema.Run do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias PgFlow.Type.JSON
+
   @type t :: %__MODULE__{}
 
   @schema_prefix "pgflow"
@@ -15,8 +17,8 @@ defmodule PgFlow.Schema.Run do
   schema "runs" do
     field(:flow_slug, :string)
     field(:status, :string)
-    field(:input, :map)
-    field(:output, :map)
+    field(:input, JSON)
+    field(:output, JSON)
     field(:remaining_steps, :integer)
     field(:started_at, :utc_datetime_usec)
     field(:completed_at, :utc_datetime_usec)
@@ -24,7 +26,7 @@ defmodule PgFlow.Schema.Run do
 
     belongs_to(:flow, PgFlow.Schema.Flow,
       foreign_key: :flow_slug,
-      references: :slug,
+      references: :flow_slug,
       define_field: false
     )
 

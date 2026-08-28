@@ -7,9 +7,9 @@ defmodule PgFlowDashboard.Live.FlowsLive.Index do
 
   use Phoenix.LiveView
 
+  alias PgFlow.Definitions
   alias PgFlowDashboard.Components.{Layouts, TypeBadge}
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries.Flows
 
   @card_threshold 12
   @page_size 50
@@ -36,8 +36,8 @@ defmodule PgFlowDashboard.Live.FlowsLive.Index do
 
   @impl true
   def handle_event("load_more", _, socket) do
-    flows =
-      Flows.list_flows(socket.assigns.repo,
+    {:ok, flows} =
+      Definitions.list_flows(socket.assigns.repo,
         cursor: socket.assigns.cursor,
         limit: @page_size + 1
       )
@@ -69,12 +69,12 @@ defmodule PgFlowDashboard.Live.FlowsLive.Index do
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_flows(socket) do
-    total_count = Flows.count_flows(socket.assigns.repo)
+    {:ok, total_count} = Definitions.count_flows(socket.assigns.repo)
     view_mode = LiveHelpers.determine_view_mode(total_count, @card_threshold)
 
     case view_mode do
       :card ->
-        flows = Flows.list_flows(socket.assigns.repo)
+        {:ok, flows} = Definitions.list_flows(socket.assigns.repo)
 
         socket
         |> assign(:view_mode, :card)
@@ -82,7 +82,7 @@ defmodule PgFlowDashboard.Live.FlowsLive.Index do
         |> assign(:flows, flows)
 
       :list ->
-        flows = Flows.list_flows(socket.assigns.repo, limit: @page_size + 1)
+        {:ok, flows} = Definitions.list_flows(socket.assigns.repo, limit: @page_size + 1)
         {flows, has_more} = LiveHelpers.paginate_results(flows, @page_size)
         cursor = if flows != [], do: List.last(flows).flow_slug, else: nil
 
@@ -97,7 +97,7 @@ defmodule PgFlowDashboard.Live.FlowsLive.Index do
   end
 
   defp refresh_flows(socket) do
-    total_count = Flows.count_flows(socket.assigns.repo)
+    {:ok, total_count} = Definitions.count_flows(socket.assigns.repo)
     new_view_mode = LiveHelpers.determine_view_mode(total_count, @card_threshold)
 
     if new_view_mode != socket.assigns.view_mode do
@@ -110,7 +110,7 @@ defmodule PgFlowDashboard.Live.FlowsLive.Index do
   defp update_flows(socket, total_count) do
     case socket.assigns.view_mode do
       :card ->
-        flows = Flows.list_flows(socket.assigns.repo)
+        {:ok, flows} = Definitions.list_flows(socket.assigns.repo)
 
         socket
         |> assign(:total_count, total_count)
@@ -118,7 +118,7 @@ defmodule PgFlowDashboard.Live.FlowsLive.Index do
 
       :list ->
         current_count = max(socket.assigns.flows_count, @page_size)
-        flows = Flows.list_flows(socket.assigns.repo, limit: current_count + 1)
+        {:ok, flows} = Definitions.list_flows(socket.assigns.repo, limit: current_count + 1)
         {flows, has_more} = LiveHelpers.paginate_results(flows, current_count)
         cursor = if flows != [], do: List.last(flows).flow_slug, else: nil
 

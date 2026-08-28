@@ -16,10 +16,13 @@ defmodule PgFlow.Schema.Step do
     field(:flow_slug, :string, primary_key: true)
     field(:step_slug, :string, primary_key: true)
     field(:step_type, :string)
+    field(:step_index, :integer)
     field(:deps_count, :integer)
     field(:opt_max_attempts, :integer)
     field(:opt_base_delay, :integer)
     field(:opt_timeout, :integer)
+    field(:created_at, :utc_datetime_usec)
+    field(:opt_start_delay, :integer)
     field(:required_input_pattern, :map)
     field(:forbidden_input_pattern, :map)
     field(:when_unmet, :string)
@@ -27,18 +30,8 @@ defmodule PgFlow.Schema.Step do
 
     belongs_to(:flow, PgFlow.Schema.Flow,
       foreign_key: :flow_slug,
-      references: :slug,
+      references: :flow_slug,
       define_field: false
-    )
-
-    has_many(:deps, PgFlow.Schema.Dep,
-      foreign_key: :flow_slug,
-      references: :flow_slug
-    )
-
-    has_many(:step_states, PgFlow.Schema.StepState,
-      foreign_key: :step_slug,
-      references: :step_slug
     )
   end
 
@@ -49,10 +42,12 @@ defmodule PgFlow.Schema.Step do
       :flow_slug,
       :step_slug,
       :step_type,
+      :step_index,
       :deps_count,
       :opt_max_attempts,
       :opt_base_delay,
       :opt_timeout,
+      :opt_start_delay,
       :required_input_pattern,
       :forbidden_input_pattern,
       :when_unmet,
@@ -60,10 +55,12 @@ defmodule PgFlow.Schema.Step do
     ])
     |> validate_required([:flow_slug, :step_slug, :step_type, :deps_count])
     |> validate_inclusion(:step_type, ["single", "map"])
+    |> validate_number(:step_index, greater_than_or_equal_to: 0)
     |> validate_number(:deps_count, greater_than_or_equal_to: 0)
     |> validate_number(:opt_max_attempts, greater_than: 0)
     |> validate_number(:opt_base_delay, greater_than_or_equal_to: 0)
     |> validate_number(:opt_timeout, greater_than: 0)
+    |> validate_number(:opt_start_delay, greater_than_or_equal_to: 0)
     |> foreign_key_constraint(:flow_slug)
   end
 end

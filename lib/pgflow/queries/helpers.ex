@@ -118,6 +118,24 @@ defmodule PgFlow.Queries.Helpers do
   def parse_uuid(uuid), do: uuid
 
   @doc """
+  Casts a UUID to its canonical string form and fails closed for invalid IDs.
+  """
+  @spec cast_uuid(term()) :: {:ok, Ecto.UUID.t()} | {:error, :invalid_id}
+  def cast_uuid(uuid) do
+    case Ecto.UUID.cast(uuid) do
+      {:ok, uuid} -> {:ok, uuid}
+      :error -> {:error, :invalid_id}
+    end
+  end
+
+  @doc """
+  Casts an optional UUID while preserving `nil`.
+  """
+  @spec optional_uuid(term()) :: {:ok, Ecto.UUID.t() | nil} | {:error, :invalid_id}
+  def optional_uuid(nil), do: {:ok, nil}
+  def optional_uuid(uuid), do: cast_uuid(uuid)
+
+  @doc """
   Formats a binary UUID to string representation.
   """
   @spec format_uuid(nil | binary()) :: nil | String.t()
@@ -131,6 +149,17 @@ defmodule PgFlow.Queries.Helpers do
   end
 
   def format_uuid(uuid), do: uuid
+
+  @doc """
+  Returns a positive `:limit` option or the supplied positive default.
+  """
+  @spec positive_limit(keyword(), pos_integer()) :: pos_integer()
+  def positive_limit(opts, default) when is_integer(default) and default > 0 do
+    case Keyword.get(opts, :limit, default) do
+      limit when is_integer(limit) and limit > 0 -> limit
+      _invalid -> default
+    end
+  end
 
   # ===================
   # Time Range Helpers

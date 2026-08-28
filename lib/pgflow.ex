@@ -136,10 +136,12 @@ defmodule PgFlow do
   ## Examples
 
       {:ok, run} = PgFlow.get_run("550e8400-e29b-41d4-a716-446655440000")
-      {:error, :not_found} = PgFlow.get_run("nonexistent-id")
+      {:error, :invalid_id} = PgFlow.get_run("not-a-uuid")
+      {:error, :not_found} = PgFlow.get_run(Ecto.UUID.generate())
 
   """
-  @spec get_run(String.t()) :: {:ok, PgFlow.Schema.Run.t()} | {:error, :not_found}
+  @spec get_run(String.t()) ::
+          {:ok, PgFlow.Schema.Run.t()} | {:error, :invalid_id | :not_found | term()}
   defdelegate get_run(run_id), to: Client
 
   @doc """
@@ -151,7 +153,8 @@ defmodule PgFlow do
       run.step_states  # => [%StepState{}, ...]
 
   """
-  @spec get_run_with_states(String.t()) :: {:ok, PgFlow.Schema.Run.t()} | {:error, :not_found}
+  @spec get_run_with_states(String.t()) ::
+          {:ok, PgFlow.Schema.Run.t()} | {:error, :invalid_id | :not_found | term()}
   defdelegate get_run_with_states(run_id), to: Client
 
   @doc """

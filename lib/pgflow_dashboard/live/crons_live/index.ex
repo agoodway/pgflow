@@ -7,9 +7,9 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
 
   use Phoenix.LiveView
 
+  alias PgFlow.Definitions
   alias PgFlowDashboard.Components.{Layouts, TypeBadge}
-  alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries.Crons
+  alias PgFlowDashboard.Live.{CronPresentation, LiveHelpers}
 
   @card_threshold 12
   @page_size 50
@@ -26,7 +26,7 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
       |> assign(:has_more, false)
       |> assign(:total_count, 0)
       |> assign(:crons_count, 0)
-      |> stream_configure(:crons, dom_id: &"cron-#{&1.flow_slug}")
+      |> stream_configure(:crons, dom_id: &"cron-#{&1.cron.flow_slug}")
       |> stream(:crons, [])
       |> load_crons()
       |> LiveHelpers.schedule_refresh()
@@ -36,14 +36,16 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
 
   @impl true
   def handle_event("load_more", _, socket) do
-    crons =
-      Crons.list_crons(socket.assigns.repo,
+    {:ok, crons} =
+      Definitions.list_crons(socket.assigns.repo,
         cursor: socket.assigns.cursor,
         limit: @page_size + 1
       )
 
+    crons = present_crons(crons)
+
     {crons, has_more} = LiveHelpers.paginate_results(crons, @page_size)
-    new_cursor = if crons != [], do: List.last(crons).flow_slug, else: nil
+    new_cursor = if crons != [], do: List.last(crons).cron.flow_slug, else: nil
     new_count = socket.assigns.crons_count + length(crons)
 
     socket =
@@ -70,12 +72,13 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_crons(socket) do
-    total_count = Crons.count_crons(socket.assigns.repo)
+    {:ok, total_count} = Definitions.count_crons(socket.assigns.repo)
     view_mode = LiveHelpers.determine_view_mode(total_count, @card_threshold)
 
     case view_mode do
       :card ->
-        crons = Crons.list_crons(socket.assigns.repo)
+        {:ok, crons} = Definitions.list_crons(socket.assigns.repo)
+        crons = present_crons(crons)
 
         socket
         |> assign(:view_mode, :card)
@@ -83,9 +86,10 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
         |> assign(:crons, crons)
 
       :list ->
-        crons = Crons.list_crons(socket.assigns.repo, limit: @page_size + 1)
+        {:ok, crons} = Definitions.list_crons(socket.assigns.repo, limit: @page_size + 1)
+        crons = present_crons(crons)
         {crons, has_more} = LiveHelpers.paginate_results(crons, @page_size)
-        cursor = if crons != [], do: List.last(crons).flow_slug, else: nil
+        cursor = if crons != [], do: List.last(crons).cron.flow_slug, else: nil
 
         socket
         |> assign(:view_mode, :list)
@@ -98,7 +102,7 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
   end
 
   defp refresh_crons(socket) do
-    total_count = Crons.count_crons(socket.assigns.repo)
+    {:ok, total_count} = Definitions.count_crons(socket.assigns.repo)
     new_view_mode = LiveHelpers.determine_view_mode(total_count, @card_threshold)
 
     if new_view_mode != socket.assigns.view_mode do
@@ -111,7 +115,8 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
   defp update_crons(socket, total_count) do
     case socket.assigns.view_mode do
       :card ->
-        crons = Crons.list_crons(socket.assigns.repo)
+        {:ok, crons} = Definitions.list_crons(socket.assigns.repo)
+        crons = present_crons(crons)
 
         socket
         |> assign(:total_count, total_count)
@@ -119,9 +124,10 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
 
       :list ->
         current_count = max(socket.assigns.crons_count, @page_size)
-        crons = Crons.list_crons(socket.assigns.repo, limit: current_count + 1)
+        {:ok, crons} = Definitions.list_crons(socket.assigns.repo, limit: current_count + 1)
+        crons = present_crons(crons)
         {crons, has_more} = LiveHelpers.paginate_results(crons, current_count)
-        cursor = if crons != [], do: List.last(crons).flow_slug, else: nil
+        cursor = if crons != [], do: List.last(crons).cron.flow_slug, else: nil
 
         socket
         |> assign(:total_count, total_count)
@@ -131,6 +137,8 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
         |> stream(:crons, crons, reset: true)
     end
   end
+
+  defp present_crons(crons), do: Enum.map(crons, &CronPresentation.present/1)
 
   @impl true
   def render(assigns) do
@@ -161,15 +169,15 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
           <p class="text-slate-500 dark:text-slate-400">No crons registered</p>
         </div>
       <% else %>
-        <%= for cron <- @crons do %>
+        <%= for %{cron: summary} = cron <- @crons do %>
           <.link
-            navigate={"#{@base_path}/crons/#{cron.flow_slug}"}
+            navigate={"#{@base_path}/crons/#{summary.flow_slug}"}
             class="block bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4 hover:border-amber-300 dark:hover:border-amber-600 transition-colors"
           >
             <div class="flex items-start justify-between mb-2">
-              <h3 class="text-lg font-semibold text-slate-900 dark:text-white">{cron.flow_slug}</h3>
+              <h3 class="text-lg font-semibold text-slate-900 dark:text-white">{summary.flow_slug}</h3>
               <div class="flex gap-1">
-                <TypeBadge.type_badge type={cron.flow_type} />
+                <TypeBadge.type_badge type={summary.flow_type} />
                 <TypeBadge.type_badge type="cron" />
               </div>
             </div>
@@ -179,34 +187,34 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
                 {cron.human_schedule || "Custom schedule"}
               </p>
               <p class="text-xs text-slate-500 dark:text-slate-400 font-mono">
-                ({cron.cron_expression || "—"})
+                ({summary.cron_expression || "—"})
               </p>
             </div>
 
             <div class="grid grid-cols-3 gap-2 text-center mb-3">
               <div class="bg-slate-50 dark:bg-slate-900 rounded p-2">
-                <p class="text-lg font-semibold text-slate-900 dark:text-white">{cron.total_runs_24h}</p>
+                <p class="text-lg font-semibold text-slate-900 dark:text-white">{summary.total_runs_24h}</p>
                 <p class="text-xs text-slate-500 dark:text-slate-400">runs</p>
               </div>
               <div class="bg-emerald-50 dark:bg-emerald-900/20 rounded p-2">
-                <p class="text-lg font-semibold text-emerald-600 dark:text-emerald-400">{LiveHelpers.format_percent(cron.success_rate_24h)}%</p>
+                <p class="text-lg font-semibold text-emerald-600 dark:text-emerald-400">{LiveHelpers.format_percent(summary.success_rate_24h)}%</p>
                 <p class="text-xs text-slate-500 dark:text-slate-400">success</p>
               </div>
               <div class="bg-slate-50 dark:bg-slate-900 rounded p-2">
-                <p class="text-lg font-semibold text-slate-900 dark:text-white">{LiveHelpers.format_duration(cron.avg_duration_ms)}</p>
+                <p class="text-lg font-semibold text-slate-900 dark:text-white">{LiveHelpers.format_duration(summary.avg_duration_ms)}</p>
                 <p class="text-xs text-slate-500 dark:text-slate-400">avg</p>
               </div>
             </div>
 
             <div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-              <span :if={cron.next_run_at}>
-                Next: {LiveHelpers.format_relative_time(cron.next_run_at)}
+              <span :if={summary.next_run_at}>
+                Next: {LiveHelpers.format_relative_time(summary.next_run_at)}
               </span>
-              <span :if={!cron.next_run_at}>
+              <span :if={!summary.next_run_at}>
                 Next: —
               </span>
-              <span :if={cron.is_active} class="text-emerald-600 dark:text-emerald-400">Active</span>
-              <span :if={!cron.is_active} class="text-slate-400 dark:text-slate-500">Inactive</span>
+              <span :if={summary.is_active} class="text-emerald-600 dark:text-emerald-400">Active</span>
+              <span :if={!summary.is_active} class="text-slate-400 dark:text-slate-500">Inactive</span>
             </div>
           </.link>
         <% end %>
@@ -253,19 +261,19 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
             </td>
           </tr>
           <tr
-            :for={{dom_id, cron} <- @streams.crons}
+            :for={{dom_id, %{cron: summary} = cron} <- @streams.crons}
             id={dom_id}
             class="hover:bg-slate-50 dark:hover:bg-slate-700/50"
           >
             <td class="px-4 py-3">
               <.link
-                navigate={"#{@base_path}/crons/#{cron.flow_slug}"}
+                navigate={"#{@base_path}/crons/#{summary.flow_slug}"}
                 class="flex items-center gap-2"
               >
                 <span class="text-sm font-medium text-amber-600 hover:text-amber-700 dark:text-amber-400">
-                  {cron.flow_slug}
+                  {summary.flow_slug}
                 </span>
-                <TypeBadge.type_badge type={cron.flow_type} />
+                <TypeBadge.type_badge type={summary.flow_type} />
                 <TypeBadge.type_badge type="cron" />
               </.link>
             </td>
@@ -274,31 +282,31 @@ defmodule PgFlowDashboard.Live.CronsLive.Index do
                 {cron.human_schedule || "Custom"}
               </div>
               <div class="text-xs text-slate-400 dark:text-slate-500 font-mono">
-                {cron.cron_expression}
+                {summary.cron_expression}
               </div>
             </td>
             <td class="px-4 py-3 text-sm text-slate-700 dark:text-slate-300">
-              {cron.total_runs_24h}
+              {summary.total_runs_24h}
             </td>
             <td class="px-4 py-3 text-sm text-emerald-600 dark:text-emerald-400">
-              {LiveHelpers.format_percent(cron.success_rate_24h)}%
+              {LiveHelpers.format_percent(summary.success_rate_24h)}%
             </td>
             <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
-              <%= if cron.next_run_at do %>
-                {LiveHelpers.format_relative_time(cron.next_run_at)}
+              <%= if summary.next_run_at do %>
+                {LiveHelpers.format_relative_time(summary.next_run_at)}
               <% else %>
                 —
               <% end %>
             </td>
             <td class="px-4 py-3">
               <span
-                :if={cron.is_active}
+                :if={summary.is_active}
                 class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400"
               >
                 Active
               </span>
               <span
-                :if={!cron.is_active}
+                :if={!summary.is_active}
                 class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400"
               >
                 Inactive

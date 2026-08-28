@@ -31,10 +31,15 @@ defmodule PgFlowDashboard do
         end
       end
 
-  2. Generate and run the dashboard migration:
+  2. Ensure the standard PgFlow migration has run:
 
-      mix pgflow_dashboard.gen.migration
+      mix pgflow.setup
       mix ecto.migrate
+
+  The dashboard reads the PgFlow schema through typed core APIs; it does not
+  require a separate dashboard migration. Historical `PgFlowDashboard.Migration`
+  views and functions may remain installed for compatibility with external SQL
+  consumers.
 
   ## Configuration Options
 

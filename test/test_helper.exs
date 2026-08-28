@@ -36,13 +36,11 @@ if db_available? do
     def down, do: PgFlow.HelpersMigration.down()
   end
 
-  # pgmq is pre-installed in the atlas-postgres-pgflow image as an extension;
-  # register it in the test DB once. On a bare Postgres image, replace this
-  # with the SQL-only pgmq install migration.
-  # (pg_cron is NOT registered — the atlas image's `cron.database_name` is
-  # `postgres`, not our test DB. Tests that need pg_cron are tagged
-  # separately and skipped when unavailable.)
+  # pgmq and pg_cron are pre-installed in the atlas-postgres-pgflow image;
+  # register them in the test DB once. The test compose configuration binds
+  # pg_cron's metadata to pgflow_test through cron.database_name.
   {:ok, _} = PgFlow.TestRepo.query("CREATE EXTENSION IF NOT EXISTS pgmq")
+  {:ok, _} = PgFlow.TestRepo.query("CREATE EXTENSION IF NOT EXISTS pg_cron")
 
   # Run pgflow migrations BEFORE creating the realtime stub — if our
   # vendored SQL accidentally acquires a migration-time dependency on

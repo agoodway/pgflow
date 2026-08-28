@@ -11,6 +11,14 @@ defmodule PgFlowDashboard.Components.RunHistoryGrid do
   @cell_gap 3
 
   @doc """
+  Groups run-history cells by step slug for grid rendering.
+  """
+  @spec group_cells([PgFlow.RunHistoryCell.t()]) :: %{
+          optional(String.t() | nil) => [PgFlow.RunHistoryCell.t()]
+        }
+  def group_cells(cells), do: Enum.group_by(cells, & &1.step_slug)
+
+  @doc """
   Renders a run history grid.
 
   ## Attributes

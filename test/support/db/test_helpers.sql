@@ -9,12 +9,20 @@ create or replace function pgflow_tests.reset_db() returns void as $$
 BEGIN
   -- Delete pgflow data
   DELETE FROM pgflow.step_tasks;
+  DELETE FROM pgflow.workers;
   DELETE FROM pgflow.step_states;
   DELETE FROM pgflow.runs;
   DELETE FROM pgflow.deps;
   DELETE FROM pgflow.steps;
   DELETE FROM pgflow.flows;
   DELETE FROM pgflow.worker_functions;
+
+  -- Remove PgFlow-owned schedules when pg_cron is available.
+  BEGIN
+    DELETE FROM cron.job WHERE jobname LIKE 'pgflow:%';
+  EXCEPTION WHEN undefined_table THEN
+    NULL;
+  END;
 
   -- Also clear the realtime.messages table if it exists
   BEGIN

@@ -7,9 +7,9 @@ defmodule PgFlowDashboard.Live.WorkersLive do
 
   use Phoenix.LiveView
 
+  alias PgFlow.Workers
   alias PgFlowDashboard.Components.{HealthBadge, Layouts, TypeBadge}
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries.Workers
 
   @page_size 50
 
@@ -62,8 +62,8 @@ defmodule PgFlowDashboard.Live.WorkersLive do
 
   @impl true
   def handle_event("load_more", _, socket) do
-    workers =
-      Workers.list_workers(socket.assigns.repo,
+    {:ok, workers} =
+      Workers.list(socket.assigns.repo,
         health_status: socket.assigns.health_filter,
         cursor: socket.assigns.cursor,
         limit: @page_size + 1
@@ -93,8 +93,8 @@ defmodule PgFlowDashboard.Live.WorkersLive do
     reset = Keyword.get(opts, :reset, false)
     health_filter = socket.assigns.health_filter
 
-    workers =
-      Workers.list_workers(socket.assigns.repo,
+    {:ok, workers} =
+      Workers.list(socket.assigns.repo,
         health_status: health_filter,
         limit: @page_size + 1
       )
@@ -107,7 +107,7 @@ defmodule PgFlowDashboard.Live.WorkersLive do
       end
 
     cursor = if workers != [], do: List.last(workers).worker_id, else: nil
-    total_count = Workers.count_workers(socket.assigns.repo, health_status: health_filter)
+    {:ok, total_count} = Workers.count(socket.assigns.repo, health_status: health_filter)
 
     socket
     |> stream(:workers, workers, reset: reset)
@@ -121,8 +121,8 @@ defmodule PgFlowDashboard.Live.WorkersLive do
     current_count = max(socket.assigns.workers_count, @page_size)
     health_filter = socket.assigns.health_filter
 
-    workers =
-      Workers.list_workers(socket.assigns.repo,
+    {:ok, workers} =
+      Workers.list(socket.assigns.repo,
         health_status: health_filter,
         limit: current_count + 1
       )
@@ -145,12 +145,17 @@ defmodule PgFlowDashboard.Live.WorkersLive do
 
   defp load_all_workers_summary(socket) do
     summary = %{
-      healthy: Workers.count_workers(socket.assigns.repo, health_status: "healthy"),
-      stale: Workers.count_workers(socket.assigns.repo, health_status: "stale"),
-      dead: Workers.count_workers(socket.assigns.repo, health_status: "dead")
+      healthy: worker_count(socket.assigns.repo, "healthy"),
+      stale: worker_count(socket.assigns.repo, "stale"),
+      dead: worker_count(socket.assigns.repo, "dead")
     }
 
     assign(socket, :summary, summary)
+  end
+
+  defp worker_count(repo, health_status) do
+    {:ok, count} = Workers.count(repo, health_status: health_status)
+    count
   end
 
   @impl true

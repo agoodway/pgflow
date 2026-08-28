@@ -5,6 +5,9 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
 
   use Phoenix.LiveView
 
+  alias PgFlow.{Definitions, Runs, RunSummary}
+  alias PgFlow.Schema.StepTask
+
   alias PgFlowDashboard.Components.{
     DependencyGraph,
     GanttTimeline,
@@ -15,7 +18,6 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   }
 
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries.{Flows, Runs}
 
   @impl true
   def mount(%{"id" => run_id}, session, socket) do
@@ -47,7 +49,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   @impl true
   def handle_params(%{"step" => step_slug}, _uri, socket) do
     # Pre-select step from query parameter (e.g., from run history grid click)
-    tasks = Runs.list_step_tasks(socket.assigns.repo, socket.assigns.run_id, step_slug)
+    {:ok, tasks} = Runs.list_step_tasks(socket.assigns.repo, socket.assigns.run_id, step_slug)
 
     socket =
       socket
@@ -195,7 +197,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   def handle_event("handle_keydown", _, socket), do: {:noreply, socket}
 
   defp navigate_to_adjacent_run(socket, direction) do
-    case Runs.get_adjacent_run(socket.assigns.repo, socket.assigns.run_id, direction) do
+    case Runs.adjacent(socket.assigns.repo, socket.assigns.run_id, direction) do
       {:ok, adjacent_run_id} ->
         push_navigate(socket, to: "#{socket.assigns.base_path}/runs/#{adjacent_run_id}")
 
@@ -229,7 +231,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   end
 
   defp select_step(socket, step_slug) do
-    tasks = Runs.list_step_tasks(socket.assigns.repo, socket.assigns.run_id, step_slug)
+    {:ok, tasks} = Runs.list_step_tasks(socket.assigns.repo, socket.assigns.run_id, step_slug)
 
     socket
     |> assign(:selected_step, step_slug)
@@ -247,30 +249,98 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   end
 
   defp load_run(socket) do
-    case Runs.get_run(socket.assigns.repo, socket.assigns.run_id) do
-      {:ok, run} -> assign(socket, :run, run)
-      {:error, _} -> assign(socket, :run, nil)
+    case Runs.get(socket.assigns.repo, socket.assigns.run_id) do
+      {:ok, run} ->
+        {:ok, states} = Runs.list_step_states(socket.assigns.repo, socket.assigns.run_id)
+        assign(socket, :run, summarize_run(socket.assigns.repo, run, states))
+
+      {:error, _} ->
+        assign(socket, :run, nil)
     end
   end
 
   defp load_step_states(socket) do
-    states = Runs.list_step_states(socket.assigns.repo, socket.assigns.run_id)
+    {:ok, states} = Runs.list_step_states(socket.assigns.repo, socket.assigns.run_id)
+    {:ok, tasks} = Runs.list_run_tasks(socket.assigns.repo, socket.assigns.run_id)
     state_map = Map.new(states, fn s -> {s.step_slug, s.status} end)
 
     socket
     |> assign(:step_states, states)
     |> assign(:step_state_map, state_map)
+    |> assign(:step_task_counts, step_task_counts_by_step(tasks))
+  end
+
+  defp step_task_counts_by_step(tasks) do
+    tasks
+    |> Enum.group_by(fn %StepTask{step_slug: step_slug} -> step_slug end)
+    |> Map.new(fn {step_slug, step_tasks} ->
+      {step_slug,
+       %{
+         total: length(step_tasks),
+         completed: Enum.count(step_tasks, &match?(%StepTask{status: "completed"}, &1)),
+         failed: Enum.count(step_tasks, &match?(%StepTask{status: "failed"}, &1))
+       }}
+    end)
   end
 
   defp load_flow_steps(socket) do
     if socket.assigns.run do
-      case Flows.get_flow_with_graph(socket.assigns.repo, socket.assigns.run.flow_slug) do
-        {:ok, flow} -> assign(socket, :flow_steps, flow.steps)
-        {:error, _} -> assign(socket, :flow_steps, [])
-      end
+      {:ok, steps} = Definitions.list_steps(socket.assigns.repo, socket.assigns.run.flow_slug)
+      {:ok, deps} = Definitions.list_deps(socket.assigns.repo, socket.assigns.run.flow_slug)
+
+      assign(socket, :flow_steps, DependencyGraph.with_dependencies(steps, deps))
     else
       assign(socket, :flow_steps, [])
     end
+  end
+
+  defp summarize_run(repo, run, states) do
+    total_steps = length(states)
+    completed_steps = Enum.count(states, &(&1.status == "completed"))
+    failed_steps = Enum.count(states, &(&1.status == "failed"))
+    skipped_steps = Enum.count(states, &(&1.status == "skipped"))
+    progress_steps = completed_steps + skipped_steps
+
+    RunSummary.new(%{
+      run_id: run.run_id,
+      flow_slug: run.flow_slug,
+      flow_type: definition_type(repo, run.flow_slug),
+      status: run.status,
+      input: run.input,
+      output: run.output,
+      started_at: run.started_at,
+      completed_at: run.completed_at,
+      duration_ms: duration_ms(run.started_at, run.completed_at || run.failed_at),
+      total_steps: total_steps,
+      completed_steps: completed_steps,
+      failed_steps: failed_steps,
+      skipped_steps: skipped_steps,
+      progress_percent: progress_percent(progress_steps, total_steps)
+    })
+  end
+
+  defp definition_type(repo, flow_slug) do
+    case Definitions.get_job(repo, flow_slug) do
+      {:ok, job} -> job.flow_type
+      {:error, :not_found} -> "flow"
+    end
+  end
+
+  defp duration_ms(nil, _finished_at), do: Decimal.new(0)
+
+  defp duration_ms(started_at, nil),
+    do: started_at |> DateTime.diff(DateTime.utc_now(), :millisecond) |> abs() |> Decimal.new()
+
+  defp duration_ms(started_at, finished_at),
+    do: finished_at |> DateTime.diff(started_at, :millisecond) |> max(0) |> Decimal.new()
+
+  defp progress_percent(_finished_steps, 0), do: Decimal.new(0)
+
+  defp progress_percent(finished_steps, total_steps) do
+    finished_steps
+    |> Decimal.new()
+    |> Decimal.div(Decimal.new(total_steps))
+    |> Decimal.mult(Decimal.new(100))
   end
 
   @impl true
@@ -348,6 +418,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
                 </div>
               <% else %>
                 <%= for state <- @step_states do %>
+                  <% task_counts = step_task_counts(@step_task_counts, state.step_slug) %>
                   <button
                     type="button"
                     id={"step-state-#{state.step_slug}"}
@@ -366,15 +437,15 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
                         <span class="text-sm font-medium text-slate-900 dark:text-white">{state.step_slug}</span>
                       </div>
                       <span class="text-xs text-slate-950 dark:text-white">
-                        {LiveHelpers.format_duration(state.duration_ms)}
+                        {LiveHelpers.format_duration(step_state_duration(state))}
                       </span>
                     </div>
                     <div :if={Map.get(state, :skip_reason)} class="mt-1 text-xs text-slate-950 dark:text-white">
                       Skip reason: {format_skip_reason(state.skip_reason)}
                     </div>
-                    <div :if={state.total_tasks > 0} class="mt-2 text-xs text-slate-950 dark:text-white">
-                      Tasks: {state.completed_tasks}/{state.total_tasks}
-                      <span :if={state.failed_tasks > 0} class="text-rose-900 dark:text-rose-100">({state.failed_tasks} failed)</span>
+                    <div :if={task_counts.total > 0} class="mt-2 text-xs text-slate-950 dark:text-white">
+                      Tasks: {task_counts.completed}/{task_counts.total}
+                      <span :if={task_counts.failed > 0} class="text-rose-900 dark:text-rose-100">({task_counts.failed} failed)</span>
                     </div>
                   </button>
                 <% end %>
@@ -421,7 +492,7 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
                   <.step_input_display
                     id={"step-input-#{@selected_step}"}
                     step_slug={@selected_step}
-                    step_states={@step_states}
+                    flow_steps={@flow_steps}
                     run={@run}
                   />
                 <% else %>
@@ -470,13 +541,13 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
   # Component to show step input (based on dependencies)
   attr(:id, :string, required: true)
   attr(:step_slug, :string, required: true)
-  attr(:step_states, :list, required: true)
+  attr(:flow_steps, :list, required: true)
   attr(:run, :map, required: true)
 
   defp step_input_display(assigns) do
     # Find the step's dependencies
-    step_state = Enum.find(assigns.step_states, fn s -> s.step_slug == assigns.step_slug end)
-    deps = if step_state, do: step_state[:deps] || [], else: []
+    step = Enum.find(assigns.flow_steps, fn step -> step.step_slug == assigns.step_slug end)
+    deps = if step, do: step.deps, else: []
 
     assigns = assign(assigns, :deps, deps)
 
@@ -505,4 +576,18 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
 
   defp format_skip_reason(reason),
     do: reason |> to_string() |> String.replace("_", " ") |> String.capitalize()
+
+  defp step_state_duration(state) do
+    Map.get_lazy(state, :duration_ms, fn ->
+      finished_at = state.completed_at || state.skipped_at || state.failed_at
+
+      if state.started_at do
+        duration_ms(state.started_at, finished_at)
+      end
+    end)
+  end
+
+  defp step_task_counts(task_counts, step_slug) do
+    Map.get(task_counts, step_slug, %{total: 0, completed: 0, failed: 0})
+  end
 end

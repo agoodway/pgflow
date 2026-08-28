@@ -4,7 +4,8 @@ defmodule Mix.Tasks.Pgflow.Setup do
   @moduledoc """
   Generates an Ecto migration in the consumer app that installs the pgflow
   schema by calling `PgFlow.Migration.up/0` and `PgFlow.HelpersMigration.up/0`
-  (and optionally `PgFlowDashboard.Migration.up/0`) in the correct order.
+  in the correct order. For historical SQL compatibility, it can optionally
+  call `PgFlowDashboard.Migration.up/0` as well.
 
   This mirrors `mix tango.setup` and `mix good_analytics.setup`. The output
   is a single wrapper migration, not per-statement migrations — SQL is
@@ -26,9 +27,10 @@ defmodule Mix.Tasks.Pgflow.Setup do
       helpers: worker registration, flow input/output queries). Default:
       helpers are installed.
 
-    * `--dashboard` - Also install `PgFlowDashboard.Migration` (dashboard
-      views). Default: skipped. Add this if you use the PgFlow LiveView
-      dashboard.
+    * `--dashboard` - Also install the historical `PgFlowDashboard.Migration`
+      views and functions for compatibility with external SQL consumers.
+      Default: skipped. The core-backed PgFlow LiveView dashboard does not
+      require this option.
 
   ## Prerequisites
 
@@ -162,7 +164,7 @@ defmodule Mix.Tasks.Pgflow.Setup do
       {helpers?,
        "  - priv/pgflow_helpers/sql/versions/v01/v01_up.sql    (Elixir-binding RPC helpers)"},
       {dashboard?,
-       "  - priv/pgflow_dashboard/sql/versions/v01/v01_up.sql  (LiveView dashboard views + functions)"}
+       "  - priv/pgflow_dashboard/sql/versions/v01/v01_up.sql  (historical dashboard views + functions)"}
     ]
     |> Enum.filter(fn {include?, _} -> include? end)
     |> Enum.map_join("\n  ", fn {_, line} -> line end)

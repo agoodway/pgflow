@@ -5,9 +5,9 @@ defmodule PgFlowDashboard.Live.FlowsLive.Show do
 
   use Phoenix.LiveView
 
+  alias PgFlow.{Definitions, Runs}
   alias PgFlowDashboard.Components.{DependencyGraph, Layouts, RunHistoryGrid}
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries.Flows
 
   @impl true
   def mount(%{"slug" => flow_slug}, session, socket) do
@@ -58,23 +58,31 @@ defmodule PgFlowDashboard.Live.FlowsLive.Show do
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_flow(socket) do
-    case Flows.get_flow_with_graph(socket.assigns.repo, socket.assigns.flow_slug) do
-      {:ok, flow} -> assign(socket, :flow, flow)
-      {:error, _} -> assign(socket, :flow, nil)
+    case Definitions.get_flow(socket.assigns.repo, socket.assigns.flow_slug) do
+      {:ok, flow} ->
+        {:ok, steps} = Definitions.list_steps(socket.assigns.repo, socket.assigns.flow_slug)
+        {:ok, deps} = Definitions.list_deps(socket.assigns.repo, socket.assigns.flow_slug)
+
+        socket
+        |> assign(:flow, flow)
+        |> assign(:flow_steps, DependencyGraph.with_dependencies(steps, deps))
+
+      {:error, _} ->
+        assign(socket, :flow, nil)
     end
   end
 
   defp load_run_history(socket) do
-    grid_data =
-      Flows.get_run_history_grid(
-        socket.assigns.repo,
-        socket.assigns.flow_slug,
+    {:ok, cells} =
+      Runs.history(socket.assigns.repo, socket.assigns.flow_slug,
         limit: socket.assigns.config[:max_grid_runs] || 50
       )
 
+    grid_data = RunHistoryGrid.group_cells(cells)
+
     step_slugs =
       if socket.assigns.flow do
-        Enum.map(socket.assigns.flow.steps, & &1.step_slug)
+        Enum.map(socket.assigns.flow_steps, & &1.step_slug)
       else
         Map.keys(grid_data)
       end
@@ -123,7 +131,7 @@ defmodule PgFlowDashboard.Live.FlowsLive.Show do
         <!-- Workflow -->
         <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4 mb-6">
           <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Workflow</h2>
-          <DependencyGraph.dependency_graph steps={@flow.steps} />
+          <DependencyGraph.dependency_graph steps={@flow_steps} />
         </div>
 
         <!-- Run History Grid -->

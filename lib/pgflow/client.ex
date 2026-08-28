@@ -20,11 +20,10 @@ defmodule PgFlow.Client do
 
   """
 
-  import Ecto.Query
-
   require Logger
 
   alias PgFlow.Queries.Flows
+  alias PgFlow.Runs
   alias PgFlow.Schema.Run
   alias PgFlow.Telemetry
 
@@ -196,29 +195,30 @@ defmodule PgFlow.Client do
   @doc """
   Gets a run by ID.
 
-  Returns `{:ok, run}` if found, or `{:error, :not_found}` if the run does not exist.
+  Returns `{:ok, run}` if found, `{:error, :not_found}` if the run does not
+  exist, or `{:error, :invalid_id}` if the ID is not a UUID.
 
   ## Examples
 
       {:ok, run} = PgFlow.Client.get_run(run_id)
       {:error, :not_found} = PgFlow.Client.get_run("00000000-0000-0000-0000-000000000000")
+      {:error, :invalid_id} = PgFlow.Client.get_run("not-a-uuid")
 
   """
-  @spec get_run(String.t()) :: {:ok, Run.t()} | {:error, :not_found} | {:error, term()}
+  @spec get_run(String.t()) ::
+          {:ok, Run.t()} | {:error, :invalid_id} | {:error, :not_found} | {:error, term()}
   def get_run(run_id) do
     with {:ok, repo} <- get_repo() do
-      case repo.get(Run, run_id) do
-        nil -> {:error, :not_found}
-        run -> {:ok, run}
-      end
+      Runs.get(repo, run_id)
     end
   end
 
   @doc """
   Gets a run with all step states preloaded.
 
-  Returns `{:ok, run}` with step_states association loaded, or `{:error, :not_found}`
-  if the run does not exist.
+  Returns `{:ok, run}` with the step-states association loaded,
+  `{:error, :not_found}` if the run does not exist, or
+  `{:error, :invalid_id}` if the ID is not a UUID.
 
   ## Examples
 
@@ -229,19 +229,10 @@ defmodule PgFlow.Client do
 
   """
   @spec get_run_with_states(String.t()) ::
-          {:ok, Run.t()} | {:error, :not_found} | {:error, term()}
+          {:ok, Run.t()} | {:error, :invalid_id} | {:error, :not_found} | {:error, term()}
   def get_run_with_states(run_id) do
     with {:ok, repo} <- get_repo() do
-      query =
-        from(r in Run,
-          where: r.run_id == ^run_id,
-          preload: [:step_states]
-        )
-
-      case repo.one(query) do
-        nil -> {:error, :not_found}
-        run -> {:ok, run}
-      end
+      Runs.get_with_states(repo, run_id)
     end
   end
 

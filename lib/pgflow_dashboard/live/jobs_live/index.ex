@@ -7,9 +7,9 @@ defmodule PgFlowDashboard.Live.JobsLive.Index do
 
   use Phoenix.LiveView
 
+  alias PgFlow.Definitions
   alias PgFlowDashboard.Components.{Layouts, TypeBadge}
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries.Jobs
 
   @card_threshold 12
   @page_size 50
@@ -36,8 +36,8 @@ defmodule PgFlowDashboard.Live.JobsLive.Index do
 
   @impl true
   def handle_event("load_more", _, socket) do
-    jobs =
-      Jobs.list_jobs(socket.assigns.repo,
+    {:ok, jobs} =
+      Definitions.list_jobs(socket.assigns.repo,
         cursor: socket.assigns.cursor,
         limit: @page_size + 1
       )
@@ -69,12 +69,12 @@ defmodule PgFlowDashboard.Live.JobsLive.Index do
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_jobs(socket) do
-    total_count = Jobs.count_jobs(socket.assigns.repo)
+    {:ok, total_count} = Definitions.count_jobs(socket.assigns.repo)
     view_mode = LiveHelpers.determine_view_mode(total_count, @card_threshold)
 
     case view_mode do
       :card ->
-        jobs = Jobs.list_jobs(socket.assigns.repo)
+        {:ok, jobs} = Definitions.list_jobs(socket.assigns.repo)
 
         socket
         |> assign(:view_mode, :card)
@@ -82,7 +82,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Index do
         |> assign(:jobs, jobs)
 
       :list ->
-        jobs = Jobs.list_jobs(socket.assigns.repo, limit: @page_size + 1)
+        {:ok, jobs} = Definitions.list_jobs(socket.assigns.repo, limit: @page_size + 1)
         {jobs, has_more} = LiveHelpers.paginate_results(jobs, @page_size)
         cursor = if jobs != [], do: List.last(jobs).flow_slug, else: nil
 
@@ -97,7 +97,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Index do
   end
 
   defp refresh_jobs(socket) do
-    total_count = Jobs.count_jobs(socket.assigns.repo)
+    {:ok, total_count} = Definitions.count_jobs(socket.assigns.repo)
     new_view_mode = LiveHelpers.determine_view_mode(total_count, @card_threshold)
 
     if new_view_mode != socket.assigns.view_mode do
@@ -110,7 +110,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Index do
   defp update_jobs(socket, total_count) do
     case socket.assigns.view_mode do
       :card ->
-        jobs = Jobs.list_jobs(socket.assigns.repo)
+        {:ok, jobs} = Definitions.list_jobs(socket.assigns.repo)
 
         socket
         |> assign(:total_count, total_count)
@@ -118,7 +118,7 @@ defmodule PgFlowDashboard.Live.JobsLive.Index do
 
       :list ->
         current_count = max(socket.assigns.jobs_count, @page_size)
-        jobs = Jobs.list_jobs(socket.assigns.repo, limit: current_count + 1)
+        {:ok, jobs} = Definitions.list_jobs(socket.assigns.repo, limit: current_count + 1)
         {jobs, has_more} = LiveHelpers.paginate_results(jobs, current_count)
         cursor = if jobs != [], do: List.last(jobs).flow_slug, else: nil
 

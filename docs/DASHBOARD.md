@@ -4,14 +4,16 @@ A Phoenix LiveView dashboard for monitoring PgFlow workflows, jobs, and cron sch
 
 ## Installation
 
-### 1. Generate the Migration
+### 1. Install PgFlow
+
+The dashboard reads the existing PgFlow schema through PgFlow's typed core APIs. For a new PgFlow installation, generate and run the standard PgFlow migration:
 
 ```bash
-mix pgflow_dashboard.gen.migration
+mix pgflow.setup
 mix ecto.migrate
 ```
 
-This installs the `pgflow_dashboard` PostgreSQL schema with read-only views and query functions.
+No separate dashboard database migration is required. The historical `PgFlowDashboard.Migration` and its `pgflow_dashboard` views and functions remain available for compatibility with external SQL consumers. Existing installations may leave those objects in place; the core-backed LiveView dashboard does not require them to be removed or upgraded.
 
 ### 2. Add to Supervision Tree
 
@@ -212,7 +214,7 @@ mix ecto.migrate
 
 ## Troubleshooting
 
-**No data showing** -- Verify the migration ran: `SELECT * FROM pgflow_dashboard.get_overview_metrics();`
+**No data showing** -- Verify the core PgFlow migrations ran and that `PgFlow.Metrics.overview(MyApp.Repo)` succeeds in an IEx session.
 
 **Real-time updates not working** -- Check that PubSub is configured and the `PgFlowDashboard` supervisor is running.
 

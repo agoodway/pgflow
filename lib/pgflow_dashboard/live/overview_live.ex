@@ -5,9 +5,10 @@ defmodule PgFlowDashboard.Live.OverviewLive do
 
   use Phoenix.LiveView
 
+  alias PgFlow.{Metrics, Runs, Workers}
+  alias PgFlowDashboard.Cache.MetricsCache
   alias PgFlowDashboard.Components.{HealthBadge, Layouts, MetricCard, StatusBadge, TypeBadge}
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries.{Metrics, Runs, Workers}
 
   @impl true
   def mount(_params, session, socket) do
@@ -63,17 +64,22 @@ defmodule PgFlowDashboard.Live.OverviewLive do
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_metrics(socket) do
-    metrics = Metrics.get_overview_metrics(socket.assigns.repo)
+    metrics =
+      MetricsCache.fetch(:overview_metrics, fn ->
+        {:ok, metrics} = Metrics.overview(socket.assigns.repo)
+        metrics
+      end)
+
     assign(socket, :metrics, metrics)
   end
 
   defp load_recent_runs(socket) do
-    runs = Runs.list_runs(socket.assigns.repo, limit: 15)
+    {:ok, runs} = Runs.list(socket.assigns.repo, limit: 15)
     assign(socket, :recent_runs, runs)
   end
 
   defp load_workers(socket) do
-    workers = Workers.list_workers(socket.assigns.repo, limit: 15)
+    {:ok, workers} = Workers.list(socket.assigns.repo, limit: 15)
     assign(socket, :workers, workers)
   end
 

@@ -10,34 +10,32 @@ defmodule PgFlow.Schema.Flow do
   @type t :: %__MODULE__{}
 
   @schema_prefix "pgflow"
-  @primary_key {:slug, :string, autogenerate: false}
+  @primary_key {:flow_slug, :string, autogenerate: false}
 
   schema "flows" do
     field(:opt_max_attempts, :integer)
     field(:opt_base_delay, :integer)
     field(:opt_timeout, :integer)
-    field(:opt_retry_backoff, :string)
+    field(:created_at, :utc_datetime_usec)
+    field(:flow_type, :string)
 
-    has_many(:steps, PgFlow.Schema.Step, foreign_key: :flow_slug, references: :slug)
-    has_many(:runs, PgFlow.Schema.Run, foreign_key: :flow_slug, references: :slug)
-
-    timestamps(type: :utc_datetime_usec)
+    has_many(:steps, PgFlow.Schema.Step, foreign_key: :flow_slug, references: :flow_slug)
+    has_many(:runs, PgFlow.Schema.Run, foreign_key: :flow_slug, references: :flow_slug)
   end
 
   @doc false
   def changeset(flow, attrs) do
     flow
-    |> cast(attrs, [:slug, :opt_max_attempts, :opt_base_delay, :opt_timeout, :opt_retry_backoff])
+    |> cast(attrs, [:flow_slug, :opt_max_attempts, :opt_base_delay, :opt_timeout, :flow_type])
     |> validate_required([
-      :slug,
+      :flow_slug,
       :opt_max_attempts,
       :opt_base_delay,
-      :opt_timeout,
-      :opt_retry_backoff
+      :opt_timeout
     ])
     |> validate_number(:opt_max_attempts, greater_than: 0)
     |> validate_number(:opt_base_delay, greater_than_or_equal_to: 0)
     |> validate_number(:opt_timeout, greater_than: 0)
-    |> validate_inclusion(:opt_retry_backoff, ["exponential", "linear", "constant"])
+    |> validate_inclusion(:flow_type, ["flow", "job"])
   end
 end

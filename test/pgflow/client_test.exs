@@ -124,6 +124,31 @@ defmodule PgFlow.ClientTest do
 
   # ── repo resolution ────────────────────────────────────────────────
 
+  describe "run reads" do
+    test "preserve the public run contracts and load list-valued state output" do
+      {:ok, run_id} = Client.start_flow(ClientTestFlow, %{"value" => 42})
+
+      TestRepo.query!(
+        """
+        UPDATE pgflow.step_states
+        SET status = 'completed', remaining_tasks = 0, started_at = created_at,
+            completed_at = created_at, output = '[1, 2, 3]'::jsonb
+        WHERE run_id = $1 AND step_slug = 'process'
+        """,
+        [Ecto.UUID.dump!(run_id)]
+      )
+
+      assert {:ok, %PgFlow.Schema.Run{run_id: ^run_id}} = Client.get_run(run_id)
+
+      assert {:ok, %PgFlow.Schema.Run{step_states: [state]}} =
+               Client.get_run_with_states(run_id)
+
+      assert state.output == [1, 2, 3]
+      assert {:error, :invalid_id} = Client.get_run("not-a-uuid")
+      assert {:error, :not_found} = Client.get_run(Ecto.UUID.generate())
+    end
+  end
+
   describe "repo resolution" do
     test "returns error when repo not configured" do
       :persistent_term.erase({PgFlow, :repo})

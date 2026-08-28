@@ -15,6 +15,18 @@ defmodule PgFlowDashboard.Components.DependencyGraph do
   @label_char_width 8
 
   @doc """
+  Adds each step's dependency slugs for dependency-graph rendering.
+  """
+  @spec with_dependencies([PgFlow.Schema.Step.t()], [PgFlow.Schema.Dep.t()]) :: [map()]
+  def with_dependencies(steps, deps) do
+    deps_by_step = Enum.group_by(deps, & &1.step_slug, & &1.dep_slug)
+
+    Enum.map(steps, fn step ->
+      %{step_slug: step.step_slug, deps: Map.get(deps_by_step, step.step_slug, [])}
+    end)
+  end
+
+  @doc """
   Renders a dependency graph for a flow.
 
   ## Attributes

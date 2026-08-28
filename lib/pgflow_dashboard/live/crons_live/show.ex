@@ -5,9 +5,9 @@ defmodule PgFlowDashboard.Live.CronsLive.Show do
 
   use Phoenix.LiveView
 
+  alias PgFlow.{Definitions, Runs}
   alias PgFlowDashboard.Components.{Layouts, RunHistoryHelpers, StatusBadge}
-  alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries.{Crons, Runs}
+  alias PgFlowDashboard.Live.{CronPresentation, LiveHelpers}
 
   @page_size 20
 
@@ -62,17 +62,15 @@ defmodule PgFlowDashboard.Live.CronsLive.Show do
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_cron(socket) do
-    case Crons.get_cron(socket.assigns.repo, socket.assigns.cron_slug) do
-      {:ok, cron} -> assign(socket, :cron, cron)
+    case Definitions.get_cron(socket.assigns.repo, socket.assigns.cron_slug) do
+      {:ok, cron} -> assign(socket, :cron, CronPresentation.present(cron))
       {:error, _} -> assign(socket, :cron, nil)
     end
   end
 
   defp load_run_history(socket) do
-    grid_cells =
-      Crons.get_run_history_grid(
-        socket.assigns.repo,
-        socket.assigns.cron_slug,
+    {:ok, grid_cells} =
+      Runs.history(socket.assigns.repo, socket.assigns.cron_slug,
         limit: socket.assigns.config[:max_grid_runs] || 50
       )
 
@@ -80,8 +78,8 @@ defmodule PgFlowDashboard.Live.CronsLive.Show do
   end
 
   defp load_recent_runs(socket) do
-    runs =
-      Runs.list_runs(socket.assigns.repo,
+    {:ok, runs} =
+      Runs.list(socket.assigns.repo,
         flow_slug: socket.assigns.cron_slug,
         limit: @page_size + 1
       )
@@ -112,25 +110,25 @@ defmodule PgFlowDashboard.Live.CronsLive.Show do
             ← Back to crons
           </.link>
           <div class="flex items-center gap-3">
-            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">{@cron.flow_slug}</h1>
+            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">{@cron.cron.flow_slug}</h1>
             <span class={[
               "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
-              @cron.flow_type == "job" && "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400",
-              @cron.flow_type == "flow" && "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400"
+              @cron.cron.flow_type == "job" && "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400",
+              @cron.cron.flow_type == "flow" && "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400"
             ]}>
-              {@cron.flow_type}
+              {@cron.cron.flow_type}
             </span>
             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
               cron
             </span>
             <span
-              :if={@cron.is_active}
+              :if={@cron.cron.is_active}
               class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400"
             >
               Active
             </span>
             <span
-              :if={!@cron.is_active}
+              :if={!@cron.cron.is_active}
               class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400"
             >
               Inactive
@@ -140,12 +138,12 @@ defmodule PgFlowDashboard.Live.CronsLive.Show do
             <p class="text-sm text-slate-700 dark:text-slate-300">
               {@cron.human_schedule || "Custom schedule"}
               <span class="text-slate-400 dark:text-slate-500 font-mono text-xs ml-2">
-                ({@cron.cron_expression || "—"})
+                ({@cron.cron.cron_expression || "—"})
               </span>
             </p>
           </div>
           <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Max {@cron.opt_max_attempts} attempts · {@cron.opt_timeout}s timeout
+            Max {@cron.cron.opt_max_attempts} attempts · {@cron.cron.opt_timeout}s timeout
           </p>
         </div>
 
@@ -154,29 +152,29 @@ defmodule PgFlowDashboard.Live.CronsLive.Show do
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
             <p class="text-sm text-slate-500 dark:text-slate-400">Next Run</p>
             <p class="text-lg font-semibold text-amber-600 dark:text-amber-400">
-              {LiveHelpers.format_relative_time(@cron.next_run_at)}
+              {LiveHelpers.format_relative_time(@cron.cron.next_run_at)}
             </p>
           </div>
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
             <p class="text-sm text-slate-500 dark:text-slate-400">Runs (24h)</p>
-            <p class="text-2xl font-semibold text-slate-900 dark:text-white">{@cron.total_runs_24h}</p>
+            <p class="text-2xl font-semibold text-slate-900 dark:text-white">{@cron.cron.total_runs_24h}</p>
           </div>
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
             <p class="text-sm text-slate-500 dark:text-slate-400">Success Rate</p>
             <p class="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">
-              {LiveHelpers.format_percent(@cron.success_rate_24h)}%
+              {LiveHelpers.format_percent(@cron.cron.success_rate_24h)}%
             </p>
           </div>
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
             <p class="text-sm text-slate-500 dark:text-slate-400">Avg Duration</p>
             <p class="text-2xl font-semibold text-slate-900 dark:text-white">
-              {LiveHelpers.format_duration(@cron.avg_duration_ms)}
+              {LiveHelpers.format_duration(@cron.cron.avg_duration_ms)}
             </p>
           </div>
           <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
             <p class="text-sm text-slate-500 dark:text-slate-400">P95 Duration</p>
             <p class="text-2xl font-semibold text-slate-900 dark:text-white">
-              {LiveHelpers.format_duration(@cron.p95_duration_ms)}
+              {LiveHelpers.format_duration(@cron.cron.p95_duration_ms)}
             </p>
           </div>
         </div>

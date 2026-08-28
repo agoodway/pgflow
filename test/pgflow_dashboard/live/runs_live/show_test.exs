@@ -3,6 +3,7 @@ defmodule PgFlowDashboard.Live.RunsLive.ShowTest do
 
   import Phoenix.LiveViewTest
 
+  alias PgFlow.Schema.StepState
   alias PgFlowDashboard.Live.RunsLive.Show
 
   @run_start ~U[2026-08-17 09:57:35.000000Z]
@@ -71,6 +72,48 @@ defmodule PgFlowDashboard.Live.RunsLive.ShowTest do
     refute html =~ ~s(id="run-output-json-code")
   end
 
+  test "renders exact completed and failed task counts" do
+    state = %StepState{
+      step_slug: "fanout",
+      status: "failed",
+      initial_tasks: 2,
+      remaining_tasks: 0,
+      started_at: @run_start,
+      failed_at: @run_end
+    }
+
+    html =
+      render_show(
+        step_states: [state],
+        step_state_map: %{"fanout" => "failed"},
+        flow_steps: [%{step_slug: "fanout", deps: []}],
+        step_task_counts: %{"fanout" => %{total: 2, completed: 1, failed: 1}}
+      )
+
+    assert html =~ "Tasks: 1/2"
+    assert html =~ "(1 failed)"
+    refute html =~ "Tasks: 2/2"
+  end
+
+  test "omits task counts for an unresolved map step without persisted tasks" do
+    state = %StepState{
+      step_slug: "fanout",
+      status: "created",
+      initial_tasks: nil,
+      remaining_tasks: 1
+    }
+
+    html =
+      render_show(
+        step_states: [state],
+        step_state_map: %{"fanout" => "created"},
+        flow_steps: [%{step_slug: "fanout", deps: []}],
+        step_task_counts: %{}
+      )
+
+    refute html =~ "Tasks:"
+  end
+
   defp render_show(overrides \\ []) do
     assigns =
       Keyword.merge(
@@ -82,6 +125,9 @@ defmodule PgFlowDashboard.Live.RunsLive.ShowTest do
           step_tasks: [],
           step_states: [@skipped_state],
           step_state_map: %{"send_welcome" => "skipped"},
+          step_task_counts: %{
+            "send_welcome" => %{total: 1, completed: 0, failed: 1}
+          },
           flow_steps: [%{step_slug: "send_welcome", deps: ["create_account"]}]
         ],
         overrides

@@ -5,9 +5,9 @@ defmodule PgFlowDashboard.Live.WorkersLive.Show do
 
   use Phoenix.LiveView
 
+  alias PgFlow.Workers
   alias PgFlowDashboard.Components.{HealthBadge, Layouts, StatusBadge}
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries.Workers
 
   @impl true
   def mount(%{"id" => worker_id}, session, socket) do
@@ -58,7 +58,7 @@ defmodule PgFlowDashboard.Live.WorkersLive.Show do
   def handle_event("handle_keydown", _, socket), do: {:noreply, socket}
 
   defp navigate_to_adjacent_worker(socket, direction) do
-    case Workers.get_adjacent_worker(socket.assigns.repo, socket.assigns.worker_id, direction) do
+    case Workers.adjacent(socket.assigns.repo, socket.assigns.worker_id, direction) do
       {:ok, adjacent_worker_id} ->
         push_navigate(socket, to: "#{socket.assigns.base_path}/workers/#{adjacent_worker_id}")
 
@@ -68,7 +68,7 @@ defmodule PgFlowDashboard.Live.WorkersLive.Show do
   end
 
   defp load_worker(socket) do
-    case Workers.get_worker(socket.assigns.repo, socket.assigns.worker_id) do
+    case Workers.get(socket.assigns.repo, socket.assigns.worker_id) do
       {:ok, worker} -> assign(socket, :worker, worker)
       {:error, _} -> assign(socket, :worker, nil)
     end
@@ -76,7 +76,7 @@ defmodule PgFlowDashboard.Live.WorkersLive.Show do
 
   defp load_worker_tasks(socket) do
     if socket.assigns.worker do
-      tasks = Workers.list_worker_tasks(socket.assigns.repo, socket.assigns.worker_id, limit: 50)
+      {:ok, tasks} = Workers.list_tasks(socket.assigns.repo, socket.assigns.worker_id, limit: 50)
       assign(socket, :tasks, tasks)
     else
       assign(socket, :tasks, [])

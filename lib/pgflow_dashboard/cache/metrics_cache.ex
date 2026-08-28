@@ -34,7 +34,7 @@ defmodule PgFlowDashboard.Cache.MetricsCache do
 
   ## Examples
 
-      MetricsCache.fetch(:overview_metrics, fn -> Queries.get_overview_metrics(repo) end)
+      MetricsCache.fetch(:overview_metrics, fn -> PgFlow.Metrics.overview(repo) end)
 
   """
   @spec fetch(term(), (-> term()), keyword()) :: term()

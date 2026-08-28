@@ -23,6 +23,8 @@ mix deps.get
 #    `pgflow.setup --dashboard` writes a single consumer migration that
 #    calls `PgFlow.Migration.up/0`, `PgFlow.HelpersMigration.up/0`, and
 #    `PgFlowDashboard.Migration.up/0` — SQL is vendored inside pgflow.
+#    The demo retains the historical dashboard schema for compatibility
+#    coverage; the core-backed LiveView dashboard does not require it.
 #
 #    On Postgres environments that already ship pgmq as an extension
 #    (Supabase, the bundled atlas-postgres-pgflow test image), the

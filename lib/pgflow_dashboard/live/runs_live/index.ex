@@ -7,11 +7,10 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
 
   use Phoenix.LiveView
 
-  alias LiveFilter.{Pagination, Params.Serializer, QueryBuilder}
+  alias LiveFilter.{Filter, Pagination, Params.Serializer}
+  alias PgFlow.{Definitions, Runs}
   alias PgFlowDashboard.Components.{Layouts, ProgressBar, StatusBadge, TypeBadge}
   alias PgFlowDashboard.Live.LiveHelpers
-  alias PgFlowDashboard.Queries.{Crons, Flows, Jobs}
-  alias PgFlowDashboard.Schemas.Run
 
   defp filter_config(socket) do
     [
@@ -155,9 +154,9 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
   def handle_info(_, socket), do: {:noreply, socket}
 
   defp load_flows_and_jobs(socket) do
-    flows = Flows.list_flows(socket.assigns.repo)
-    jobs = Jobs.list_jobs(socket.assigns.repo)
-    crons = Crons.list_crons(socket.assigns.repo)
+    {:ok, flows} = Definitions.list_flows(socket.assigns.repo)
+    {:ok, jobs} = Definitions.list_jobs(socket.assigns.repo)
+    {:ok, crons} = Definitions.list_crons(socket.assigns.repo)
 
     socket
     |> assign(:flows, flows)
@@ -166,22 +165,16 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
   end
 
   defp load_runs(%{assigns: %{pagination: pagination, livefilter: %{filters: filters}}} = socket) do
-    import Ecto.Query
+    query_opts = operational_filters(filters)
+    {:ok, total_count} = Runs.count(socket.assigns.repo, query_opts)
 
-    base_query =
-      Run
-      |> QueryBuilder.apply(filters,
-        schema: Run,
-        allowed_fields: [:flow_type, :flow_slug, :status, :started_at]
+    {:ok, runs} =
+      Runs.list(
+        socket.assigns.repo,
+        Keyword.put(query_opts, :limit, pagination.offset + pagination.limit)
       )
-      |> order_by([r], desc: r.started_at)
 
-    total_count = QueryBuilder.count(base_query, socket.assigns.repo)
-
-    runs =
-      base_query
-      |> QueryBuilder.apply_pagination(pagination)
-      |> socket.assigns.repo.all()
+    runs = Enum.drop(runs, pagination.offset)
 
     pagination = Pagination.with_total(pagination, total_count)
 
@@ -192,6 +185,40 @@ defmodule PgFlowDashboard.Live.RunsLive.Index do
 
   # Fallback when socket not yet initialized (PubSub messages before handle_params)
   defp load_runs(socket), do: socket
+
+  @doc """
+  Converts active LiveFilter values into options accepted by `PgFlow.Runs`.
+
+  Started-at ranges may include either or both endpoints.
+  """
+  @spec operational_filters([Filter.t()]) :: keyword()
+  def operational_filters(filters) do
+    Enum.reduce(filters, [], fn
+      %Filter{field: field, value: value}, opts when field in [:flow_type, :flow_slug, :status] ->
+        Keyword.put(opts, field, value)
+
+      %Filter{field: :started_at, value: {started_after, started_before}}, opts ->
+        opts
+        |> put_datetime_filter(:started_after, started_after)
+        |> put_datetime_filter(:started_before, started_before)
+
+      _filter, opts ->
+        opts
+    end)
+  end
+
+  defp put_datetime_filter(opts, _field, nil), do: opts
+
+  defp put_datetime_filter(opts, field, value) do
+    Keyword.put(opts, field, parse_datetime!(value))
+  end
+
+  defp parse_datetime!(%DateTime{} = value), do: value
+
+  defp parse_datetime!(value) when is_binary(value) do
+    {:ok, datetime, _offset} = DateTime.from_iso8601(value)
+    datetime
+  end
 
   defp missing_date_filter?(params) do
     has_legacy_range =
