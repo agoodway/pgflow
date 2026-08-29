@@ -17,7 +17,7 @@ defmodule PgFlow.Definitions do
   alias Crontab.Scheduler, as: CronScheduler
   alias Ecto.Adapters.SQL
   alias PgFlow.{CronSummary, DefinitionSummary}
-  alias PgFlow.Queries.Helpers
+  alias PgFlow.Queries.{Flows, Helpers}
   alias PgFlow.Schema.{Dep, Flow, Run, Step}
 
   @default_limit 50
@@ -179,6 +179,54 @@ defmodule PgFlow.Definitions do
            []
          ) do
       {:ok, %{rows: [[count]]}} -> {:ok, count}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Unschedules the pg_cron entry for a PgFlow definition.
+
+  An absent schedule is a successful no-op, and a dangling `pgflow:<slug>`
+  schedule whose stored flow definition is missing is also removed.
+
+  Schedule ownership is preserved: only entries owned by the current database
+  role are removed, including when the caller is a superuser. When a
+  `pgflow:<slug>` schedule remains visible under another role afterwards, the
+  schedule keeps firing and `{:error, :not_owned}` is returned. Row-level
+  security on `cron.job` hides other roles' schedules from regular roles, so
+  only callers that can see the surviving entry (such as superusers) receive
+  the error.
+  """
+  @spec unschedule(module(), String.t() | atom()) ::
+          :ok | {:error, :invalid_flow_slug | :not_owned | term()}
+  def unschedule(repo, flow_slug) do
+    with {:ok, flow_slug} <- Helpers.cast_flow_slug(flow_slug),
+         :ok <- Flows.validate_slug(repo, flow_slug),
+         job_name = "pgflow:#{flow_slug}",
+         {:ok, _result} <-
+           SQL.query(
+             repo,
+             """
+             SELECT cron.unschedule(jobid)
+             FROM cron.job
+             WHERE jobname = $1 AND username = CURRENT_USER
+             """,
+             [job_name]
+           ) do
+      ensure_no_foreign_schedule(repo, job_name)
+    end
+  rescue
+    error in [Postgrex.Error, DBConnection.ConnectionError] -> {:error, error}
+  end
+
+  defp ensure_no_foreign_schedule(repo, job_name) do
+    case SQL.query(
+           repo,
+           "SELECT EXISTS(SELECT 1 FROM cron.job WHERE jobname = $1)",
+           [job_name]
+         ) do
+      {:ok, %{rows: [[false]]}} -> :ok
+      {:ok, %{rows: [[true]]}} -> {:error, :not_owned}
       {:error, reason} -> {:error, reason}
     end
   end

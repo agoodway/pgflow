@@ -16,6 +16,8 @@ defmodule PgFlow.Runs do
 
   @default_limit 50
 
+  @type queue_location :: :all | :live | :archive
+
   @doc """
   Gets a persisted run by UUID.
   """
@@ -228,6 +230,44 @@ defmodule PgFlow.Runs do
   end
 
   @doc """
+  Counts durable PGMQ messages belonging to one or more run UUIDs.
+
+  The count reads each message's embedded `run_id`, so it includes orphaned
+  queue messages whose relational lifecycle rows no longer exist. The
+  `:location` option accepts `:all` (the default), `:live`, or `:archive`.
+  Missing queues and an empty run-ID list both return `{:ok, 0}`.
+
+  The JSON payload predicate is diagnostic-oriented and requires an O(queue
+  size) scan unless the consumer adds matching expression indexes to its PGMQ
+  queue tables.
+  """
+  @spec count_queue_messages(
+          module(),
+          String.t() | atom(),
+          Ecto.UUID.t() | [Ecto.UUID.t()],
+          keyword()
+        ) ::
+          {:ok, non_neg_integer()}
+          | {:error, :invalid_id | :invalid_flow_slug | :invalid_location | term()}
+  def count_queue_messages(repo, flow_slug, run_ids, opts \\ []) do
+    database_result(fn ->
+      with {:ok, flow_slug} <- Helpers.cast_flow_slug(flow_slug),
+           {:ok, run_ids} <- normalize_run_ids(run_ids),
+           {:ok, prefixes} <- queue_prefixes(Keyword.get(opts, :location, :all)) do
+        count_queue_messages_for_ids(repo, prefixes, flow_slug, run_ids)
+      end
+    end)
+  end
+
+  defp count_queue_messages_for_ids(_repo, _prefixes, _flow_slug, []), do: {:ok, 0}
+
+  defp count_queue_messages_for_ids(repo, prefixes, flow_slug, run_ids) do
+    with :ok <- Flows.validate_slug(repo, flow_slug) do
+      count_messages_in_queues(repo, prefixes, flow_slug, run_ids)
+    end
+  end
+
+  @doc """
   Makes every queued task for a run immediately visible to workers.
 
   Visibility is scoped by the exact run UUID embedded in the PGMQ payload so
@@ -278,7 +318,7 @@ defmodule PgFlow.Runs do
   end
 
   defp make_run_available(repo, %Run{flow_slug: flow_slug, run_id: run_id}) do
-    with :ok <- validate_flow_slug(repo, flow_slug),
+    with :ok <- Flows.validate_slug(repo, flow_slug),
          {:ok, queue_table} <- existing_queue_table(repo, "q", flow_slug) do
       update_queue_visibility(repo, queue_table, run_id)
     end
@@ -311,18 +351,10 @@ defmodule PgFlow.Runs do
   end
 
   defp delete_locked_run(repo, %Run{flow_slug: flow_slug, run_id: run_id}) do
-    with :ok <- validate_flow_slug(repo, flow_slug),
+    with :ok <- Flows.validate_slug(repo, flow_slug),
          :ok <- delete_queue_messages(repo, "q", flow_slug, run_id),
          :ok <- delete_queue_messages(repo, "a", flow_slug, run_id) do
       delete_relational_rows(repo, run_id)
-    end
-  end
-
-  defp validate_flow_slug(repo, flow_slug) do
-    case Flows.valid_slug?(repo, flow_slug) do
-      {:ok, true} -> :ok
-      {:ok, false} -> {:error, :invalid_flow_slug}
-      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -344,6 +376,70 @@ defmodule PgFlow.Runs do
     case SQL.query(repo, "SELECT to_regclass($1::text) IS NOT NULL", [queue_table]) do
       {:ok, %{rows: [[true]]}} -> {:ok, queue_table}
       {:ok, %{rows: [[false]]}} -> {:ok, nil}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_run_ids(run_ids) when is_list(run_ids) do
+    run_ids
+    |> Enum.reduce_while({:ok, []}, fn run_id, {:ok, cast_ids} ->
+      case Helpers.cast_uuid(run_id) do
+        {:ok, cast_id} -> {:cont, {:ok, [cast_id | cast_ids]}}
+        {:error, :invalid_id} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, cast_ids} -> {:ok, cast_ids |> Enum.uniq() |> Enum.reverse()}
+      {:error, :invalid_id} = error -> error
+    end
+  end
+
+  defp normalize_run_ids(run_id) do
+    case Helpers.cast_uuid(run_id) do
+      {:ok, cast_id} -> {:ok, [cast_id]}
+      {:error, :invalid_id} = error -> error
+    end
+  end
+
+  defp queue_prefixes(:all), do: {:ok, ["q", "a"]}
+  defp queue_prefixes(:live), do: {:ok, ["q"]}
+  defp queue_prefixes(:archive), do: {:ok, ["a"]}
+  defp queue_prefixes(_location), do: {:error, :invalid_location}
+
+  defp count_messages_in_queues(repo, prefixes, flow_slug, run_ids) do
+    with {:ok, queue_tables} <- existing_queue_tables(repo, prefixes, flow_slug) do
+      count_messages_in_tables(repo, queue_tables, run_ids)
+    end
+  end
+
+  defp existing_queue_tables(repo, prefixes, flow_slug) do
+    Enum.reduce_while(prefixes, {:ok, []}, fn prefix, {:ok, queue_tables} ->
+      case existing_queue_table(repo, prefix, flow_slug) do
+        {:ok, nil} -> {:cont, {:ok, queue_tables}}
+        {:ok, queue_table} -> {:cont, {:ok, [queue_table | queue_tables]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, queue_tables} -> {:ok, Enum.reverse(queue_tables)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp count_messages_in_tables(_repo, [], _run_ids), do: {:ok, 0}
+
+  defp count_messages_in_tables(repo, queue_tables, run_ids) do
+    messages_sql =
+      Enum.map_join(queue_tables, " UNION ALL ", fn queue_table ->
+        "SELECT message FROM #{queue_table}"
+      end)
+
+    case SQL.query(
+           repo,
+           "SELECT count(*) FROM (#{messages_sql}) AS messages WHERE message->>'run_id' = ANY($1::text[])",
+           [run_ids]
+         ) do
+      {:ok, %{rows: [[count]]}} -> {:ok, count}
       {:error, reason} -> {:error, reason}
     end
   end

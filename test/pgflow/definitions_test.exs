@@ -292,6 +292,78 @@ defmodule PgFlow.DefinitionsTest do
     end
   end
 
+  describe "unschedule/2" do
+    test "unschedules present definitions and is idempotent when the schedule is absent" do
+      create_flow("definitions_test_unschedule")
+      schedule_cron("definitions_test_unschedule", "0 * * * *")
+
+      assert :ok = Definitions.unschedule(TestRepo, "definitions_test_unschedule")
+      assert {:error, :not_found} = Definitions.get_cron(TestRepo, "definitions_test_unschedule")
+      assert :ok = Definitions.unschedule(TestRepo, "definitions_test_unschedule")
+    end
+
+    test "unschedules a dangling PgFlow schedule without requiring a stored definition" do
+      schedule_cron("definitions_test_dangling", "0 * * * *")
+
+      assert :ok = Definitions.unschedule(TestRepo, "definitions_test_dangling")
+
+      assert %{rows: [[0]]} =
+               TestRepo.query!("SELECT count(*) FROM cron.job WHERE jobname = $1", [
+                 "pgflow:definitions_test_dangling"
+               ])
+    end
+
+    test "reports another role's surviving same-named job to a superuser as :not_owned" do
+      role = "definitions_test_cron_owner_#{System.unique_integer([:positive])}"
+      job_name = "pgflow:definitions_test_owned_schedule"
+
+      TestRepo.query!("CREATE ROLE #{role}")
+      TestRepo.query!("GRANT USAGE ON SCHEMA cron TO #{role}")
+
+      try do
+        TestRepo.transaction(fn ->
+          TestRepo.query!("SET LOCAL ROLE #{role}")
+          TestRepo.query!("SELECT cron.schedule($1, $2, 'SELECT 1')", [job_name, "0 * * * *"])
+          TestRepo.query!("RESET ROLE")
+          schedule_cron("definitions_test_owned_schedule", "0 * * * *")
+
+          assert {:error, :not_owned} =
+                   Definitions.unschedule(TestRepo, "definitions_test_owned_schedule")
+
+          assert %{rows: [[^role]]} =
+                   TestRepo.query!("SELECT username FROM cron.job WHERE jobname = $1", [job_name])
+
+          TestRepo.query!("SET LOCAL ROLE #{role}")
+          TestRepo.query!("SELECT cron.unschedule($1::text)", [job_name])
+          TestRepo.query!("RESET ROLE")
+        end)
+      after
+        TestRepo.query!("REVOKE USAGE ON SCHEMA cron FROM #{role}")
+        TestRepo.query!("DROP ROLE #{role}")
+      end
+
+      assert %{rows: [[0]]} =
+               TestRepo.query!("SELECT count(*) FROM cron.job WHERE jobname = $1", [job_name])
+
+      assert %{rows: [[false]]} =
+               TestRepo.query!("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)", [role])
+    end
+
+    test "rejects invalid slugs and returns tagged database errors" do
+      assert {:error, :invalid_flow_slug} = Definitions.unschedule(TestRepo, "invalid-slug")
+      assert {:error, :invalid_flow_slug} = Definitions.unschedule(TestRepo, 123)
+
+      TestRepo.query!("ALTER TABLE cron.job RENAME TO job_unavailable")
+
+      try do
+        assert {:error, %Postgrex.Error{}} =
+                 Definitions.unschedule(TestRepo, "definitions_test_database_error")
+      after
+        TestRepo.query!("ALTER TABLE cron.job_unavailable RENAME TO job")
+      end
+    end
+  end
+
   defp schedule_cron(flow_slug, schedule, opts \\ []) do
     job_name = "pgflow:#{flow_slug}"
 

@@ -26,11 +26,13 @@ defmodule PgFlow.JobCompiler do
   Compiles a job definition into a list of SQL statements.
 
   Returns the same SQL as `FlowCompiler.compile/1` plus an additional UPDATE
-  to mark the flow as a job in the database.
+  to mark the flow as a job in the database. Pass `include_cron?: false` to
+  omit compiler-generated pg_cron scheduling SQL while retaining the job type
+  update.
   """
-  @spec compile(Definition.t()) :: [String.t()]
-  def compile(%Definition{} = definition) do
-    base_sql = FlowCompiler.compile(definition)
+  @spec compile(Definition.t(), keyword()) :: [String.t()]
+  def compile(%Definition{} = definition, opts \\ []) do
+    base_sql = FlowCompiler.compile(definition, opts)
     flow_slug = Atom.to_string(definition.slug)
 
     update_sql =

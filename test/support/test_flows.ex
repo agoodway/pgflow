@@ -18,6 +18,19 @@ defmodule PgFlow.TestFlows do
     end
   end
 
+  defmodule ScheduledFlow do
+    @moduledoc """
+    A cron-scheduled flow for testing migration generation.
+    """
+    use PgFlow.Flow
+
+    @flow slug: :scheduled_flow, cron: [schedule: "0 * * * *"]
+
+    step :process do
+      fn input, _ctx -> input end
+    end
+  end
+
   defmodule LinearFlow do
     @moduledoc """
     A linear A -> B -> C flow for testing dependencies.
@@ -317,6 +330,19 @@ defmodule PgFlow.TestJobs do
       fn input, _ctx ->
         %{result: input["value"] * 2}
       end
+    end
+  end
+
+  defmodule ScheduledJob do
+    @moduledoc """
+    A cron-scheduled job for testing migration generation.
+    """
+    use PgFlow.Job
+
+    @job slug: :scheduled_job, cron: [schedule: "0 * * * *"]
+
+    perform do
+      fn input, _ctx -> input end
     end
   end
 

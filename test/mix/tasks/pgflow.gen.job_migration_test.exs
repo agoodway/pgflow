@@ -145,5 +145,21 @@ defmodule Mix.Tasks.Pgflow.Gen.JobMigrationTest do
       {result, _} = Code.eval_file(migration_path)
       assert match?({:module, PgFlow.Repo.Migrations.CompileSimpleJob, _, _}, result)
     end
+
+    test "generates an absent-safe owner-scoped cron down migration" do
+      capture_io(fn ->
+        GenJob.run([
+          "PgFlow.TestJobs.ScheduledJob",
+          "--migrations-path",
+          @test_migrations_path
+        ])
+      end)
+
+      [migration_file] = File.ls!(@test_migrations_path)
+      migration_content = File.read!(Path.join(@test_migrations_path, migration_file))
+
+      assert migration_content =~
+               "SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'pgflow:scheduled_job' AND username = CURRENT_USER"
+    end
   end
 end

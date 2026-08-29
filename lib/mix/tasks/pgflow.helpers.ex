@@ -117,7 +117,7 @@ defmodule Mix.Tasks.Pgflow.Helpers do
 
   def build_down_statements(flow_slug, true, unschedule_sql) do
     """
-        execute "#{unschedule_sql}"
+        execute "#{escape_sql_for_elixir_string(unschedule_sql)}"
     #{base_down_statements(flow_slug)}
     """
     |> String.trim_trailing()
@@ -128,12 +128,31 @@ defmodule Mix.Tasks.Pgflow.Helpers do
   end
 
   defp base_down_statements(flow_slug) do
+    escaped_slug = escape_sql_for_elixir_string(flow_slug)
+
     """
-        execute "DELETE FROM pgflow.deps WHERE flow_slug = '#{flow_slug}'"
-        execute "DELETE FROM pgflow.steps WHERE flow_slug = '#{flow_slug}'"
-        execute "DELETE FROM pgflow.flows WHERE flow_slug = '#{flow_slug}'"
-        execute "SELECT pgmq.drop_queue('#{flow_slug}')"
+        execute "DELETE FROM pgflow.deps WHERE flow_slug = '#{escaped_slug}'"
+        execute "DELETE FROM pgflow.steps WHERE flow_slug = '#{escaped_slug}'"
+        execute "DELETE FROM pgflow.flows WHERE flow_slug = '#{escaped_slug}'"
+        execute "SELECT pgmq.drop_queue('#{escaped_slug}')"
     """
     |> String.trim_trailing()
+  end
+
+  @doc """
+  Escapes a raw SQL string so it can be safely embedded inside a
+  double-quoted Elixir string literal (e.g. `execute "..."`) in a generated
+  migration file.
+
+  Escapes backslashes and double quotes so the SQL text doesn't break out of
+  the Elixir string literal, and escapes `\#{` so it isn't interpreted as
+  Elixir string interpolation when the generated migration is compiled.
+  """
+  @spec escape_sql_for_elixir_string(String.t()) :: String.t()
+  def escape_sql_for_elixir_string(sql) do
+    sql
+    |> String.replace("\\", "\\\\")
+    |> String.replace("\"", "\\\"")
+    |> String.replace("\#{", "\\\#{")
   end
 end

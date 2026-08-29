@@ -2,7 +2,7 @@ defmodule PgFlow.JobCompilerTest do
   use ExUnit.Case, async: true
 
   alias PgFlow.Flow.{Definition, Step}
-  alias PgFlow.JobCompiler
+  alias PgFlow.{FlowCompiler, JobCompiler}
 
   describe "compile/1" do
     test "compiles a job definition with create_flow, add_step, and flow_type UPDATE" do
@@ -103,6 +103,39 @@ defmodule PgFlow.JobCompilerTest do
       assert update_sql =~ "flow_type = 'job'"
     end
 
+    test "compile/2 omits cron SQL while retaining the job type update" do
+      defmodule CronOmittedJob do
+        use PgFlow.Job
+
+        @job slug: :cron_omitted_job, cron: [schedule: "*/10 * * * *"]
+
+        perform do
+          fn _input, _ctx -> :ok end
+        end
+      end
+
+      definition = CronOmittedJob.__pgflow_definition__()
+      sql_statements = JobCompiler.compile(definition, include_cron?: false)
+
+      assert length(sql_statements) == 3
+      refute Enum.any?(sql_statements, &(&1 =~ "cron.schedule"))
+      assert List.last(sql_statements) =~ "flow_type = 'job'"
+    end
+
+    test "compile/2 propagates include_cron? validation" do
+      definition = %Definition{
+        slug: :invalid_cron_option_job,
+        module: TestJob,
+        opts: [],
+        steps: [%Step{slug: :perform, step_type: :single, depends_on: []}],
+        flow_type: :job
+      }
+
+      assert_raise ArgumentError, ~r/include_cron\? must be a boolean/, fn ->
+        JobCompiler.compile(definition, include_cron?: "false")
+      end
+    end
+
     test "has_cron?/1 delegates to FlowCompiler" do
       defmodule HasCronTestJob do
         use PgFlow.Job
@@ -118,8 +151,12 @@ defmodule PgFlow.JobCompilerTest do
     end
 
     test "cron_unschedule_sql/1 delegates to FlowCompiler" do
-      sql = JobCompiler.cron_unschedule_sql(:my_job)
-      assert sql == "SELECT cron.unschedule('pgflow:my_job')"
+      slug = :"owner's_job"
+
+      assert JobCompiler.cron_unschedule_sql(slug) == FlowCompiler.cron_unschedule_sql(slug)
+
+      assert JobCompiler.cron_unschedule_sql(slug) ==
+               "SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'pgflow:owner''s_job' AND username = CURRENT_USER"
     end
   end
 end

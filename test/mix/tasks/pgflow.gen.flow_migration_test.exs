@@ -237,6 +237,22 @@ defmodule Mix.Tasks.Pgflow.Gen.FlowMigrationTest do
       assert migration_content =~ ~s|DELETE FROM pgflow.flows WHERE flow_slug = 'simple_flow'|
       assert migration_content =~ ~s|SELECT pgmq.drop_queue('simple_flow')|
     end
+
+    test "generates an absent-safe owner-scoped cron down migration" do
+      capture_io(fn ->
+        GenFlow.run([
+          "PgFlow.TestFlows.ScheduledFlow",
+          "--migrations-path",
+          @test_migrations_path
+        ])
+      end)
+
+      [migration_file] = File.ls!(@test_migrations_path)
+      migration_content = File.read!(Path.join(@test_migrations_path, migration_file))
+
+      assert migration_content =~
+               "SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'pgflow:scheduled_flow' AND username = CURRENT_USER"
+    end
   end
 
   describe "timestamp generation" do

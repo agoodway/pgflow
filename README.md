@@ -46,7 +46,7 @@ Add `pgflow` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:pgflow, "~> 0.3.2"}
+    {:pgflow, "~> 0.3.3"}
   ]
 end
 ```

@@ -23,4 +23,18 @@ defmodule PgFlow.Queries.HelpersTest do
       assert Helpers.positive_limit([], 50) == 50
     end
   end
+
+  describe "cast_flow_slug/1" do
+    test "normalizes atom and string slugs and rejects other values" do
+      assert {:ok, "my_flow"} = Helpers.cast_flow_slug(:my_flow)
+      assert {:ok, "my_flow"} = Helpers.cast_flow_slug("my_flow")
+      assert {:error, :invalid_flow_slug} = Helpers.cast_flow_slug(123)
+    end
+
+    test "rejects nil, true, and false instead of coercing them via is_atom/1" do
+      assert {:error, :invalid_flow_slug} = Helpers.cast_flow_slug(nil)
+      assert {:error, :invalid_flow_slug} = Helpers.cast_flow_slug(true)
+      assert {:error, :invalid_flow_slug} = Helpers.cast_flow_slug(false)
+    end
+  end
 end

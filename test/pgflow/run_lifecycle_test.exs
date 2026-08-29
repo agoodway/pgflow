@@ -4,6 +4,156 @@ defmodule PgFlow.RunLifecycleTest do
   alias PgFlow.Runs
   alias PgFlow.Schema.Run
 
+  describe "count_queue_messages/4" do
+    test "counts one or many runs across live and archived messages without double-counting IDs" do
+      create_flow("count_messages")
+      add_step("count_messages", "work", type: "map")
+      first_run_id = start_flow_run("count_messages", ["first-live", "first-archive"])
+      second_run_id = start_flow_run("count_messages", ["second-a", "second-b"])
+      unrelated_run_id = start_flow_run("count_messages", ["unrelated"])
+      [archived_message_id | _] = task_message_ids(first_run_id)
+
+      TestRepo.query!("SELECT pgmq.archive($1::text, $2::bigint)", [
+        "count_messages",
+        archived_message_id
+      ])
+
+      assert {:ok, 2} = Runs.count_queue_messages(TestRepo, "count_messages", first_run_id)
+
+      assert {:ok, 1} =
+               Runs.count_queue_messages(TestRepo, "count_messages", first_run_id,
+                 location: :live
+               )
+
+      assert {:ok, 1} =
+               Runs.count_queue_messages(TestRepo, "count_messages", first_run_id,
+                 location: :archive
+               )
+
+      assert {:ok, 4} =
+               Runs.count_queue_messages(TestRepo, "count_messages", [
+                 first_run_id,
+                 second_run_id,
+                 first_run_id
+               ])
+
+      assert {:ok, 1} =
+               Runs.count_queue_messages(TestRepo, "count_messages", unrelated_run_id)
+    end
+
+    test "counts live and archive tables in one combined query for a consistent snapshot" do
+      create_flow("count_single_snapshot")
+      add_step("count_single_snapshot", "work", type: "map")
+      run_id = start_flow_run("count_single_snapshot", ["live", "archive"])
+      [archived_message_id | _] = task_message_ids(run_id)
+
+      TestRepo.query!("SELECT pgmq.archive($1::text, $2::bigint)", [
+        "count_single_snapshot",
+        archived_message_id
+      ])
+
+      handler_id = "count-single-snapshot-#{System.unique_integer([:positive])}"
+      event = TestRepo.config()[:telemetry_prefix] ++ [:query]
+
+      :telemetry.attach(
+        handler_id,
+        event,
+        fn _event, _measurements, metadata, test_pid ->
+          send(test_pid, {:count_query, metadata.query})
+        end,
+        self()
+      )
+
+      try do
+        assert {:ok, 2} = Runs.count_queue_messages(TestRepo, "count_single_snapshot", run_id)
+      after
+        :telemetry.detach(handler_id)
+      end
+
+      payload_count_queries =
+        []
+        |> collect_count_queries()
+        |> Enum.filter(&String.contains?(&1, "message->>'run_id'"))
+
+      assert [combined_query] = payload_count_queries
+      assert combined_query =~ "UNION ALL"
+      assert combined_query =~ ~s("pgmq".q_count_single_snapshot)
+      assert combined_query =~ ~s("pgmq".a_count_single_snapshot)
+    end
+
+    test "counts durable orphaned messages after relational lifecycle rows disappear" do
+      create_flow("count_orphaned_messages")
+      add_step("count_orphaned_messages", "work")
+      run_id = start_flow_run("count_orphaned_messages", %{})
+
+      with_foreign_key_checks_disabled(fn ->
+        TestRepo.query!("DELETE FROM pgflow.step_tasks WHERE run_id = $1", [
+          Ecto.UUID.dump!(run_id)
+        ])
+
+        TestRepo.query!("DELETE FROM pgflow.step_states WHERE run_id = $1", [
+          Ecto.UUID.dump!(run_id)
+        ])
+
+        TestRepo.query!("DELETE FROM pgflow.runs WHERE run_id = $1", [Ecto.UUID.dump!(run_id)])
+      end)
+
+      assert {:ok, 1} = Runs.count_queue_messages(TestRepo, "count_orphaned_messages", run_id)
+    end
+
+    test "uses PGMQ canonical queue names and treats missing queues and empty IDs as empty" do
+      create_flow("MixedCaseCount")
+      add_step("MixedCaseCount", "work", type: "map")
+      run_id = start_flow_run("MixedCaseCount", ["a", "b"])
+
+      assert {:ok, 2} = Runs.count_queue_messages(TestRepo, "MixedCaseCount", run_id)
+      assert {:ok, 0} = Runs.count_queue_messages(TestRepo, "MixedCaseCount", [])
+
+      # An empty run-ID list short-circuits before the flow-slug DB validation,
+      # so it returns {:ok, 0} even for a flow slug that doesn't exist.
+      assert {:ok, 0} = Runs.count_queue_messages(TestRepo, "no_such_flow_slug", [])
+
+      TestRepo.query!("SELECT pgmq.drop_queue($1::text)", ["MixedCaseCount"])
+
+      assert {:ok, 0} = Runs.count_queue_messages(TestRepo, "MixedCaseCount", run_id)
+    end
+
+    test "rejects invalid IDs, flow slugs, and locations" do
+      run_id = Ecto.UUID.generate()
+
+      assert {:error, :invalid_id} =
+               Runs.count_queue_messages(TestRepo, "count_messages", "not-a-uuid")
+
+      assert {:error, :invalid_id} =
+               Runs.count_queue_messages(TestRepo, "count_messages", [run_id, "not-a-uuid"])
+
+      assert {:error, :invalid_flow_slug} =
+               Runs.count_queue_messages(TestRepo, "invalid-slug", run_id)
+
+      assert {:error, :invalid_flow_slug} = Runs.count_queue_messages(TestRepo, 123, run_id)
+
+      assert {:error, :invalid_location} =
+               Runs.count_queue_messages(TestRepo, "count_messages", run_id, location: :somewhere)
+    end
+
+    test "returns tagged database errors" do
+      create_flow("count_database_error")
+      add_step("count_database_error", "work")
+      run_id = start_flow_run("count_database_error", %{})
+      TestRepo.query!("SELECT pgmq.drop_queue($1::text)", ["count_database_error"])
+      TestRepo.query!("CREATE TABLE pgmq.q_count_database_error (message integer)")
+
+      try do
+        assert {:error, %Postgrex.Error{}} =
+                 Runs.count_queue_messages(TestRepo, "count_database_error", run_id,
+                   location: :live
+                 )
+      after
+        TestRepo.query!("DROP TABLE IF EXISTS pgmq.q_count_database_error")
+      end
+    end
+  end
+
   describe "make_available/2" do
     test "exposes every delayed single and map task for only the requested run" do
       create_flow("available_single")
@@ -269,5 +419,13 @@ defmodule PgFlow.RunLifecycleTest do
       end)
 
     result
+  end
+
+  defp collect_count_queries(queries) do
+    receive do
+      {:count_query, query} -> collect_count_queries([query | queries])
+    after
+      0 -> Enum.reverse(queries)
+    end
   end
 end

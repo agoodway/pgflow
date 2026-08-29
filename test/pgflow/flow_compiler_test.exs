@@ -363,10 +363,18 @@ defmodule PgFlow.FlowCompilerTest do
       assert sql =~ ~s('{"key":"value"}'::jsonb)
     end
 
-    test "cron_unschedule_sql/1 generates correct SQL" do
+    test "cron_unschedule_sql/1 is absent-safe and scoped to schedules owned by the current user" do
       sql = FlowCompiler.cron_unschedule_sql(:test_flow)
 
-      assert sql == "SELECT cron.unschedule('pgflow:test_flow')"
+      assert sql ==
+               "SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'pgflow:test_flow' AND username = CURRENT_USER"
+    end
+
+    test "cron_unschedule_sql/1 escapes the generated cron job name" do
+      sql = FlowCompiler.cron_unschedule_sql(:"owner's_flow")
+
+      assert sql ==
+               "SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'pgflow:owner''s_flow' AND username = CURRENT_USER"
     end
 
     test "has_cron?/1 returns false for module without cron" do
@@ -395,6 +403,41 @@ defmodule PgFlow.FlowCompilerTest do
       assert cron_sql =~ "'pgflow:cron_test_flow'"
       assert cron_sql =~ "'0 * * * *'"
       assert cron_sql =~ ~s("test":true)
+    end
+
+    test "compile/2 can omit cron SQL without changing definition SQL" do
+      defmodule CronOmittedFlow do
+        use PgFlow.Flow
+
+        @flow slug: :cron_omitted_flow, cron: [schedule: "0 * * * *"]
+
+        step :process do
+          fn input, _ctx -> input end
+        end
+      end
+
+      definition = CronOmittedFlow.__pgflow_definition__()
+
+      assert [flow_sql, step_sql] = FlowCompiler.compile(definition, include_cron?: false)
+      assert flow_sql =~ "pgflow.create_flow('cron_omitted_flow'"
+      assert step_sql =~ "pgflow.add_step('cron_omitted_flow'"
+      refute Enum.any?([flow_sql, step_sql], &(&1 =~ "cron.schedule"))
+    end
+
+    test "compile/2 rejects a non-boolean include_cron? option" do
+      definition = SimpleFlow.__pgflow_definition__()
+
+      assert_raise ArgumentError, ~r/include_cron\? must be a boolean/, fn ->
+        FlowCompiler.compile(definition, include_cron?: :sometimes)
+      end
+    end
+
+    test "compile/2 rejects unknown options such as a misspelled include_cron" do
+      definition = SimpleFlow.__pgflow_definition__()
+
+      assert_raise ArgumentError, ~r/unknown keys/, fn ->
+        FlowCompiler.compile(definition, include_cron: false)
+      end
     end
 
     test "compile/1 does not include cron SQL for flow without cron option" do

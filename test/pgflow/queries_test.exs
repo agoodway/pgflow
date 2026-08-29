@@ -262,6 +262,23 @@ defmodule PgFlow.QueriesTest do
     end
   end
 
+  describe "validate_slug/2" do
+    test "accepts valid slugs, rejects invalid slugs, and preserves database errors" do
+      assert :ok = Flows.validate_slug(TestRepo, "valid_slug")
+      assert {:error, :invalid_flow_slug} = Flows.validate_slug(TestRepo, "invalid-slug")
+
+      TestRepo.query!("ALTER FUNCTION pgflow.is_valid_slug(text) RENAME TO is_valid_slug_hidden")
+
+      try do
+        assert {:error, %Postgrex.Error{}} = Flows.validate_slug(TestRepo, "valid_slug")
+      after
+        TestRepo.query!(
+          "ALTER FUNCTION pgflow.is_valid_slug_hidden(text) RENAME TO is_valid_slug"
+        )
+      end
+    end
+  end
+
   # ── get_flow_input ─────────────────────────────────────────────────
 
   describe "get_flow_input/2" do

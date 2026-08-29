@@ -716,6 +716,19 @@ defmodule PgFlow.Queries.Flows do
   end
 
   @doc """
+  Validates a flow slug against PgFlow's canonical database rules.
+  """
+  @spec validate_slug(Ecto.Repo.t(), String.t()) ::
+          :ok | {:error, :invalid_flow_slug | term()}
+  def validate_slug(repo, slug) do
+    case valid_slug?(repo, slug) do
+      {:ok, true} -> :ok
+      {:ok, false} -> {:error, :invalid_flow_slug}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
   Deletes a message from a PGMQ queue.
   """
   @spec delete_message(Ecto.Repo.t(), String.t(), pos_integer()) ::

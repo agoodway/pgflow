@@ -38,6 +38,11 @@ defmodule PgFlow.FlowCompiler do
 
     * `definition` - A `PgFlow.Flow.Definition` struct
 
+  ## Options
+
+    * `:include_cron?` - Include compiler-generated pg_cron scheduling SQL.
+      Defaults to `true`.
+
   ## Returns
 
     * A list of SQL statement strings
@@ -61,21 +66,33 @@ defmodule PgFlow.FlowCompiler do
       ]
 
   """
-  @spec compile(Definition.t()) :: [String.t()]
-  def compile(%Definition{} = definition) do
+  @spec compile(Definition.t(), keyword()) :: [String.t()]
+  def compile(%Definition{} = definition, opts \\ []) do
     flow_sql = create_flow_sql(definition)
     step_sqls = Enum.map(definition.steps, &add_step_sql(definition.slug, &1))
     base_sql = [flow_sql | step_sqls]
+    opts = Keyword.validate!(opts, include_cron?: true)
+    include_cron? = opts |> Keyword.fetch!(:include_cron?) |> validate_include_cron!()
 
-    case get_cron_expression(definition.module) do
-      nil ->
+    case {include_cron?, get_cron_expression(definition.module)} do
+      {false, _cron_expression} ->
         base_sql
 
-      cron_expression ->
+      {true, nil} ->
+        base_sql
+
+      {true, cron_expression} ->
         cron_input = get_cron_input(definition.module)
         cron_sql = cron_schedule_sql(definition.slug, cron_expression, cron_input)
         base_sql ++ [cron_sql]
     end
+  end
+
+  defp validate_include_cron!(include_cron?) when is_boolean(include_cron?), do: include_cron?
+
+  defp validate_include_cron!(include_cron?) do
+    raise ArgumentError,
+          "include_cron? must be a boolean, got: #{inspect(include_cron?)}"
   end
 
   @doc """
@@ -209,7 +226,11 @@ defmodule PgFlow.FlowCompiler do
   end
 
   @doc """
-  Generates the SQL to unschedule a flow/job from pg_cron.
+  Generates idempotent SQL to unschedule a flow/job from pg_cron.
+
+  The generated statement only targets a matching schedule owned by the
+  current PostgreSQL user. It succeeds without changing anything when that
+  schedule is absent or owned by another user.
 
   ## Parameters
 
@@ -225,7 +246,7 @@ defmodule PgFlow.FlowCompiler do
     flow_slug = Atom.to_string(slug)
     job_name = "pgflow:#{flow_slug}"
 
-    "SELECT cron.unschedule('#{escape(job_name)}')"
+    "SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = '#{escape(job_name)}' AND username = CURRENT_USER"
   end
 
   @doc """

@@ -234,7 +234,7 @@ defmodule Mix.Tasks.Pgflow.Gen.FlowMigration do
 
   defp format_execute_statements(sql_statements) do
     Enum.map_join(sql_statements, "\n", fn sql ->
-      escaped = String.replace(sql, "\"", "\\\"")
+      escaped = Helpers.escape_sql_for_elixir_string(sql)
       ~s(    execute "#{escaped}")
     end)
   end

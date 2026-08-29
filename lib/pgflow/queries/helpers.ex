@@ -136,6 +136,20 @@ defmodule PgFlow.Queries.Helpers do
   def optional_uuid(uuid), do: cast_uuid(uuid)
 
   @doc """
+  Normalizes an atom or string flow slug and rejects unsupported values.
+
+  This only normalizes the Elixir value. Callers that interpolate a slug into
+  SQL must additionally validate it with PgFlow's database slug rules.
+  """
+  @spec cast_flow_slug(term()) :: {:ok, String.t()} | {:error, :invalid_flow_slug}
+  def cast_flow_slug(nil), do: {:error, :invalid_flow_slug}
+  def cast_flow_slug(true), do: {:error, :invalid_flow_slug}
+  def cast_flow_slug(false), do: {:error, :invalid_flow_slug}
+  def cast_flow_slug(flow_slug) when is_atom(flow_slug), do: {:ok, Atom.to_string(flow_slug)}
+  def cast_flow_slug(flow_slug) when is_binary(flow_slug), do: {:ok, flow_slug}
+  def cast_flow_slug(_flow_slug), do: {:error, :invalid_flow_slug}
+
+  @doc """
   Formats a binary UUID to string representation.
   """
   @spec format_uuid(nil | binary()) :: nil | String.t()
