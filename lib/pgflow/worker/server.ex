@@ -51,6 +51,7 @@ defmodule PgFlow.Worker.Server do
         max_concurrency: 10,
         batch_size: 10,
         signal_strategy: :polling,
+        heartbeat_interval: 10_000,
         min_poll_interval: 1_000,
         max_poll_interval: 5_000,
         notify_fallback_interval: 30_000
@@ -70,6 +71,9 @@ defmodule PgFlow.Worker.Server do
     * `batch_size` - Messages per poll (default: 10)
     * `visibility_timeout` - Seconds for message visibility (derived from flow's opt_timeout)
     * `signal_strategy` - `:polling` or `:notify`
+    * `heartbeat_interval` - Milliseconds between persisted worker heartbeats
+    * `heartbeat_timer_ref` - Reference for the independent heartbeat timer
+    * `heartbeat_token` - Identity of the currently scheduled heartbeat message
     * `signal_state` - Adaptive backoff state for `:polling` strategy
     * `lifecycle` - Worker lifecycle state machine (see `PgFlow.Worker.Lifecycle`)
 
@@ -139,6 +143,9 @@ defmodule PgFlow.Worker.Server do
           batch_size: pos_integer(),
           visibility_timeout: pos_integer(),
           signal_strategy: :polling | :notify,
+          heartbeat_interval: pos_integer(),
+          heartbeat_timer_ref: reference() | nil,
+          heartbeat_token: reference() | nil,
           signal_state: signal_state(),
           notify_fallback_interval: pos_integer(),
           fallback_timer_ref: reference() | nil,
@@ -162,6 +169,7 @@ defmodule PgFlow.Worker.Server do
     * `:max_concurrency` - (optional) Maximum concurrent tasks (default: 10)
     * `:batch_size` - (optional) Messages to fetch per poll (default: 10)
     * `:signal_strategy` - (optional) Signal strategy, `:polling` or `:notify` (default: `:polling`)
+    * `:heartbeat_interval` - (optional) Milliseconds between worker heartbeats (default: 10000)
     * `:min_poll_interval` - (optional) Minimum ms between polls (default: 1000)
     * `:max_poll_interval` - (optional) Maximum ms between polls (default: 5000)
     * `:notify_fallback_interval` - (optional) Fallback poll interval for `:notify` strategy (default: 30000)
@@ -207,6 +215,7 @@ defmodule PgFlow.Worker.Server do
 
     # Signal strategy config
     signal_strategy = Map.get(config, :signal_strategy, :polling)
+    heartbeat_interval = Map.get(config, :heartbeat_interval, 10_000)
     min_poll_interval = Map.get(config, :min_poll_interval, 1_000)
     max_poll_interval = Map.get(config, :max_poll_interval, 5_000)
     notify_fallback_interval = Map.get(config, :notify_fallback_interval, 30_000)
@@ -243,6 +252,9 @@ defmodule PgFlow.Worker.Server do
         batch_size: Map.fetch!(config, :batch_size),
         visibility_timeout: visibility_timeout,
         signal_strategy: signal_strategy,
+        heartbeat_interval: heartbeat_interval,
+        heartbeat_timer_ref: nil,
+        heartbeat_token: nil,
         signal_state: signal_state,
         notify_fallback_interval: notify_fallback_interval,
         fallback_timer_ref: nil,
@@ -272,7 +284,7 @@ defmodule PgFlow.Worker.Server do
           })
 
           # Start signal loop based on strategy
-          state = schedule_initial_poll(state)
+          state = state |> schedule_initial_poll() |> schedule_heartbeat()
 
           {:ok, state}
 
@@ -320,6 +332,21 @@ defmodule PgFlow.Worker.Server do
       {:noreply, state}
     end
   end
+
+  @impl true
+  def handle_info({:heartbeat, token}, %{heartbeat_token: token} = state) do
+    case register_worker(state) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Failed to heartbeat worker #{state.worker_id}: #{inspect(reason)}")
+    end
+
+    {:noreply, schedule_heartbeat(state)}
+  end
+
+  def handle_info({:heartbeat, _stale_token}, state), do: {:noreply, state}
 
   @impl true
   def handle_info({ref, result}, state) when is_reference(ref) do
@@ -507,6 +534,13 @@ defmodule PgFlow.Worker.Server do
   defp register_worker(state) do
     function_name = "elixir:#{state.flow_module}"
     WorkerQueries.register_worker(state.repo, state.worker_id, state.flow_slug, function_name)
+  end
+
+  @spec schedule_heartbeat(state()) :: state()
+  defp schedule_heartbeat(state) do
+    token = make_ref()
+    ref = Process.send_after(self(), {:heartbeat, token}, state.heartbeat_interval)
+    %{state | heartbeat_timer_ref: ref, heartbeat_token: token}
   end
 
   @spec mark_worker_stopped(state()) :: :ok

@@ -4,6 +4,47 @@ defmodule PgFlow.WorkersTest do
   alias PgFlow.Schema.StepTask
   alias PgFlow.{Workers, WorkerSummary}
 
+  defmodule UnavailableRepo do
+    def exists?(_query) do
+      raise DBConnection.ConnectionError, message: "database unavailable"
+    end
+  end
+
+  describe "healthy?/2" do
+    test "is true only when the requested flow has a fresh active worker" do
+      create_flow("ready_workers")
+      create_flow("other_workers")
+      insert_worker("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1", "ready_workers", seconds_ago: 5)
+      insert_worker("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2", "other_workers", seconds_ago: 5)
+
+      assert {:ok, true} = Workers.healthy?(TestRepo, "ready_workers")
+      assert {:ok, true} = Workers.healthy?(TestRepo, "other_workers")
+      assert {:ok, false} = Workers.healthy?(TestRepo, "missing_workers")
+    end
+
+    test "is false for stale, stopped, and deprecated workers" do
+      create_flow("stale_workers")
+      create_flow("stopped_workers")
+      create_flow("deprecated_workers")
+
+      insert_worker("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3", "stale_workers", seconds_ago: 31)
+      insert_worker("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa4", "stopped_workers", stopped: true)
+
+      insert_worker("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa5", "deprecated_workers",
+        deprecated: true
+      )
+
+      assert {:ok, false} = Workers.healthy?(TestRepo, "stale_workers")
+      assert {:ok, false} = Workers.healthy?(TestRepo, "stopped_workers")
+      assert {:ok, false} = Workers.healthy?(TestRepo, "deprecated_workers")
+    end
+
+    test "returns repository connection failures as error tuples" do
+      assert {:error, %DBConnection.ConnectionError{}} =
+               Workers.healthy?(UnavailableRepo, "ready_workers")
+    end
+  end
+
   describe "get/2, list/2, and count/2" do
     test "return typed summaries with health and bounded flow-load calculations" do
       create_flow("worker_reads")

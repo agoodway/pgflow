@@ -85,6 +85,7 @@ defmodule PgFlow.WorkerSupervisor do
       max_concurrency: Keyword.fetch!(config, :max_concurrency),
       batch_size: Keyword.fetch!(config, :batch_size),
       signal_strategy: Keyword.fetch!(config, :signal_strategy),
+      heartbeat_interval: Keyword.fetch!(config, :heartbeat_interval),
       min_poll_interval: Keyword.fetch!(config, :min_poll_interval),
       max_poll_interval: Keyword.fetch!(config, :max_poll_interval),
       notify_fallback_interval: Keyword.fetch!(config, :notify_fallback_interval)

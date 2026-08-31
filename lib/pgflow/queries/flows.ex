@@ -25,6 +25,7 @@ defmodule PgFlow.Queries.Flows do
   ## Returns
 
     * `{:ok, run_id}` - The UUID of the created flow run
+    * `{:error, {:flow_not_compiled, flow_slug}}` - The flow definition is absent
     * `{:error, reason}` - Error details if the operation fails
   """
   @spec start_flow(Ecto.Repo.t(), String.t(), map() | list()) ::
@@ -62,11 +63,20 @@ defmodule PgFlow.Queries.Flows do
     * `{:ok, run_id, run}` - The run id and a map of the returned run row
       (`:run_id, :flow_slug, :status, :input, :output, :remaining_steps,
       :started_at, :completed_at, :failed_at`)
+    * `{:error, {:flow_not_compiled, flow_slug}}` - The flow definition is absent
     * `{:error, reason}` - Error details if the operation fails
   """
   @spec start_flow_with_run(Ecto.Repo.t(), String.t(), map() | list()) ::
           {:ok, String.t(), map()} | {:error, term()}
   def start_flow_with_run(repo, flow_slug, input) do
+    case flow_exists?(repo, flow_slug) do
+      {:ok, true} -> execute_start_flow(repo, flow_slug, input)
+      {:ok, false} -> {:error, {:flow_not_compiled, flow_slug}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp execute_start_flow(repo, flow_slug, input) do
     sql = "SELECT * FROM pgflow.start_flow($1, $2::jsonb)"
 
     case SQL.query(repo, sql, [flow_slug, input]) do
@@ -76,6 +86,12 @@ defmodule PgFlow.Queries.Flows do
 
       {:ok, %{rows: []}} ->
         {:error, :no_result}
+
+      {:error,
+       %Postgrex.Error{
+         postgres: %{code: :foreign_key_violation, constraint: "runs_flow_slug_fkey"}
+       }} ->
+        {:error, {:flow_not_compiled, flow_slug}}
 
       {:error, error} ->
         {:error, error}

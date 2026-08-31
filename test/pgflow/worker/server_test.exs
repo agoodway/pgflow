@@ -25,6 +25,7 @@ defmodule PgFlow.Worker.ServerTest do
   alias PgFlow.TestFlows.StringMapFlow
   alias PgFlow.TestRepo
   alias PgFlow.Worker.Server
+  alias PgFlow.WorkerSupervisor
 
   # Use a longer timeout for integration tests
   @moduletag timeout: 30_000
@@ -80,6 +81,10 @@ defmodule PgFlow.Worker.ServerTest do
         %{result: input["value"] * 2}
       end
     end
+  end
+
+  defmodule UnavailableHeartbeatRepo do
+    def query(_sql, _params), do: {:error, :database_unavailable}
   end
 
   defmodule FailingWorkerFlow do
@@ -546,7 +551,8 @@ defmodule PgFlow.Worker.ServerTest do
       signal_strategy: Keyword.get(opts, :signal_strategy, :polling),
       min_poll_interval: Keyword.get(opts, :min_poll_interval, 50),
       max_poll_interval: Keyword.get(opts, :max_poll_interval, 5_000),
-      notify_fallback_interval: Keyword.get(opts, :notify_fallback_interval, 30_000)
+      notify_fallback_interval: Keyword.get(opts, :notify_fallback_interval, 30_000),
+      heartbeat_interval: Keyword.get(opts, :heartbeat_interval, 10_000)
     }
 
     {:ok, pid} = Server.start_link(config)
@@ -590,17 +596,18 @@ defmodule PgFlow.Worker.ServerTest do
 
     %{rows: rows} =
       TestRepo.query!(
-        "SELECT worker_id, queue_name, function_name, stopped_at FROM pgflow.workers WHERE worker_id = $1",
+        "SELECT worker_id, queue_name, function_name, stopped_at, last_heartbeat_at FROM pgflow.workers WHERE worker_id = $1",
         [worker_id_bin]
       )
 
     case rows do
-      [[worker_id_result, queue_name, function_name, stopped_at]] ->
+      [[worker_id_result, queue_name, function_name, stopped_at, last_heartbeat_at]] ->
         %{
           worker_id: Ecto.UUID.load!(worker_id_result),
           queue_name: queue_name,
           function_name: function_name,
-          stopped_at: stopped_at
+          stopped_at: stopped_at,
+          last_heartbeat_at: last_heartbeat_at
         }
 
       [] ->
@@ -686,6 +693,139 @@ defmodule PgFlow.Worker.ServerTest do
       # Verify stopped_at is set
       worker = get_worker(worker_id)
       assert worker.stopped_at != nil
+    end
+
+    test "worker supervisor threads the configured heartbeat interval into workers", %{
+      task_supervisor: task_supervisor
+    } do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+      assert Process.whereis(PgFlow.TaskSupervisor) == nil
+      true = Process.register(task_supervisor, PgFlow.TaskSupervisor)
+
+      config_key = {PgFlow, :config}
+      missing_config = make_ref()
+      previous_config = :persistent_term.get(config_key, missing_config)
+      config = PgFlow.Config.validate!(repo: TestRepo, heartbeat_interval: 123)
+      :persistent_term.put(config_key, config)
+
+      on_exit(fn ->
+        case Process.whereis(PgFlow.TaskSupervisor) do
+          ^task_supervisor -> Process.unregister(PgFlow.TaskSupervisor)
+          _other -> :ok
+        end
+
+        if previous_config == missing_config do
+          :persistent_term.erase(config_key)
+        else
+          :persistent_term.put(config_key, previous_config)
+        end
+      end)
+
+      {:ok, worker_pid} = WorkerSupervisor.start_worker_process(SimpleWorkerFlow, TestRepo)
+      state = Server.get_state(worker_pid)
+
+      assert state.heartbeat_interval == 123
+
+      Server.stop(worker_pid)
+    end
+  end
+
+  describe "worker heartbeat" do
+    test "ignores heartbeat messages without the current timer identity", %{
+      task_supervisor: task_supervisor
+    } do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor,
+          min_poll_interval: 20_000,
+          max_poll_interval: 20_000,
+          heartbeat_interval: 20_000
+        )
+
+      state_before = Server.get_state(worker_pid)
+      worker_id = Ecto.UUID.dump!(state_before.worker_id)
+
+      %{rows: [[initial_heartbeat]]} =
+        TestRepo.query!(
+          "UPDATE pgflow.workers SET last_heartbeat_at = NOW() - INTERVAL '1 minute' WHERE worker_id = $1 RETURNING last_heartbeat_at",
+          [worker_id]
+        )
+
+      send(worker_pid, :heartbeat)
+      send(worker_pid, {:heartbeat, make_ref()})
+      state_after = Server.get_state(worker_pid)
+
+      assert state_after.heartbeat_timer_ref == state_before.heartbeat_timer_ref
+      assert get_worker(state_before.worker_id).last_heartbeat_at == initial_heartbeat
+
+      Server.stop(worker_pid)
+    end
+
+    test "refreshes idle polling and notify workers", %{task_supervisor: task_supervisor} do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      for signal_strategy <- [:polling, :notify] do
+        worker_pid =
+          start_worker(SimpleWorkerFlow, task_supervisor,
+            signal_strategy: signal_strategy,
+            min_poll_interval: 1_000,
+            heartbeat_interval: 25
+          )
+
+        state = Server.get_state(worker_pid)
+        initial_heartbeat = get_worker(state.worker_id).last_heartbeat_at
+
+        assert wait_until(
+                 fn -> get_worker(state.worker_id).last_heartbeat_at > initial_heartbeat end,
+                 1_000
+               )
+
+        Server.stop(worker_pid)
+      end
+    end
+
+    test "warns, remains alive, and reschedules after a heartbeat failure", %{
+      task_supervisor: task_supervisor
+    } do
+      _flow_slug = compile_flow(SimpleWorkerFlow)
+
+      worker_pid =
+        start_worker(SimpleWorkerFlow, task_supervisor,
+          min_poll_interval: 20_000,
+          max_poll_interval: 20_000,
+          heartbeat_interval: 100
+        )
+
+      state_before = Server.get_state(worker_pid)
+      initial_heartbeat = get_worker(state_before.worker_id).last_heartbeat_at
+      Process.cancel_timer(state_before.heartbeat_timer_ref)
+      :sys.replace_state(worker_pid, &%{&1 | repo: UnavailableHeartbeatRepo})
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          send(worker_pid, {:heartbeat, state_before.heartbeat_token})
+          _ = :sys.get_state(worker_pid)
+        end)
+
+      state_after = Server.get_state(worker_pid)
+
+      assert log =~ "Failed to heartbeat worker"
+      assert state_after.heartbeat_timer_ref != state_before.heartbeat_timer_ref
+      assert state_after.heartbeat_token != state_before.heartbeat_token
+      assert is_reference(state_after.heartbeat_timer_ref)
+
+      :sys.replace_state(worker_pid, &%{&1 | repo: TestRepo})
+
+      assert wait_until(
+               fn -> get_worker(state_before.worker_id).last_heartbeat_at > initial_heartbeat end,
+               1_000
+             )
+
+      state_after_success = Server.get_state(worker_pid)
+      assert state_after_success.heartbeat_timer_ref != state_after.heartbeat_timer_ref
+
+      Server.stop(worker_pid)
     end
   end
 

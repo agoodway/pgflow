@@ -97,6 +97,8 @@ defmodule PgFlow do
   Starts a flow run with the given input.
 
   The flow can be specified by module name, slug atom, or slug string.
+  Returns `{:error, {:flow_not_compiled, flow_slug}}` when the flow definition
+  is not present in `pgflow.flows`.
 
   ## Examples
 
@@ -208,6 +210,8 @@ defmodule PgFlow do
 
   This is the primary API for dispatching jobs. Under the hood, jobs are
   single-step flows, so this delegates to `start_flow/2`.
+  Returns `{:error, {:flow_not_compiled, flow_slug}}` when the job definition
+  has not been compiled into the database.
 
   ## Examples
 

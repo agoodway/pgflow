@@ -13,6 +13,7 @@ defmodule PgFlow.Config do
     * `:max_concurrency` (optional) - Maximum number of parallel tasks per worker. Default: `10`.
     * `:batch_size` (optional) - Number of messages to fetch per poll cycle. Default: `10`.
     * `:signal_strategy` (optional) - Signal detection strategy. `:polling` (adaptive backoff) or `:notify` (LISTEN/NOTIFY). Default: `:polling`.
+    * `:heartbeat_interval` (optional) - Milliseconds between worker heartbeats. Default: `10000`. Max: `20_000`.
     * `:min_poll_interval` (optional) - Minimum milliseconds between polls (fastest rate). Default: `1000`. Max: `300_000` (5 minutes).
     * `:max_poll_interval` (optional) - Maximum milliseconds between polls (slowest rate during backoff). Default: `5000`. Max: `300_000` (5 minutes).
     * `:notify_fallback_interval` (optional) - Milliseconds between fallback polls when using `:notify` strategy. Default: `30000`. Max: `600_000` (10 minutes).
@@ -25,6 +26,7 @@ defmodule PgFlow.Config do
   ## Interval Constraints
 
     * `min_poll_interval` must be <= `max_poll_interval`
+    * `heartbeat_interval` must not exceed 20 seconds (20,000 ms)
     * `max_poll_interval` must not exceed 5 minutes (300,000 ms)
     * `notify_fallback_interval` must not exceed 10 minutes (600,000 ms)
 
@@ -44,6 +46,7 @@ defmodule PgFlow.Config do
   # Maximum allowed values for interval configurations
   @max_poll_interval_limit 300_000
   @max_fallback_interval_limit 600_000
+  @max_heartbeat_interval_limit 20_000
 
   @schema [
     repo: [
@@ -80,6 +83,11 @@ defmodule PgFlow.Config do
       type: {:in, [:polling, :notify]},
       default: :polling,
       doc: "Signal detection strategy: :polling (adaptive backoff) or :notify (LISTEN/NOTIFY)"
+    ],
+    heartbeat_interval: [
+      type: :pos_integer,
+      default: 10_000,
+      doc: "Milliseconds between worker heartbeats (maximum: 20000)"
     ],
     min_poll_interval: [
       type: :pos_integer,
@@ -164,6 +172,13 @@ defmodule PgFlow.Config do
     min_poll = config[:min_poll_interval]
     max_poll = config[:max_poll_interval]
     fallback = config[:notify_fallback_interval]
+    heartbeat = config[:heartbeat_interval]
+
+    if heartbeat > @max_heartbeat_interval_limit do
+      raise ArgumentError,
+            "heartbeat_interval (#{heartbeat}ms) exceeds maximum allowed " <>
+              "(#{@max_heartbeat_interval_limit}ms = 20 seconds); PgFlow considers workers healthy for 30 seconds"
+    end
 
     if min_poll > max_poll do
       raise ArgumentError,

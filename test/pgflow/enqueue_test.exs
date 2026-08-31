@@ -262,7 +262,7 @@ defmodule PgFlow.EnqueueTest do
       end
 
       result = PgFlow.enqueue(NotInDbJob, %{"value" => 1})
-      assert {:error, _reason} = result
+      assert {:error, {:flow_not_compiled, "not_in_db_job"}} = result
     end
   end
 

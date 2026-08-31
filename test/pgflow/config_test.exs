@@ -44,6 +44,7 @@ defmodule PgFlow.ConfigTest do
           max_concurrency: 20,
           batch_size: 15,
           signal_strategy: :notify,
+          heartbeat_interval: 15_000,
           min_poll_interval: 100,
           max_poll_interval: 10_000,
           notify_fallback_interval: 60_000,
@@ -57,6 +58,7 @@ defmodule PgFlow.ConfigTest do
       assert config[:max_concurrency] == 20
       assert config[:batch_size] == 15
       assert config[:signal_strategy] == :notify
+      assert config[:heartbeat_interval] == 15_000
       assert config[:min_poll_interval] == 100
       assert config[:max_poll_interval] == 10_000
       assert config[:notify_fallback_interval] == 60_000
@@ -88,6 +90,12 @@ defmodule PgFlow.ConfigTest do
       config = Config.validate!(repo: ValidTestRepo)
 
       assert config[:signal_strategy] == :polling
+    end
+
+    test "applies default for :heartbeat_interval" do
+      config = Config.validate!(repo: ValidTestRepo)
+
+      assert config[:heartbeat_interval] == 10_000
     end
 
     test "applies default for :min_poll_interval" do
@@ -245,6 +253,12 @@ defmodule PgFlow.ConfigTest do
       end
     end
 
+    test "raises when :heartbeat_interval is not a positive integer" do
+      assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
+        Config.validate!(repo: ValidTestRepo, heartbeat_interval: 0)
+      end
+    end
+
     test "raises when :recovery_interval is 0" do
       assert_raise ArgumentError, ~r/invalid PgFlow configuration/, fn ->
         Config.validate!(repo: ValidTestRepo, recovery_interval: 0)
@@ -359,6 +373,14 @@ defmodule PgFlow.ConfigTest do
       assert Keyword.has_key?(schema, :signal_strategy)
       assert schema[:signal_strategy][:default] == :polling
       assert schema[:signal_strategy][:type] == {:in, [:polling, :notify]}
+    end
+
+    test "schema includes :heartbeat_interval option with default" do
+      schema = Config.schema()
+
+      assert Keyword.has_key?(schema, :heartbeat_interval)
+      assert schema[:heartbeat_interval][:default] == 10_000
+      assert schema[:heartbeat_interval][:type] == :pos_integer
     end
 
     test "schema includes :min_poll_interval option with default" do
@@ -511,6 +533,20 @@ defmodule PgFlow.ConfigTest do
   end
 
   describe "validate!/1 interval bounds validation" do
+    test "raises with an actionable error when heartbeat_interval exceeds 20 seconds" do
+      assert_raise ArgumentError,
+                   ~r/heartbeat_interval \(20001ms\) exceeds maximum allowed \(20000ms = 20 seconds\).*healthy for 30 seconds/s,
+                   fn ->
+                     Config.validate!(repo: ValidTestRepo, heartbeat_interval: 20_001)
+                   end
+    end
+
+    test "accepts heartbeat_interval at exactly 20 seconds" do
+      config = Config.validate!(repo: ValidTestRepo, heartbeat_interval: 20_000)
+
+      assert config[:heartbeat_interval] == 20_000
+    end
+
     test "raises when min_poll_interval > max_poll_interval" do
       assert_raise ArgumentError,
                    ~r/min_poll_interval \(1000ms\) must be <= max_poll_interval \(500ms\)/,

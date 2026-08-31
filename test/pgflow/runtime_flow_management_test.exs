@@ -417,6 +417,58 @@ defmodule PgFlow.RuntimeFlowManagementTest do
 
   # ── facade delegations ──────────────────────────────────────────
 
+  describe "start_flow/2 error contract" do
+    test "returns a structured error when the flow is not compiled" do
+      assert {:error, {:flow_not_compiled, "test_missing_flow"}} =
+               PgFlow.start_flow("test_missing_flow", %{})
+    end
+
+    test "translates the run flow foreign-key violation if the flow disappears after the pre-check" do
+      TestRepo.query!("SELECT pgflow.create_flow($1)", ["test_start_race"])
+
+      TestRepo.query!("""
+      CREATE OR REPLACE FUNCTION pgflow_tests.delete_start_race_flow()
+      RETURNS trigger AS $$
+      BEGIN
+        IF NEW.flow_slug = 'test_start_race' THEN
+          DELETE FROM pgflow.flows WHERE flow_slug = NEW.flow_slug;
+        END IF;
+
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+      """)
+
+      TestRepo.query!("""
+      CREATE TRIGGER delete_start_race_flow
+      BEFORE INSERT ON pgflow.runs
+      FOR EACH ROW EXECUTE FUNCTION pgflow_tests.delete_start_race_flow()
+      """)
+
+      try do
+        assert {:error, {:flow_not_compiled, "test_start_race"}} =
+                 PgFlow.start_flow("test_start_race", %{})
+      after
+        TestRepo.query!("DROP TRIGGER IF EXISTS delete_start_race_flow ON pgflow.runs")
+        TestRepo.query!("DROP FUNCTION IF EXISTS pgflow_tests.delete_start_race_flow()")
+      end
+    end
+
+    test "preserves unrelated database errors" do
+      {:ok, _} =
+        Client.upsert_flow("test_missing_queue_start",
+          steps: [%{slug: "work", deps: []}]
+        )
+
+      TestRepo.query!("SELECT pgmq.drop_queue($1::text)", ["test_missing_queue_start"])
+
+      assert {:error, %Postgrex.Error{postgres: postgres}} =
+               PgFlow.start_flow("test_missing_queue_start", %{})
+
+      refute postgres[:constraint] == "runs_flow_slug_fkey"
+    end
+  end
+
   describe "PgFlow facade" do
     test "upsert_flow delegates to Client" do
       {:ok, result} =

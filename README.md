@@ -46,7 +46,7 @@ Add `pgflow` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:pgflow, "~> 0.3.3"}
+    {:pgflow, "~> 0.3.4"}
   ]
 end
 ```
@@ -149,10 +149,13 @@ mix ecto.migrate
 config :my_app, MyApp.PgFlow,
   repo: MyApp.Repo,
   flows: [MyApp.Flows.ProcessOrder],
+  heartbeat_interval: 10_000,           # refresh persisted worker health (maximum: 20s)
   signal_strategy: :notify              # use LISTEN/NOTIFY for low-latency (requires pgmq 1.8+)
 ```
 
 All options have sensible defaults — only `repo` is required. See `PgFlow.Config` for the full list (concurrency, batch size, poll intervals, recovery, etc.).
+
+Workers refresh their persisted heartbeat independently of polling or notification activity. Hosts can query readiness with `PgFlow.Workers.healthy?(MyApp.Repo, "process_order")`, which returns `{:ok, true | false}` or an error tuple when the database is unavailable.
 
 ```elixir
 # lib/my_app/application.ex

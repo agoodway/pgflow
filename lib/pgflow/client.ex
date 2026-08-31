@@ -43,6 +43,8 @@ defmodule PgFlow.Client do
 
   The flow can be specified by module name or slug atom/string.
   Returns `{:ok, run_id}` on success or `{:error, reason}` on failure.
+  A missing database definition returns
+  `{:error, {:flow_not_compiled, flow_slug}}`.
 
   ## Examples
 

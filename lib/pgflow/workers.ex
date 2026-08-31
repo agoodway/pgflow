@@ -16,6 +16,25 @@ defmodule PgFlow.Workers do
   @default_limit 50
 
   @doc """
+  Reports whether a flow has at least one healthy persisted worker.
+
+  A worker is healthy when it is not stopped or deprecated and its heartbeat
+  is less than 30 seconds old, matching the health semantics used by `list/2`
+  and `count/2`.
+  """
+  @spec healthy?(module(), String.t()) :: {:ok, boolean()} | {:error, term()}
+  def healthy?(repo, flow_slug) do
+    database_result(fn ->
+      healthy? =
+        Worker
+        |> apply_filters(flow_slug: flow_slug, health_status: :healthy)
+        |> repo.exists?()
+
+      {:ok, healthy?}
+    end)
+  end
+
+  @doc """
   Gets a worker with its calculated health and queue load.
   """
   @spec get(module(), Ecto.UUID.t()) ::
