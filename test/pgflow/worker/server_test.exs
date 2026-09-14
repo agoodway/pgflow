@@ -366,6 +366,47 @@ defmodule PgFlow.Worker.ServerTest do
     end
   end
 
+  defmodule ContextSnapshotFlow do
+    @moduledoc false
+    use PgFlow.Flow
+
+    @flow slug: :context_snapshot_flow, max_attempts: 1
+
+    step :root do
+      fn input, ctx ->
+        send(
+          Process.whereis(:pgflow_context_snapshot_receiver),
+          {:context_snapshot, :root, input, ctx.flow_input,
+           PgFlow.Context.flow_input_loaded?(ctx)}
+        )
+
+        [1]
+      end
+    end
+
+    step :dependent, depends_on: [:root] do
+      fn _input, ctx ->
+        send(
+          Process.whereis(:pgflow_context_snapshot_receiver),
+          {:context_snapshot, :dependent, ctx.flow_input, PgFlow.Context.flow_input_loaded?(ctx)}
+        )
+
+        %{ok: true}
+      end
+    end
+
+    map :mapped, array: :root do
+      fn item, ctx ->
+        send(
+          Process.whereis(:pgflow_context_snapshot_receiver),
+          {:context_snapshot, :map, ctx.flow_input, PgFlow.Context.flow_input_loaded?(ctx)}
+        )
+
+        item
+      end
+    end
+  end
+
   # ============= Serialization Edge Case Flow Test Modules =============
 
   defmodule BadJsonOutputFlow do
@@ -2181,6 +2222,25 @@ defmodule PgFlow.Worker.ServerTest do
   # ============= Context Struct Tests =============
 
   describe "context struct" do
+    test "JSON null is loaded only for the root non-map claim", %{
+      task_supervisor: task_supervisor
+    } do
+      true = Process.register(self(), :pgflow_context_snapshot_receiver)
+      flow_slug = compile_flow(ContextSnapshotFlow)
+      worker_pid = start_worker(ContextSnapshotFlow, task_supervisor)
+      _ = Server.get_state(worker_pid)
+
+      run_id = start_flow_run(flow_slug, nil)
+      send(worker_pid, :poll_now)
+
+      assert_receive {:context_snapshot, :root, nil, nil, true}, 5_000
+      assert_receive {:context_snapshot, :dependent, :not_loaded, false}, 5_000
+      assert_receive {:context_snapshot, :map, :not_loaded, false}, 5_000
+      assert {:ok, "completed"} = wait_for_run_completion(run_id)
+
+      Server.stop(worker_pid)
+    end
+
     test "dependent step can access flow_input via Context.get_flow_input", %{
       task_supervisor: task_supervisor
     } do

@@ -83,12 +83,23 @@ defmodule PgFlow.Context do
   @doc """
   Normalizes a `flow_input` column from SQL into a context field.
 
-  SQL `NULL` means the step has no flow input snapshot (dependent/map steps);
-  any other decoded JSON term is cached as-is, including `false` and `null`.
+  This convenience form treats decoded `nil` as an absent snapshot. Call
+  `normalize_flow_input/2` when claim context is available and JSON `null`
+  must be distinguished from SQL `NULL`.
   """
   @spec normalize_flow_input(term()) :: flow_input()
-  def normalize_flow_input(nil), do: :not_loaded
-  def normalize_flow_input(value), do: value
+  def normalize_flow_input(value), do: normalize_flow_input(value, not is_nil(value))
+
+  @doc """
+  Normalizes a claimed `flow_input` using whether the SQL claim included its
+  snapshot.
+
+  The explicit indicator preserves JSON `null` as loaded even though Postgrex
+  decodes both JSON `null` and SQL `NULL` to `nil`.
+  """
+  @spec normalize_flow_input(term(), boolean()) :: flow_input()
+  def normalize_flow_input(value, true), do: value
+  def normalize_flow_input(_value, false), do: :not_loaded
 
   @doc """
   Loads the flow input from the database.

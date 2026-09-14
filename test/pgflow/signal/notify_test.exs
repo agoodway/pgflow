@@ -18,6 +18,14 @@ defmodule PgFlow.Signal.NotifyTest do
   alias PgFlow.Signal.Notify
   alias PgFlow.TestRepo
 
+  defmodule NotificationsProbe do
+    @moduledoc false
+
+    def listen(conn, _channel) do
+      Agent.get_and_update(conn, fn [result | rest] -> {result, rest} end)
+    end
+  end
+
   @moduletag timeout: 30_000
   @moduletag :integration
 
@@ -54,6 +62,62 @@ defmodule PgFlow.Signal.NotifyTest do
   end
 
   describe "init/1" do
+    test "register_worker rejects a dead worker without replacing the live binding" do
+      live_pid = self()
+
+      dead_pid =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      dead_ref = Process.monitor(dead_pid)
+      send(dead_pid, :stop)
+      assert_receive {:DOWN, ^dead_ref, :process, ^dead_pid, :normal}
+
+      state = %{
+        repo: nil,
+        conn: nil,
+        workers: %{
+          "flow" => %{worker_pid: live_pid, monitor_ref: make_ref(), listen_ref: nil}
+        },
+        channels: %{"pgmq.q_flow.INSERT" => "flow"}
+      }
+
+      assert {:reply, {:error, :worker_not_alive}, ^state} =
+               Notify.handle_call({:register_worker, "flow", dead_pid}, self(), state)
+    end
+
+    test "register_worker converts notification connection exits into an error" do
+      state = %{repo: nil, conn: nil, workers: %{}, channels: %{}}
+
+      assert {:reply, {:error, {:listen_exit, _reason}}, ^state} =
+               Notify.handle_call({:register_worker, "flow", self()}, self(), state)
+    end
+
+    test "async replacement registration retries a transient listen failure" do
+      {:ok, conn} = Agent.start_link(fn -> [{:error, :closed}, {:ok, make_ref()}] end)
+
+      state = %{
+        repo: nil,
+        conn: conn,
+        notifications_module: NotificationsProbe,
+        workers: %{},
+        channels: %{}
+      }
+
+      assert {:noreply, ^state} =
+               Notify.handle_cast({:register_worker_async, "flow", self()}, state)
+
+      assert_receive {:retry_register_worker, "flow", test_pid, 2} = retry_message, 1_500
+      assert test_pid == self()
+
+      assert {:noreply, rebound_state} = Notify.handle_info(retry_message, state)
+      assert rebound_state.workers["flow"].worker_pid == self()
+      assert rebound_state.channels["pgmq.q_flow.INSERT"] == "flow"
+    end
+
     test "worker DOWN only removes the local binding without a database call" do
       pid = self()
 

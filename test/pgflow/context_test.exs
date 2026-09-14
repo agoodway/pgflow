@@ -572,5 +572,10 @@ defmodule PgFlow.ContextTest do
       assert Context.normalize_flow_input(nil) == :not_loaded
       assert Context.normalize_flow_input(false) == false
     end
+
+    test "normalize_flow_input/2 distinguishes loaded JSON null from an absent snapshot" do
+      assert Context.normalize_flow_input(nil, true) == nil
+      assert Context.normalize_flow_input(nil, false) == :not_loaded
+    end
   end
 end

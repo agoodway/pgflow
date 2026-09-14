@@ -1064,7 +1064,8 @@ defmodule PgFlow.Worker.Server do
       task_index: task_index,
       attempt: attempt,
       repo: state.repo,
-      flow_input: Context.normalize_flow_input(flow_input)
+      flow_input:
+        Context.normalize_flow_input(flow_input, flow_input_snapshot_included?(step_def))
     }
 
     # Start task under supervisor
@@ -1377,6 +1378,10 @@ defmodule PgFlow.Worker.Server do
       true ->
         input_data
     end
+  end
+
+  defp flow_input_snapshot_included?(step_def) do
+    step_def.step_type != :map and Enum.empty?(step_def.depends_on)
   end
 
   # Announces skips this worker has not announced yet for `run_id`.

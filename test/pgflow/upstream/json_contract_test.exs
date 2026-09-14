@@ -171,6 +171,7 @@ defmodule PgFlow.Upstream.JsonContractTest do
 
       ctx = build_ctx(run_id, row)
       assert Context.get_flow_input(ctx) == nil
+      assert Context.flow_input_loaded?(ctx)
 
       loaded = Context.preload_flow_input(%{ctx | flow_input: :not_loaded})
       assert loaded.flow_input == nil
@@ -310,7 +311,7 @@ defmodule PgFlow.Upstream.JsonContractTest do
       task_index: row.task_index,
       attempt: row.attempt,
       repo: TestRepo,
-      flow_input: Context.normalize_flow_input(row.flow_input)
+      flow_input: Context.normalize_flow_input(row.flow_input, true)
     }
   end
 

@@ -4,6 +4,7 @@ defmodule PgFlow.Worker.UpstreamLifecycleTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.IntegrationCase
+  alias PgFlow.Signal.Notify
   alias PgFlow.Test.UnavailableRepo, as: BootstrapFailingRepo
   alias PgFlow.TestRepo
   alias PgFlow.Worker.Server
@@ -59,6 +60,45 @@ defmodule PgFlow.Worker.UpstreamLifecycleTest do
         receive do
         end
       end
+    end
+  end
+
+  defmodule NotifyProbe do
+    @moduledoc false
+    use GenServer
+
+    def start_link(_opts), do: GenServer.start_link(__MODULE__, %{}, name: PgFlow.Signal.Notify)
+
+    @impl GenServer
+    def init(state), do: {:ok, state}
+
+    @impl GenServer
+    def handle_call({:register_worker, flow_slug, worker_pid}, _from, state) do
+      {:reply, :ok, register(state, flow_slug, worker_pid)}
+    end
+
+    @impl GenServer
+    def handle_cast({:register_worker_async, flow_slug, worker_pid}, state) do
+      {:noreply, register(state, flow_slug, worker_pid)}
+    end
+
+    defp register(state, flow_slug, worker_pid) do
+      monitor_ref = Process.monitor(worker_pid)
+
+      case Map.get(state, flow_slug) do
+        %{monitor_ref: old_ref} -> Process.demonitor(old_ref, [:flush])
+        nil -> :ok
+      end
+
+      Map.put(state, flow_slug, %{worker_pid: worker_pid, monitor_ref: monitor_ref})
+    end
+
+    @impl GenServer
+    def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+      state =
+        Map.reject(state, fn {_flow_slug, registration} -> registration.monitor_ref == ref end)
+
+      {:noreply, state}
     end
   end
 
@@ -384,6 +424,47 @@ defmodule PgFlow.Worker.UpstreamLifecycleTest do
       assert DynamicSupervisor.count_children(WorkerSupervisor).active == 1
     end
 
+    test "notify registration follows a heartbeat replacement", %{
+      task_supervisor: task_supervisor
+    } do
+      flow_slug = compile_flow(BlockedHandlerFlow)
+      notify_pid = start_supervised!(NotifyProbe)
+      supervisor_pid = start_supervisor!(task_supervisor, signal_strategy: :notify)
+
+      on_exit(fn ->
+        stop_supervisor!(supervisor_pid, task_supervisor)
+      end)
+
+      {:ok, worker_pid} = WorkerSupervisor.start_worker(BlockedHandlerFlow, repo: TestRepo)
+      Sandbox.allow(TestRepo, self(), worker_pid)
+      state = Server.get_state(worker_pid)
+
+      assert :ok = Notify.register_worker(notify_pid, flow_slug, worker_pid)
+
+      TestRepo.query!(
+        "UPDATE pgflow.workers SET deprecated_at = NOW() WHERE worker_id = $1",
+        [Ecto.UUID.dump!(state.worker_id)]
+      )
+
+      send(worker_pid, {:heartbeat, state.heartbeat_token})
+
+      assert wait_until(fn ->
+               case WorkerSupervisor.find_worker(BlockedHandlerFlow) do
+                 nil -> false
+                 replacement_pid -> replacement_pid != worker_pid
+               end
+             end)
+
+      replacement_pid = WorkerSupervisor.find_worker(BlockedHandlerFlow)
+
+      assert wait_until(fn ->
+               case :sys.get_state(notify_pid) do
+                 %{^flow_slug => %{worker_pid: ^replacement_pid}} -> true
+                 _ -> false
+               end
+             end)
+    end
+
     test "missing worker registration on heartbeat drains and OTP replacement starts a fresh worker",
          %{
            task_supervisor: task_supervisor
@@ -556,9 +637,9 @@ defmodule PgFlow.Worker.UpstreamLifecycleTest do
     name
   end
 
-  defp start_supervisor!(task_supervisor) do
+  defp start_supervisor!(task_supervisor, opts \\ []) do
     true = Process.register(task_supervisor, PgFlow.TaskSupervisor)
-    config = supervisor_config()
+    config = supervisor_config(opts)
     {:ok, supervisor_pid} = WorkerSupervisor.start_link(config)
     supervisor_pid
   end
@@ -581,12 +662,12 @@ defmodule PgFlow.Worker.UpstreamLifecycleTest do
     :persistent_term.erase({PgFlow, :repo})
   end
 
-  defp supervisor_config do
+  defp supervisor_config(opts) do
     PgFlow.Config.validate!(
       repo: TestRepo,
       max_concurrency: 1,
       batch_size: 1,
-      signal_strategy: :polling,
+      signal_strategy: Keyword.get(opts, :signal_strategy, :polling),
       heartbeat_interval: 100,
       min_poll_interval: 50,
       max_poll_interval: 5_000,

@@ -18,6 +18,8 @@ defmodule PgFlow.Signal.Notify do
   alias PgFlow.Queries.Pgmq
 
   @min_pgmq_version "1.8.0"
+  @registration_retry_base_ms 1_000
+  @registration_retry_max_ms 30_000
 
   @type worker_entry :: %{
           worker_pid: pid(),
@@ -57,6 +59,18 @@ defmodule PgFlow.Signal.Notify do
   @spec register_worker(GenServer.server(), String.t(), pid()) :: :ok | {:error, term()}
   def register_worker(server \\ __MODULE__, flow_slug, worker_pid) do
     GenServer.call(server, {:register_worker, flow_slug, worker_pid})
+  end
+
+  @doc """
+  Registers a replacement worker without blocking its supervisor restart.
+
+  Transient LISTEN failures retry with capped exponential backoff while the
+  replacement remains alive. Initial registration remains synchronous through
+  `register_worker/3` so `PgFlow.FlowStarter` can report startup failures.
+  """
+  @spec register_worker_async(GenServer.server(), String.t(), pid()) :: :ok
+  def register_worker_async(server \\ __MODULE__, flow_slug, worker_pid) do
+    GenServer.cast(server, {:register_worker_async, flow_slug, worker_pid})
   end
 
   @doc """
@@ -101,33 +115,12 @@ defmodule PgFlow.Signal.Notify do
 
   @impl GenServer
   def handle_call({:register_worker, flow_slug, worker_pid}, _from, state) do
-    queue_name = canonical_queue_name(flow_slug)
-    channel = pgmq_channel(queue_name)
-    monitor_ref = Process.monitor(worker_pid)
-
-    # Issue the new LISTEN first, then tear down the prior binding on success.
-    # If listen/2 fails, the old binding remains intact — callers just see
-    # :error and the pre-existing worker keeps receiving notifications.
-    case Postgrex.Notifications.listen(state.conn, channel) do
-      {status, listen_ref} when status in [:ok, :eventually] ->
-        state = cleanup_existing_worker(state, flow_slug)
-
-        state = %{
-          state
-          | workers:
-              Map.put(state.workers, flow_slug, %{
-                worker_pid: worker_pid,
-                monitor_ref: monitor_ref,
-                listen_ref: listen_ref
-              }),
-            channels: Map.put(state.channels, channel, flow_slug)
-        }
-
+    case register_worker_binding(state, flow_slug, worker_pid) do
+      {:ok, state} ->
         {:reply, :ok, state}
 
-      {:error, reason} ->
-        Process.demonitor(monitor_ref, [:flush])
-        Logger.error("Signal.Notify: failed to listen on #{channel}: #{inspect(reason)}")
+      {:error, reason, state} ->
+        Logger.error("Signal.Notify: failed to listen for #{flow_slug}: #{inspect(reason)}")
         {:reply, {:error, reason}, state}
     end
   end
@@ -146,6 +139,11 @@ defmodule PgFlow.Signal.Notify do
       {nil, _workers} ->
         {:reply, :ok, state}
     end
+  end
+
+  @impl GenServer
+  def handle_cast({:register_worker_async, flow_slug, worker_pid}, state) do
+    {:noreply, register_worker_binding_with_retry(state, flow_slug, worker_pid, 1)}
   end
 
   @impl GenServer
@@ -177,11 +175,122 @@ defmodule PgFlow.Signal.Notify do
     end
   end
 
+  def handle_info({:retry_register_worker, flow_slug, worker_pid, attempt}, state) do
+    cond do
+      not Process.alive?(worker_pid) ->
+        {:noreply, state}
+
+      registered_worker?(state, flow_slug, worker_pid) ->
+        {:noreply, state}
+
+      newer_worker_registered?(state, flow_slug, worker_pid) ->
+        {:noreply, state}
+
+      true ->
+        {:noreply, register_worker_binding_with_retry(state, flow_slug, worker_pid, attempt)}
+    end
+  end
+
   def handle_info(_message, state) do
     {:noreply, state}
   end
 
   # Private helpers
+
+  defp register_worker_binding(state, flow_slug, worker_pid) do
+    if Process.alive?(worker_pid) do
+      do_register_worker_binding(state, flow_slug, worker_pid)
+    else
+      {:error, :worker_not_alive, state}
+    end
+  end
+
+  defp do_register_worker_binding(state, flow_slug, worker_pid) do
+    queue_name = canonical_queue_name(flow_slug)
+    channel = pgmq_channel(queue_name)
+    monitor_ref = Process.monitor(worker_pid)
+    notifications_module = Map.get(state, :notifications_module, Postgrex.Notifications)
+
+    listen_result =
+      try do
+        notifications_module.listen(state.conn, channel)
+      catch
+        :exit, reason -> {:listen_exit, reason}
+      end
+
+    # Issue the new LISTEN first, then tear down the prior binding on success.
+    # If listen/2 fails, the old binding remains intact.
+    case listen_result do
+      {status, listen_ref} when status in [:ok, :eventually] ->
+        state = cleanup_existing_worker(state, flow_slug)
+
+        state = %{
+          state
+          | workers:
+              Map.put(state.workers, flow_slug, %{
+                worker_pid: worker_pid,
+                monitor_ref: monitor_ref,
+                listen_ref: listen_ref
+              }),
+            channels: Map.put(state.channels, channel, flow_slug)
+        }
+
+        {:ok, state}
+
+      {:error, reason} ->
+        Process.demonitor(monitor_ref, [:flush])
+        {:error, reason, state}
+
+      {:listen_exit, reason} ->
+        Process.demonitor(monitor_ref, [:flush])
+        {:error, {:listen_exit, reason}, state}
+    end
+  end
+
+  defp register_worker_binding_with_retry(state, flow_slug, worker_pid, attempt) do
+    if Process.alive?(worker_pid) do
+      case register_worker_binding(state, flow_slug, worker_pid) do
+        {:ok, state} ->
+          state
+
+        {:error, reason, state} ->
+          delay = registration_retry_delay(attempt)
+
+          Logger.warning(
+            "Signal.Notify: failed to bind replacement for #{flow_slug}, retrying in #{delay}ms: #{inspect(reason)}"
+          )
+
+          Process.send_after(
+            self(),
+            {:retry_register_worker, flow_slug, worker_pid, attempt + 1},
+            delay
+          )
+
+          state
+      end
+    else
+      state
+    end
+  end
+
+  defp registered_worker?(state, flow_slug, worker_pid) do
+    match?(%{worker_pid: ^worker_pid}, Map.get(state.workers, flow_slug))
+  end
+
+  defp newer_worker_registered?(state, flow_slug, worker_pid) do
+    case Map.get(state.workers, flow_slug) do
+      %{worker_pid: registered_pid} when registered_pid != worker_pid ->
+        Process.alive?(registered_pid)
+
+      _ ->
+        false
+    end
+  end
+
+  defp registration_retry_delay(attempt) do
+    exponent = min(attempt - 1, 5)
+    min(@registration_retry_base_ms * Integer.pow(2, exponent), @registration_retry_max_ms)
+  end
 
   defp find_worker_by_pid(workers, pid) do
     Enum.find(workers, fn {_slug, entry} -> entry.worker_pid == pid end)

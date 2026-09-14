@@ -16,6 +16,7 @@ defmodule PgFlow.WorkerSupervisor do
   use DynamicSupervisor
   require Logger
 
+  alias PgFlow.Signal.Notify
   alias PgFlow.Worker.Server, as: WorkerServer
 
   @registry_table :pgflow_worker_registry
@@ -107,7 +108,9 @@ defmodule PgFlow.WorkerSupervisor do
 
     case WorkerServer.start_link(worker_config) do
       {:ok, pid} = result ->
+        replacement? = replacing_worker?(flow_module)
         register_worker(flow_module, pid)
+        maybe_register_replacement_notify(worker_config, flow_module, pid, replacement?)
         result
 
       other ->
@@ -207,6 +210,38 @@ defmodule PgFlow.WorkerSupervisor do
   end
 
   # Private Functions
+
+  defp maybe_register_replacement_notify(
+         %{signal_strategy: :notify},
+         flow_module,
+         pid,
+         true
+       ) do
+    flow_slug = flow_module.__pgflow_definition__().slug |> Atom.to_string()
+    Notify.register_worker_async(flow_slug, pid)
+  end
+
+  defp maybe_register_replacement_notify(_config, _flow_module, _pid, _replacement?), do: :ok
+
+  defp replacing_worker?(flow_module) do
+    case :ets.whereis(@registry_table) do
+      :undefined ->
+        false
+
+      _table ->
+        stale_worker_registered?(flow_module)
+    end
+  end
+
+  defp stale_worker_registered?(flow_module) do
+    case :ets.lookup(@registry_table, flow_module) do
+      [{^flow_module, previous_pid}] when is_pid(previous_pid) ->
+        not Process.alive?(previous_pid)
+
+      [] ->
+        false
+    end
+  end
 
   defp live_worker_summary({_flow_module, pid}) when is_pid(pid) do
     if Process.alive?(pid), do: [%{pid: pid, status: :running}], else: []
