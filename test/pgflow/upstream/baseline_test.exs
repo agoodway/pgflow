@@ -13,6 +13,16 @@ defmodule PgFlow.Upstream.BaselineTest do
 
   describe "isolated fixture lifecycle" do
     @tag :fixture_lifecycle
+    test "setup transfers repository ownership to explicit teardown" do
+      fixture = UpstreamFixture.setup!()
+      on_exit(fn -> UpstreamFixture.teardown!(fixture) end)
+
+      {:links, links} = Process.info(self(), :links)
+
+      refute fixture.repo_pid in links
+    end
+
+    @tag :fixture_lifecycle
     test "resolves non-default helper connection values at call time" do
       config = Application.fetch_env!(:pgflow, PgFlow.TestRepo)
       real_port = Integer.to_string(config[:port])

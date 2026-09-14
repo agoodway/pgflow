@@ -106,7 +106,9 @@ defmodule PgFlow.Test.UpstreamFixture do
     }
 
     try do
-      install!(fixture)
+      installed_fixture = install!(fixture)
+      Process.unlink(repo_pid)
+      installed_fixture
     rescue
       exception ->
         if Process.alive?(repo_pid), do: Supervisor.stop(repo_pid)
