@@ -18,40 +18,70 @@ cd demo
 # 2. Install dependencies
 mix deps.get
 
-# 3. Generate migrations
-#
-#    `pgflow.setup --dashboard` writes a single consumer migration that
-#    calls `PgFlow.Migration.up/0`, `PgFlow.HelpersMigration.up/0`, and
-#    `PgFlowDashboard.Migration.up/0` — SQL is vendored inside pgflow.
-#    The demo retains the historical dashboard schema for compatibility
-#    coverage; the core-backed LiveView dashboard does not require it.
-#
-#    On Postgres environments that already ship pgmq as an extension
-#    (Supabase, the bundled atlas-postgres-pgflow test image), the
-#    `CREATE EXTENSION pgmq` in this demo's `install_extensions.exs` is
-#    enough. On plain Postgres, run `mix pgflow.gen.pgmq_migration` first
-#    to install pgmq via SQL-only method.
-mix pgflow.setup --dashboard
-mix pgflow.gen.flow_migration PgflowDemo.Flows.ArticleFlow
-mix pgflow.gen.job_migration PgflowDemo.Jobs.ArticleFlowCleanup
-
-# 4. Create database and run migrations
+# 3. Create database and run committed migrations
 mix ecto.create
 mix ecto.migrate
 
-# 5. Setup assets
+# 4. Setup assets
 mix assets.setup
 
-# 6. Configure your LLM API key (see "LLM configuration" below)
+# 5. Configure your LLM API key (see "LLM configuration" below)
 cp .env.sample .env
 $EDITOR .env
 
-# 7. Run the server (or `pgflow start` from the repo root for hivemind + docker)
+# 6. Run the server (or `pgflow start` from the repo root for hivemind + docker)
 mix phx.server
 ```
 
+The demo keeps its historical committed migrations for Postgres extensions, pgmq,
+pgflow setup, flow/job compilation, and dashboard upgrades. Do **not** regenerate
+duplicate setup or definition migrations on existing databases; apply new
+upstream alignment work through the committed wrapper migration
+`upgrade_pgflow_upstream_alignment`.
+
+On fresh databases, `mix ecto.migrate` replays the full chain including that
+wrapper. On existing installations, only the new wrapper migration runs.
+
 - Demo app: http://localhost:4022
 - PgFlow Dashboard: http://localhost:4022/pgflow
+
+## Scenario verification (release gate)
+
+Executable scenarios are documented in [docs/SCENARIOS.md](docs/SCENARIOS.md).
+Baseline verification uses the same `ScenarioRunner` as the LiveView UI and
+requires no network or LLM credentials:
+
+```bash
+MIX_ENV=test mix pgflow_demo.verify_scenarios
+```
+
+Article/LLM integration is opt-in (`--include-llm`) and never required for CI.
+
+## Local production verification
+
+The demo-only Docker build context cannot resolve `{:pgflow, path: ".."}`.
+Production-mode verification against the parent checkout must run from the
+demo directory:
+
+```bash
+PGFLOW_DEMO_LOCAL=1 MIX_ENV=prod mix compile --warnings-as-errors
+```
+
+Production refuses to boot with a PgFlow dependency whose bundled core version is
+below 2. The demo-only Docker context currently resolves the published Hex
+dependency, so it cannot serve the synchronized scenarios until a matching release
+is published. `PGFLOW_DEMO_LOCAL=1` selects the parent checkout for local builds.
+
+## Release acceptance commands
+
+From `demo/`:
+
+```bash
+mix precommit
+mix assets.build
+MIX_ENV=test mix pgflow_demo.verify_scenarios
+PGFLOW_DEMO_LOCAL=1 MIX_ENV=prod mix compile --warnings-as-errors
+```
 
 ## LLM configuration
 

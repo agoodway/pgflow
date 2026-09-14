@@ -1,5 +1,6 @@
 defmodule PgFlow do
   @pgflow_core_version "0.5.0"
+  @upstream_sha "94490709f79ebf366141dd925b047f0c1013e759"
 
   @moduledoc """
   PgFlow is an Elixir implementation of the pgflow workflow engine.
@@ -9,9 +10,11 @@ defmodule PgFlow do
 
   ## Compatibility
 
-  This Elixir implementation is compatible with pgflow core version #{@pgflow_core_version}.
-  It uses the same database schema and SQL functions as the TypeScript/Deno implementation,
-  allowing both to run side-by-side against the same database.
+  `PgFlow.core_version/0` returns the legacy semantic version string
+  `"#{@pgflow_core_version}"` shared with early pgflow releases. It is **not**
+  the upstream npm package version and does not imply upstream `0.17.0` has
+  shipped. For the pinned upstream database contract use `PgFlow.upstream_sha/0`
+  and `PgFlow.compatibility_report/0`. See `docs/UPSTREAM_COMPATIBILITY.md`.
 
   ## Quick Start
 
@@ -162,6 +165,10 @@ defmodule PgFlow do
   @doc """
   Recompiles a flow definition at runtime.
 
+  Worker startup uses `PgFlow.Worker.Bootstrap.prepare/2` for shape verification.
+  Use this API for explicit runtime management when destructive recompilation
+  is intended.
+
   Unlike the compile-time DSL (`use PgFlow.Flow`), this creates flow
   definitions from plain data - for per-tenant automations and dynamic workflows.
 
@@ -282,8 +289,9 @@ defmodule PgFlow do
 
   ## Options
 
-    * `:poll_interval` - How often to poll for messages (default: 1000ms)
-    * `:visibility_timeout` - How long to hold messages (default: 30s)
+    * `:repo` - Ecto repository (defaults to the configured repository).
+
+  Polling and concurrency settings come from the PgFlow supervisor configuration.
 
   ## Examples
 
@@ -356,10 +364,12 @@ defmodule PgFlow do
   end
 
   @doc """
-  Returns the compatible pgflow core version.
+  Returns the legacy pgflow core semantic version string.
 
-  This version indicates which pgflow database schema and SQL functions
-  this Elixir implementation is compatible with.
+  This value is kept stable for existing callers. It does **not** track the
+  upstream npm release number or the bundled EctoEvolver core/helpers integers.
+  Use `compatibility_report/0` for the pinned upstream SHA and installed
+  version floors.
 
   ## Examples
 
@@ -369,4 +379,36 @@ defmodule PgFlow do
   """
   @spec core_version() :: String.t()
   def core_version, do: @pgflow_core_version
+
+  @doc """
+  Returns the pinned upstream pgflow git SHA this release aligns with.
+
+  Compatibility is defined against this commit, not against an unreleased npm
+  version such as upstream `0.17.0`.
+  """
+  @spec upstream_sha() :: String.t()
+  def upstream_sha, do: @upstream_sha
+
+  @doc """
+  Returns bundled core/helpers version floors and the pinned upstream SHA.
+
+  Use this in release notes, CI evidence, and operator runbooks. The
+  `core_version_string` field mirrors `core_version/0`; the integer
+  `bundled_core_version` and `bundled_helpers_version` fields are what
+  `mix pgflow.check_schema` verifies against the database.
+  """
+  @spec compatibility_report() :: %{
+          core_version_string: String.t(),
+          upstream_sha: String.t(),
+          bundled_core_version: non_neg_integer(),
+          bundled_helpers_version: non_neg_integer()
+        }
+  def compatibility_report do
+    %{
+      core_version_string: @pgflow_core_version,
+      upstream_sha: @upstream_sha,
+      bundled_core_version: PgFlow.Migration.current_version(),
+      bundled_helpers_version: PgFlow.HelpersMigration.current_version()
+    }
+  end
 end

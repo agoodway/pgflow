@@ -1,0 +1,132 @@
+{
+  "fixture_version": 1,
+  "baseline": {
+    "elixir_sha": "9dbaaaf",
+    "package_version": "0.3.4",
+    "core_version": 1,
+    "helpers_version": 4
+  },
+  "target": {
+    "core_version": 2,
+    "helpers_version": 5,
+    "upstream_sha": "94490709f79ebf366141dd925b047f0c1013e759",
+    "task_statuses": [
+      "cancelled",
+      "completed",
+      "failed",
+      "queued",
+      "skipped",
+      "started"
+    ],
+    "claim_signature": "pgflow.start_tasks(text,bigint[],uuid,text)",
+    "compile_signature": "pgflow.ensure_flow_compiled(text,jsonb)",
+    "record_fields": [
+      "flow_slug",
+      "run_id",
+      "step_slug",
+      "input",
+      "msg_id",
+      "task_index",
+      "flow_input",
+      "attempts_count"
+    ]
+  },
+  "seed_scenarios": [
+    "queued",
+    "started",
+    "completed",
+    "failed",
+    "job",
+    "map",
+    "mixed_case",
+    "null_message_id"
+  ],
+  "harness": {
+    "database_prefixes": ["pgflow_upstream_fixture_", "pgflow_compat_"],
+    "catalog_overlays": {
+      "missing_functions": ["ensure_workers"],
+      "pristine_migration_skips": [
+        {
+          "file": "20251209074533_pgflow_worker_management.sql",
+          "mode": "adapt_without_cron",
+          "reason": "pg_cron extension is bound to cron.database_name=pgflow_test in local/CI Postgres; disposable compat databases cannot install it without a server restart"
+        },
+        {
+          "file": "20260124113408_pgflow_auth_secret_support.sql",
+          "mode": "skip",
+          "reason": "ensure_workers-only migration; Elixir omits ensure_workers entirely"
+        },
+        {
+          "file": "20260607175525_pgflow_worker_start_mode.sql",
+          "mode": "adapt_without_cron",
+          "reason": "strip ensure_workers body while keeping worker_functions schema changes on plain Postgres"
+        }
+      ],
+      "extra_columns": [
+        {"schema": "pgflow", "table": "flows", "column": "flow_type"},
+        {"schema": "pgflow", "table": "pgflow_version", "column": "placeholder"},
+        {"schema": "pgflow", "table": "extensions_version", "column": "placeholder"}
+      ],
+      "extra_type_attributes": [
+        {"schema": "pgflow", "type": "step_task_record", "attribute": "attempts_count"},
+        {"schema": "pgflow", "type": "flows", "attribute": "flow_type"},
+        {"schema": "pgflow", "type": "pgflow_version", "attribute": "placeholder"},
+        {"schema": "pgflow", "type": "extensions_version", "attribute": "placeholder"}
+      ],
+      "helper_overridden_functions": [
+        "start_tasks",
+        "recover_stalled_tasks",
+        "prune_data_older_than"
+      ],
+      "extra_functions": [
+        "flow_exists",
+        "get_flow_input",
+        "get_step_output",
+        "register_worker"
+      ],
+      "extra_schemas": ["realtime"],
+      "parameter_name_only_functions": ["start_tasks", "mark_worker_stopped"]
+    },
+    "pgtap_lifecycle_files": [
+      "start_tasks/basic_start_tasks.test.sql",
+      "start_tasks/visibility_failure_rollback.test.sql",
+      "queue_identity/mixed_case_queue_lifecycle.test.sql",
+      "queue_identity/snapshot_unchanged_across_lifecycle.test.sql",
+      "fail_task_when_exhausted/when_exhausted_fail_marks_run_failed.test.sql",
+      "fail_task_when_exhausted/when_exhausted_skip_skips_step.test.sql",
+      "requeue_stalled_tasks/basic_requeue.test.sql",
+      "step_output/complete_task_single_step.test.sql",
+      "step_output/complete_task_null_output.test.sql",
+      "condition_evaluation/root_step_condition_unmet_skip.test.sql"
+    ],
+    "pgtap_prune_files": [
+      "maintenance/prune_completed_flows.test.sql",
+      "maintenance/prune_uses_task_snapshots.test.sql"
+    ],
+    "pgtap_profiles": {
+      "plain_postgres": {
+        "realtime": "shim",
+        "prune_function": "pgflow.prune_data_older_than(interval,text[])"
+      },
+      "upstream_core_only_prune": {
+        "realtime": "shim",
+        "prune_function": "pgflow.prune_data_older_than(interval)",
+        "note": "Upstream optional one-argument pruning fixture; not equivalent to Elixir filtered helper."
+      }
+    },
+    "typescript": {
+      "packages": ["dsl", "core", "edge-worker"],
+      "json_falsy_probe": {
+        "status": "unresolved",
+        "upstream_expression": "output || null",
+        "cases": [
+          {"input": false, "expected_sql": false, "upstream_coerces_to_null": true},
+          {"input": 0, "expected_sql": 0, "upstream_coerces_to_null": true},
+          {"input": "", "expected_sql": "", "upstream_coerces_to_null": true},
+          {"input": null, "expected_sql": null, "upstream_coerces_to_null": false}
+        ]
+      }
+    },
+    "interop_flow_slug": "interop_single_step"
+  }
+}

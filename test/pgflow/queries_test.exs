@@ -123,10 +123,11 @@ defmodule PgFlow.QueriesTest do
   end
 
   defp read_and_start_tasks(flow_slug, worker_id) do
-    {:ok, messages} = Flows.read(TestRepo, flow_slug, 30, 10)
+    queue_name = String.downcase(flow_slug)
+    {:ok, messages} = Flows.read(TestRepo, queue_name, 30, 10)
 
     msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
-    {:ok, task_details} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
+    {:ok, task_details} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id, queue_name)
     {messages, task_details}
   end
 
@@ -370,17 +371,18 @@ defmodule PgFlow.QueriesTest do
 
   # ── start_tasks ────────────────────────────────────────────────────
 
-  describe "start_tasks/4" do
+  describe "start_tasks/5" do
     test "returns task details for valid msg_ids" do
       flow_slug = compile_flow(SimpleFlow)
       _run_id = start_flow_run(flow_slug, %{"value" => 42})
 
       worker_id = register_worker(flow_slug)
+      queue_name = String.downcase(flow_slug)
 
-      {:ok, messages} = Flows.read(TestRepo, flow_slug, 30, 10)
+      {:ok, messages} = Flows.read(TestRepo, queue_name, 30, 10)
 
       msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
-      {:ok, task_details} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
+      {:ok, task_details} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id, queue_name)
 
       assert task_details != []
     end

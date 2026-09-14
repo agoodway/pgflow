@@ -33,6 +33,7 @@ defmodule PgFlow.IntegrationCase do
     :ok = Sandbox.checkout(PgFlow.TestRepo)
     # Use shared mode to avoid ownership issues
     Sandbox.mode(PgFlow.TestRepo, {:shared, self()})
+    on_exit(fn -> Sandbox.mode(PgFlow.TestRepo, :manual) end)
 
     # Reset the database to a clean state
     PgFlow.TestRepo.query!("SELECT pgflow_tests.reset_db()")
@@ -261,10 +262,17 @@ defmodule PgFlow.IntegrationCase do
     end)
   end
 
-  # Ensure a run_id is in binary UUID format
-  defp ensure_uuid_binary(run_id) when byte_size(run_id) == 16, do: run_id
+  @doc """
+  Returns the canonical PGMQ queue route for a flow slug.
 
-  defp ensure_uuid_binary(run_id) when is_binary(run_id) do
+  Matches PostgreSQL's default `lower(flow_slug)` snapshot on steps and tasks.
+  """
+  def canonical_queue_name(flow_slug) when is_binary(flow_slug), do: String.downcase(flow_slug)
+
+  # Ensure a run_id is in binary UUID format
+  def ensure_uuid_binary(run_id) when byte_size(run_id) == 16, do: run_id
+
+  def ensure_uuid_binary(run_id) when is_binary(run_id) do
     string_to_uuid(run_id)
   end
 

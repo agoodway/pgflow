@@ -1,0 +1,35 @@
+{
+  "files": [
+    "20260607175525_pgflow_worker_start_mode.sql",
+    "20260904095427_pgflow_task_lifecycle_hardening.sql",
+    "20260907082520_pgflow_remove_legacy_flow_compilation.sql",
+    "20260913093141_pgflow_persist_queue_identity.sql"
+  ],
+  "output_sha256": "2c7480a973996324274365fa389bad8501126812589a007ce8b01c7563cf1332",
+  "removals": [
+    {
+      "object": "pgflow.ensure_workers()",
+      "reason": "requires Supabase-only net.http_post"
+    }
+  ],
+  "source_sha256": {
+    "20260607175525_pgflow_worker_start_mode.sql": "29c66ed86b85e2ae5693fc49ec410c901bfeebf320cda2a02720dccda233640a",
+    "20260904095427_pgflow_task_lifecycle_hardening.sql": "41fb8e26642685f2269aa0bcc9bd4e9a512292bd7f2467f59d3577e1687f2d68",
+    "20260907082520_pgflow_remove_legacy_flow_compilation.sql": "bc10af88b655a84f271a5aa5aea79f8ac74680e423293f8be1fac5656b4983b0",
+    "20260913093141_pgflow_persist_queue_identity.sql": "156de3b8a73812cdba59ee19af1ec8524834f74209c9cb914a2d575c33fe505a"
+  },
+  "statement_count": 41,
+  "transformations": [
+    {
+      "change": "SET lock_timeout = '10s' -> SET LOCAL lock_timeout = '10s'",
+      "reason": "transaction-local setting does not leak into pooled connections"
+    },
+    {
+      "change": "start_tasks installations dispatch on seven- or eight-column step_task_record",
+      "reason": "preserve the Elixir attempts_count extension"
+    }
+  ],
+  "upstream_path": "pkgs/core/supabase/migrations",
+  "upstream_repo": "pgflow-dev/pgflow",
+  "upstream_sha": "94490709f79ebf366141dd925b047f0c1013e759"
+}

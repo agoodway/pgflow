@@ -6,6 +6,7 @@ defmodule PgFlow.WorkerSummary do
   @fields [
     :worker_id,
     :flow_slug,
+    :queue_name,
     :flow_type,
     :last_heartbeat_at,
     :health_status,
@@ -13,12 +14,13 @@ defmodule PgFlow.WorkerSummary do
     :completed_tasks_24h
   ]
 
-  @enforce_keys @fields
+  @enforce_keys @fields -- [:queue_name]
   defstruct @fields
 
   @type t :: %__MODULE__{
           worker_id: Ecto.UUID.t(),
           flow_slug: String.t(),
+          queue_name: String.t(),
           flow_type: String.t(),
           last_heartbeat_at: DateTime.t(),
           health_status: String.t(),

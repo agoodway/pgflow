@@ -317,7 +317,8 @@ defmodule PgFlow.FlowStarter do
         emit(:failed_permanent, module, updated_ms)
 
         Logger.error(
-          "FlowStarter: permanent failure for #{inspect(module)} at #{phase}: #{inspect(reason)}"
+          "FlowStarter: permanent failure for #{inspect(module)} at #{phase}: #{inspect(reason)}; " <>
+            "run `mix pgflow.check_schema`"
         )
 
         state = put_module(state, updated_ms) |> maybe_mark_ready()
@@ -355,6 +356,7 @@ defmodule PgFlow.FlowStarter do
   def handle_cast({:retry_now, module}, state) do
     case Map.get(state.modules, module) do
       nil -> {:noreply, state}
+      %{status: :succeeded} -> {:noreply, state}
       _ms -> {:noreply, schedule_attempt(state, module, 0)}
     end
   end
@@ -386,15 +388,29 @@ defmodule PgFlow.FlowStarter do
   # registration, which is idempotent).
   defp run_worker_phase(ms, state) do
     case WorkerSupervisor.start_worker(ms.module, repo: state.repo) do
-      {:ok, pid} -> {:ok, ms, pid}
-      {:error, reason} -> {:error, :transient, reason, :worker}
+      {:ok, pid} ->
+        {:ok, ms, pid}
+
+      {:error, {:shutdown, {:bootstrap_failed, reason}}} ->
+        {:error, classify_worker_start_error(reason), reason, :worker}
+
+      {:error, {:bootstrap_failed, reason}} ->
+        {:error, classify_worker_start_error(reason), reason, :worker}
+
+      {:error, reason} ->
+        {:error, :transient, reason, :worker}
     end
   end
 
+  defp classify_worker_start_error({:flow_shape_mismatch, _}), do: :permanent
+  defp classify_worker_start_error({:schema_incompatible, _}), do: :permanent
+  defp classify_worker_start_error(reason), do: classify_db_error(reason)
+
   defp maybe_run_notify_phases(ms, %State{signal_strategy: :notify} = state, worker_pid) do
     slug = flow_slug(ms.module)
+    queue_name = canonical_queue_name(slug)
 
-    with {:ok, ms} <- run_notify_db(ms, state, slug) do
+    with {:ok, ms} <- run_notify_db(ms, state, queue_name) do
       run_notify_register(ms, slug, worker_pid)
     end
   end
@@ -403,8 +419,8 @@ defmodule PgFlow.FlowStarter do
 
   # Phase 3 — pgmq enable_notify_insert. Returns tuples; deterministic SQL
   # faults are permanent, connection-layer hiccups are transient.
-  defp run_notify_db(ms, state, slug) do
-    case PgmqQueries.enable_notify_insert(state.repo, slug, state.notify_throttle_ms) do
+  defp run_notify_db(ms, state, queue_name) do
+    case PgmqQueries.enable_notify_insert(state.repo, queue_name, state.notify_throttle_ms) do
       :ok -> {:ok, ms}
       {:error, reason} -> {:error, classify_db_error(reason), reason, :notify_db}
     end
@@ -489,6 +505,8 @@ defmodule PgFlow.FlowStarter do
   defp flow_slug(module) do
     module.__pgflow_definition__().slug |> Atom.to_string()
   end
+
+  defp canonical_queue_name(flow_slug), do: String.downcase(flow_slug)
 
   # ── Readiness ──────────────────────────────────────────────────────
 

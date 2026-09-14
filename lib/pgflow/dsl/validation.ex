@@ -126,10 +126,31 @@ defmodule PgFlow.DSL.Validation do
     :ok
   end
 
-  defp validate_pattern!(_key, val, _env) when is_map(val), do: :ok
+  defp validate_pattern!(key, val, env) do
+    if json_pattern?(val),
+      do: :ok,
+      else: compile_error!(env, ":#{key} must be JSON-compatible, got: #{inspect(val)}")
+  end
 
-  defp validate_pattern!(key, val, env),
-    do: compile_error!(env, ":#{key} must be a map, got: #{inspect(val)}")
+  defp json_pattern?(val) when is_struct(val), do: false
+
+  defp json_pattern?(val) when is_map(val) do
+    Enum.all?(val, fn {key, value} ->
+      json_key?(key) and json_pattern?(value)
+    end)
+  end
+
+  defp json_pattern?(val) when is_list(val), do: json_array?(val)
+  defp json_pattern?(val) when is_binary(val), do: String.valid?(val)
+
+  defp json_pattern?(val), do: is_nil(val) or is_boolean(val) or is_number(val) or is_binary(val)
+
+  defp json_array?([]), do: true
+  defp json_array?([head | tail]), do: json_pattern?(head) and json_array?(tail)
+  defp json_array?(_), do: false
+
+  defp json_key?(key) when is_binary(key), do: String.valid?(key)
+  defp json_key?(key), do: is_atom(key)
 
   defp validate_mode!(_key, val, _env) when val in @skip_modes, do: :ok
 

@@ -23,6 +23,10 @@ defmodule PgFlow.Telemetry do
   - `[:pgflow, :worker, :task, :stop]` — Task execution completed successfully
   - `[:pgflow, :worker, :task, :exception]` — Task execution failed
 
+  Task completion/failure events are emitted only after SQL accepts the
+  transition. Late callbacks that PostgreSQL declines do not announce new
+  completion or failure telemetry.
+
   ### Step Lifecycle
 
   - `[:pgflow, :step, :skipped]` — Step skipped without a worker (e.g. unmet `if`/`if_not`)

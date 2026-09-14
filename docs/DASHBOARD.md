@@ -15,6 +15,8 @@ mix ecto.migrate
 
 No separate dashboard database migration is required. The historical `PgFlowDashboard.Migration` and its `pgflow_dashboard` views and functions remain available for compatibility with external SQL consumers. Existing installations may leave those objects in place; the core-backed LiveView dashboard does not require them to be removed or upgraded.
 
+After an upstream alignment upgrade, run `mix pgflow.check_schema` and deploy a matching Elixir release before enabling the dashboard against the upgraded schema. See [UPGRADING_UPSTREAM_2026_09.md](UPGRADING_UPSTREAM_2026_09.md).
+
 ### 2. Add to Supervision Tree
 
 In `lib/my_app/application.ex`:

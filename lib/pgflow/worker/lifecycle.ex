@@ -128,6 +128,11 @@ defmodule PgFlow.Worker.Lifecycle do
   def running?(%__MODULE__{state: :running}), do: true
   def running?(_), do: false
 
+  @doc "Returns true if in `:stopping` state."
+  @spec stopping?(t()) :: boolean()
+  def stopping?(%__MODULE__{state: :stopping}), do: true
+  def stopping?(_), do: false
+
   @doc "Returns true if in `:stopped` state."
   @spec stopped?(t()) :: boolean()
   def stopped?(%__MODULE__{state: :stopped}), do: true

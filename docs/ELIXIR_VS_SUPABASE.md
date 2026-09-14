@@ -142,7 +142,7 @@ PgFlow.Supervisor (rest_for_one)
 | Crash recovery        | New function invocation          | OTP supervisor restart        |
 | Stale task recovery   | pgmq visibility timeout          | Explicit sweep every 15s      |
 | Worker heartbeat      | `last_heartbeat_at` in DB        | DB registration + OTP monitor |
-| Worker deprecation    | `deprecated_at` flag             | Not needed (OTP restarts)     |
+| Worker deprecation    | `deprecated_at` flag             | Honored on heartbeat; drains before replacement |
 | Graceful shutdown     | `shutdownSignal`                 | Lifecycle state machine       |
 
 ## Polling Protocol
@@ -214,7 +214,11 @@ The real question is where the poll loop lives and what tradeoffs that creates:
 | Sync flow execution        | Via client | Yes    | `PgFlow.Client.start_flow_sync/3`              |
 | Telemetry events           | No         | Yes    | 12 events across flow/step/task/worker         |
 | Structured logging         | No         | Yes    | Fancy (dev) and simple (prod) formats          |
-| Mix tasks                  | N/A        | Yes    | gen.flow, setup, stamp, check_schema, etc.     |
+| Mix tasks                  | N/A        | Yes    | gen.flow, setup, setup --upgrade, stamp, check_schema |
+| Upstream SHA reporting     | Package    | SHA    | Elixir reports `PgFlow.upstream_sha/0`; npm may lag unreleased revisions |
+| JSON falsy output          | `output \|\| null` at pin | Preserved scalars | Documented unresolved limitation — see UPSTREAM_COMPATIBILITY.md |
+| `is_local()` recompile     | Supabase JWT probe | Returns false on plain Postgres | Production mismatches preserve history |
+| External waits             | Future     | Not shipped | No per-step queues or signal store in this release |
 
 ## Shared SQL Core
 
@@ -225,7 +229,7 @@ Both call the same PostgreSQL functions:
 | `pgflow.create_flow`                     | Register flow + create pgmq queue          |
 | `pgflow.add_step`                        | Add step with dependencies                 |
 | `pgflow.start_flow`                      | Create run, enqueue root steps             |
-| `pgflow.start_tasks`                     | Claim tasks, return details                |
+| `pgflow.start_tasks/4`                   | Claim tasks with queue route + attempt count |
 | `pgflow.complete_task`                   | Save output, cascade to dependents         |
 | `pgflow.fail_task`                       | Retry with backoff or fail permanently     |
 | `pgflow.start_ready_steps`               | Activate steps with all deps satisfied     |
@@ -243,10 +247,16 @@ The Elixir implementation adds the following extensions that are **not present**
 | `flow_type` column      | `pgflow.flows` | Distinguishes background jobs from multi-step DAG workflows in the dashboard.     |
 | Extension SQL functions | `pgflow`       | `register_worker`, `mark_worker_stopped`, `recover_stalled_tasks`, `flow_exists`, `get_flow_input`, `get_step_output` — installed via `mix pgflow.gen.helpers_migration`. |
 
-These additions are backward-compatible: existing flow records default to `flow_type = 'flow'`, and extension functions don't modify core pgflow tables. TypeScript workers can safely ignore them.
+Existing flow records default to `flow_type = 'flow'`. Helpers V05 replaces
+`start_tasks/4`, `recover_stalled_tasks`, and `prune_data_older_than` with queue-aware
+implementations that modify core tables. The claim record retains upstream fields
+and adds `attempts_count`; pinned TypeScript workers ignore that additional field.
 
 ## Compilation
 
 **TypeScript:** CLI sends HTTP request to ControlPlane edge function, which extracts the flow shape and generates SQL. Written to `supabase/migrations/`.
 
-**Elixir:** `mix pgflow.gen.flow_migration MyFlow` reads `__pgflow_definition__/0` at compile time and generates an Ecto migration with the same SQL calls. Also compiles flows at worker startup via `FlowCompiler`.
+**Elixir:** `mix pgflow.gen.flow_migration MyFlow` reads `__pgflow_definition__/0`
+and generates an Ecto migration. Worker startup uses `PgFlow.Worker.Bootstrap`
+and `pgflow.ensure_flow_compiled/2` to compile or verify definitions. `FlowCompiler`
+remains available for existing migrations and explicit upserts.

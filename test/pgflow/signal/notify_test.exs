@@ -54,6 +54,20 @@ defmodule PgFlow.Signal.NotifyTest do
   end
 
   describe "init/1" do
+    test "worker DOWN only removes the local binding without a database call" do
+      pid = self()
+
+      state = %{
+        repo: nil,
+        conn: nil,
+        workers: %{"flow" => %{worker_pid: pid, listen_ref: nil}},
+        channels: %{"pgmq.q_flow.INSERT" => "flow"}
+      }
+
+      assert {:noreply, %{workers: %{}, channels: %{}}} =
+               Notify.handle_info({:DOWN, make_ref(), :process, pid, :normal}, state)
+    end
+
     @tag :pgmq_notify
     test "starts successfully with valid repo when pgmq >= 1.8.0" do
       if pgmq_notify_available?() do

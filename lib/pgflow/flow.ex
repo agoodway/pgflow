@@ -421,6 +421,8 @@ defmodule PgFlow.Flow do
         start_delay: start_delay,
         if: Keyword.get(opts, :if),
         if_not: Keyword.get(opts, :if_not),
+        if_defined?: Keyword.has_key?(opts, :if),
+        if_not_defined?: Keyword.has_key?(opts, :if_not),
         when_unmet: Keyword.get(opts, :when_unmet),
         when_exhausted: Keyword.get(opts, :when_exhausted)
       }

@@ -38,6 +38,8 @@ defmodule PgflowDemoWeb.Router do
     pipe_through :browser
 
     live "/", FlowDemoLive, :index
+    live "/scenarios", ScenariosLive, :index
+    live "/scenarios/:scenario_id", ScenariosLive, :show
   end
 
   # Other scopes may use custom stacks.

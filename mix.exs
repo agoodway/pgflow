@@ -8,7 +8,7 @@ defmodule PgFlow.MixProject do
     [
       app: :pgflow,
       version: @version,
-      elixir: "~> 1.17",
+      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -45,28 +45,28 @@ defmodule PgFlow.MixProject do
   defp deps do
     [
       # Core
-      {:ecto_sql, "~> 3.10"},
-      {:postgrex, "~> 0.17"},
-      {:jason, "~> 1.4"},
-      {:telemetry, "~> 1.2"},
-      {:nimble_options, "~> 1.0"},
-      {:crontab, "~> 1.1"},
+      {:ecto_sql, "~> 3.14.0"},
+      {:postgrex, "~> 0.22.4"},
+      {:jason, "~> 1.4.5"},
+      {:telemetry, "~> 1.4.2"},
+      {:nimble_options, "~> 1.1.1"},
+      {:crontab, "~> 1.2.0"},
 
       # Dashboard (optional)
-      {:phoenix_live_view, "~> 1.0", optional: true},
-      {:phoenix, "~> 1.7", optional: true},
+      {:phoenix_live_view, "~> 1.2.11", optional: true},
+      {:phoenix, "~> 1.8.14", optional: true},
       {:livefilter, "~> 0.2.0", optional: true},
       # {:livefilter, path: "../livefilter", optional: true},
       {:ecto_evolver, "~> 0.1.0"},
 
       # Dev/Test
-      {:ex_doc, "~> 0.40", only: :dev, runtime: false},
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:doctor, "~> 0.23", only: [:dev, :test], runtime: false},
-      {:ex_slop, "~> 0.3", only: [:dev, :test], runtime: false},
-      {:sobelow, "~> 0.15", only: [:dev, :test], runtime: false},
-      {:ex_dna, "~> 1.2", only: [:dev, :test], runtime: false}
+      {:ex_doc, "~> 0.40.4", only: :dev, runtime: false},
+      {:credo, "~> 1.7.19", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4.8", only: [:dev, :test], runtime: false},
+      {:doctor, "~> 0.23.0", only: [:dev, :test], runtime: false},
+      {:ex_slop, "~> 0.4.4", only: [:dev, :test], runtime: false},
+      {:sobelow, "~> 0.15.0", only: [:dev, :test], runtime: false},
+      {:ex_dna, "~> 1.5.4", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -98,7 +98,12 @@ defmodule PgFlow.MixProject do
       maintainers: ["Chase Pursley"],
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib priv docs mix.exs README.md LICENSE .formatter.exs)
+      files:
+        ~w(lib priv mix.exs README.md LICENSE .formatter.exs) ++
+          Enum.reject(Path.wildcard("docs/**/*"), fn path ->
+            File.dir?(path) or String.starts_with?(path, "docs/superpowers/") or
+              path == "docs/2026-09-14-external-waits-upstream-alignment-brief.md"
+          end)
     ]
   end
 

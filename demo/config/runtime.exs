@@ -38,9 +38,26 @@ config :pgflow_demo, PgflowDemoWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4022"))]
 
 config :pgflow_demo,
+  scenario_controls_enabled:
+    System.get_env("PGFLOW_DEMO_TESTBED") == "1" and config_env() != :prod,
   ai_api_key: System.get_env("AI_API_KEY"),
   ai_api_base: System.get_env("AI_API_BASE", "https://api.fireworks.ai/inference/v1"),
   ai_model_name: System.get_env("AI_MODEL_NAME", "accounts/fireworks/models/deepseek-v3p2")
+
+if config_env() == :prod do
+  unless Code.ensure_loaded?(PgFlow.Migration) and PgFlow.Migration.current_version() >= 2 do
+    raise """
+    [pgflow_demo] Production deployment is blocked until the synchronized PgFlow
+    release containing upstream alignment migrations is published to Hex.
+    For local verification against the parent checkout, build from the repository
+    root with:
+
+        PGFLOW_DEMO_LOCAL=1 MIX_ENV=prod mix compile --warnings-as-errors
+
+    The demo-only Docker build context cannot resolve `{:pgflow, path: \"..\"}`.
+    """
+  end
+end
 
 if config_env() == :prod do
   database_url =

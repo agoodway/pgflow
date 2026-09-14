@@ -5,7 +5,7 @@ defmodule PgflowDemo.MixProject do
     [
       app: :pgflow_demo,
       version: "0.1.0",
-      elixir: "~> 1.15",
+      elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
@@ -45,20 +45,20 @@ defmodule PgflowDemo.MixProject do
       {:livefilter, "~> 0.2.0"},
 
       # Tz - required by PgFlowDashboard for time_zone support
-      {:tz, "~> 0.28"},
+      {:tz, "~> 0.28.2"},
 
       # Phoenix
-      {:phoenix, "~> 1.8.3"},
-      {:phoenix_ecto, "~> 4.5"},
-      {:ecto_sql, "~> 3.13"},
-      {:postgrex, ">= 0.0.0"},
-      {:phoenix_html, "~> 4.1"},
-      {:phoenix_live_reload, "~> 1.7", only: :dev},
-      {:phoenix_live_view, "~> 1.2"},
-      {:lazy_html, ">= 0.1.0", only: :test},
-      {:phoenix_live_dashboard, "~> 0.9.0"},
-      {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
-      {:tailwind, "~> 0.5", runtime: Mix.env() == :dev},
+      {:phoenix, "~> 1.8.14"},
+      {:phoenix_ecto, "~> 4.7.0"},
+      {:ecto_sql, "~> 3.14.0"},
+      {:postgrex, "~> 0.22.4"},
+      {:phoenix_html, "~> 4.3.0"},
+      {:phoenix_live_reload, "~> 1.7.0", only: :dev},
+      {:phoenix_live_view, "~> 1.2.11"},
+      {:lazy_html, "~> 0.1.12", only: :test},
+      {:phoenix_live_dashboard, "~> 0.9.1"},
+      {:esbuild, "~> 0.10.0", runtime: Mix.env() == :dev},
+      {:tailwind, "~> 0.5.1", runtime: Mix.env() == :dev},
       {:heroicons,
        github: "tailwindlabs/heroicons",
        tag: "v2.2.0",
@@ -66,45 +66,45 @@ defmodule PgflowDemo.MixProject do
        app: false,
        compile: false,
        depth: 1},
-      {:telemetry_metrics, "~> 1.0"},
-      {:telemetry_poller, "~> 1.0"},
-      {:jason, "~> 1.2"},
-      {:dns_cluster, "~> 0.2.0"},
-      {:bandit, "~> 1.11"},
+      {:telemetry_metrics, "~> 1.2.0"},
+      {:telemetry_poller, "~> 1.3.0"},
+      {:jason, "~> 1.4.5"},
+      {:dns_cluster, "~> 0.3.0"},
+      {:bandit, "~> 1.12.5"},
 
       # HTTP client and content processing
-      {:req, "~> 0.7"},
-      {:floki, "~> 0.38"},
+      {:req, "~> 0.7.4"},
+      {:floki, "~> 0.38.4"},
 
       # LLM integration
-      {:req_llm, "~> 1.20"},
+      {:req_llm, "~> 1.22.0"},
 
       # Loads .env files in dev/test
-      {:dotenvy, "~> 1.1"},
+      {:dotenvy, "~> 1.2.1"},
 
       # Syntax highlighting for code display
-      {:makeup_elixir, "~> 1.0"},
+      {:makeup_elixir, "~> 1.0.1"},
 
       # Development tools
-      {:tidewave, "~> 0.8.0", only: :dev},
+      {:tidewave, "~> 0.9.0", only: :dev},
 
       # Code quality
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:ex_slop, "~> 0.4", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:sobelow, "~> 0.15", only: [:dev, :test], runtime: false},
-      {:doctor, "~> 0.23", only: [:dev, :test], runtime: false},
-      {:ex_dna, "~> 1.5", only: [:dev, :test], runtime: false}
+      {:credo, "~> 1.7.19", only: [:dev, :test], runtime: false},
+      {:ex_slop, "~> 0.4.4", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4.8", only: [:dev, :test], runtime: false},
+      {:sobelow, "~> 0.15.0", only: [:dev, :test], runtime: false},
+      {:doctor, "~> 0.23.0", only: [:dev, :test], runtime: false},
+      {:ex_dna, "~> 1.5.4", only: [:dev, :test], runtime: false}
     ]
   end
 
   # Local development exercises the parent checkout directly. The production
   # Docker context contains only this demo app, so it uses the published release.
   defp pgflow_dependency do
-    if Mix.env() == :prod do
-      {:pgflow, "~> 0.3.1"}
-    else
+    if Mix.env() != :prod or System.get_env("PGFLOW_DEMO_LOCAL") == "1" do
       {:pgflow, path: ".."}
+    else
+      {:pgflow, "~> 0.3.4"}
     end
   end
 
@@ -127,7 +127,8 @@ defmodule PgflowDemo.MixProject do
       setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
+      "test.setup": ["pgflow_demo.test.setup"],
+      test: ["test.setup", "test"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind pgflow_demo", "esbuild pgflow_demo"],
       "assets.deploy": [

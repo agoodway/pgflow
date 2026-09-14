@@ -337,21 +337,17 @@ defmodule PgFlow.Worker.Executor do
       #=> {:ok, [1, 2, 3]}
 
       {:error, msg} = PgFlow.Worker.Executor.serialize_output(%{pid: self()})
-      #=> {:error, "Output is not JSON-serializable: ..."}
+      #=> {:error, "Handler output is not JSON encodable"}
   """
-  @spec serialize_output(term()) :: {:ok, map() | list()} | {:error, String.t()}
-  def serialize_output(output) when is_map(output) or is_list(output) do
+  @spec serialize_output(term()) :: {:ok, term()} | {:error, String.t()}
+  def serialize_output(output) do
     case Jason.encode(output) do
       {:ok, _json} ->
         {:ok, output}
 
-      {:error, reason} ->
-        {:error, "Output is not JSON-serializable: #{inspect(reason)}"}
+      {:error, _reason} ->
+        {:error, "Handler output is not JSON encodable"}
     end
-  end
-
-  def serialize_output(output) do
-    {:error, "Output must be a map or list, got: #{inspect(output)}"}
   end
 
   @doc """

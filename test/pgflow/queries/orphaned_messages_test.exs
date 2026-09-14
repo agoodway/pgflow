@@ -47,9 +47,11 @@ defmodule PgFlow.Queries.OrphanedMessagesTest do
     {:ok, run_id: run_id, msg_id: msg_id}
   end
 
-  describe "orphaned_queue_messages/3" do
+  describe "orphaned_queue_messages/4" do
     test "reports a still-queued message with its step's status", %{msg_id: msg_id} do
-      assert {:ok, [orphan]} = Flows.orphaned_queue_messages(TestRepo, @flow_slug, [msg_id])
+      assert {:ok, [orphan]} =
+               Flows.orphaned_queue_messages(TestRepo, @flow_slug, @flow_slug, [msg_id])
+
       assert orphan.msg_id == msg_id
       assert orphan.step_slug == "root_step"
       assert orphan.step_status == "started"
@@ -66,7 +68,9 @@ defmodule PgFlow.Queries.OrphanedMessagesTest do
         [run_id]
       )
 
-      assert {:ok, [orphan]} = Flows.orphaned_queue_messages(TestRepo, @flow_slug, [msg_id])
+      assert {:ok, [orphan]} =
+               Flows.orphaned_queue_messages(TestRepo, @flow_slug, @flow_slug, [msg_id])
+
       assert orphan.step_status == "skipped"
     end
 
@@ -75,7 +79,17 @@ defmodule PgFlow.Queries.OrphanedMessagesTest do
     } do
       TestRepo.query!("SELECT pgmq.archive($1::text, $2::bigint)", [@flow_slug, msg_id])
 
-      assert {:ok, []} = Flows.orphaned_queue_messages(TestRepo, @flow_slug, [msg_id])
+      assert {:ok, []} = Flows.orphaned_queue_messages(TestRepo, @flow_slug, @flow_slug, [msg_id])
+    end
+
+    test "rejects nil queue_name" do
+      assert {:error, :invalid_queue_name} =
+               Flows.orphaned_queue_messages(TestRepo, @flow_slug, nil, [1])
+    end
+
+    test "rejects empty queue_name" do
+      assert {:error, :invalid_queue_name} =
+               Flows.orphaned_queue_messages(TestRepo, @flow_slug, "", [1])
     end
   end
 

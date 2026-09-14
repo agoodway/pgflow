@@ -35,23 +35,26 @@ defmodule PgFlow.Worker.ExecutorTest do
     end
 
     test "rejects map containing PID" do
-      assert {:error, msg} = Executor.serialize_output(%{pid: self()})
-      assert msg =~ "not JSON-serializable"
+      assert {:error, "Handler output is not JSON encodable"} =
+               Executor.serialize_output(%{pid: self()})
     end
 
-    test "rejects bare integer" do
-      assert {:error, msg} = Executor.serialize_output(42)
-      assert msg =~ "must be a map or list"
+    test "accepts bare integer" do
+      assert {:ok, 42} = Executor.serialize_output(42)
     end
 
-    test "rejects bare string" do
-      assert {:error, msg} = Executor.serialize_output("hello")
-      assert msg =~ "must be a map or list"
+    test "accepts bare string" do
+      assert {:ok, "hello"} = Executor.serialize_output("hello")
+    end
+
+    test "accepts false and nil" do
+      assert {:ok, false} = Executor.serialize_output(false)
+      assert {:ok, nil} = Executor.serialize_output(nil)
     end
 
     test "rejects tuple" do
-      assert {:error, msg} = Executor.serialize_output({:ok, "result"})
-      assert msg =~ "must be a map or list"
+      assert {:error, "Handler output is not JSON encodable"} =
+               Executor.serialize_output({:ok, "result"})
     end
   end
 

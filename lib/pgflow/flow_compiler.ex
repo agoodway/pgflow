@@ -6,6 +6,11 @@ defmodule PgFlow.FlowCompiler do
   that registers flows and steps in the pgflow database schema. The generated
   SQL is intended to be run inside Ecto migrations.
 
+  **Note:** Normal worker startup verifies definitions through
+  `PgFlow.Worker.Bootstrap.prepare/2` and upstream `ensure_flow_compiled/2`.
+  Generated migrations remain an explicit Elixir compatibility extension; they
+  do not replace startup verification.
+
   ## Generated SQL
 
   For each flow, the compiler generates:
@@ -154,8 +159,8 @@ defmodule PgFlow.FlowCompiler do
 
     named_args =
       [
-        named_arg("required_input_pattern", step.if, &sql_json/1),
-        named_arg("forbidden_input_pattern", step.if_not, &sql_json/1),
+        pattern_arg("required_input_pattern", step.if, step.if_defined?),
+        pattern_arg("forbidden_input_pattern", step.if_not, step.if_not_defined?),
         named_arg("when_unmet", step.when_unmet, &sql_mode/1),
         named_arg("when_exhausted", step.when_exhausted, &sql_mode/1)
       ]
@@ -187,9 +192,11 @@ defmodule PgFlow.FlowCompiler do
   defp named_arg(_name, nil, _encode), do: nil
   defp named_arg(name, value, encode), do: "#{name} => #{encode.(value)}"
 
-  # Only called via named_arg/3, which already filters out nil - if/if_not
-  # are always maps here.
-  defp sql_json(map) when is_map(map), do: "'#{escape(Jason.encode!(map))}'::jsonb"
+  defp pattern_arg(name, value, defined?) do
+    if defined? or not is_nil(value), do: "#{name} => #{sql_json(value)}"
+  end
+
+  defp sql_json(value), do: "'#{escape(Jason.encode!(value))}'::jsonb"
 
   # when_unmet / when_exhausted are NOT NULL; never emit SQL NULL for modes.
   defp sql_mode(:skip_cascade), do: "'skip-cascade'"

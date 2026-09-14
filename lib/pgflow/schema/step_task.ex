@@ -19,6 +19,7 @@ defmodule PgFlow.Schema.StepTask do
     field(:flow_slug, :string)
     field(:run_id, :binary_id, primary_key: true)
     field(:step_slug, :string, primary_key: true)
+    field(:queue_name, :string)
     field(:message_id, :integer)
     field(:task_index, :integer, primary_key: true)
     field(:status, :string)
@@ -42,6 +43,7 @@ defmodule PgFlow.Schema.StepTask do
       :flow_slug,
       :run_id,
       :step_slug,
+      :queue_name,
       :task_index,
       :status,
       :output,

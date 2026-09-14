@@ -82,7 +82,7 @@ defmodule PgFlow.Migration do
     use EctoEvolver,
       otp_app: :pgflow,
       default_prefix: "pgflow",
-      versions: [PgFlow.Migrations.Core.V01],
+      versions: [PgFlow.Migrations.Core.V01, PgFlow.Migrations.Core.V02],
       tracking_object: {:view, "pgflow_version"}
   end
 

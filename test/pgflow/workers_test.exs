@@ -46,6 +46,15 @@ defmodule PgFlow.WorkersTest do
   end
 
   describe "get/2, list/2, and count/2" do
+    test "worker without a flow retains its queue identity" do
+      id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa99"
+      insert_worker(id, "removed_flow", seconds_ago: 5)
+      assert {:ok, summary} = Workers.get(TestRepo, id)
+      assert summary.flow_slug == "removed_flow"
+      assert summary.queue_name == "removed_flow"
+      assert {:ok, true} = Workers.healthy?(TestRepo, "REMOVED_FLOW")
+    end
+
     test "return typed summaries with health and bounded flow-load calculations" do
       create_flow("worker_reads")
       add_step("worker_reads", "work")

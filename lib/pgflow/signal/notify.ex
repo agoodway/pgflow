@@ -101,7 +101,8 @@ defmodule PgFlow.Signal.Notify do
 
   @impl GenServer
   def handle_call({:register_worker, flow_slug, worker_pid}, _from, state) do
-    channel = pgmq_channel(flow_slug)
+    queue_name = canonical_queue_name(flow_slug)
+    channel = pgmq_channel(queue_name)
     monitor_ref = Process.monitor(worker_pid)
 
     # Issue the new LISTEN first, then tear down the prior binding on success.
@@ -138,7 +139,7 @@ defmodule PgFlow.Signal.Notify do
         maybe_unlisten(state.conn, listen_ref)
         disable_notify(state.repo, flow_slug)
 
-        channel = pgmq_channel(flow_slug)
+        channel = pgmq_channel(canonical_queue_name(flow_slug))
         state = %{state | workers: workers, channels: Map.delete(state.channels, channel)}
         {:reply, :ok, state}
 
@@ -161,9 +162,8 @@ defmodule PgFlow.Signal.Notify do
     case find_worker_by_pid(state.workers, pid) do
       {flow_slug, entry} ->
         maybe_unlisten(state.conn, entry.listen_ref)
-        disable_notify(state.repo, flow_slug)
 
-        channel = pgmq_channel(flow_slug)
+        channel = pgmq_channel(canonical_queue_name(flow_slug))
 
         {:noreply,
          %{
@@ -199,7 +199,7 @@ defmodule PgFlow.Signal.Notify do
       %{monitor_ref: monitor_ref, listen_ref: listen_ref} ->
         Process.demonitor(monitor_ref, [:flush])
         maybe_unlisten(state.conn, listen_ref)
-        channel = pgmq_channel(flow_slug)
+        channel = pgmq_channel(canonical_queue_name(flow_slug))
 
         %{
           state
@@ -209,13 +209,15 @@ defmodule PgFlow.Signal.Notify do
     end
   end
 
-  defp pgmq_channel(flow_slug), do: "pgmq.q_#{flow_slug}.INSERT"
+  defp canonical_queue_name(flow_slug), do: String.downcase(flow_slug)
+
+  defp pgmq_channel(queue_name), do: "pgmq.q_#{queue_name}.INSERT"
 
   defp maybe_unlisten(_conn, nil), do: :ok
   defp maybe_unlisten(conn, listen_ref), do: Postgrex.Notifications.unlisten(conn, listen_ref)
 
   defp disable_notify(repo, flow_slug) do
-    case Pgmq.disable_notify_insert(repo, flow_slug) do
+    case Pgmq.disable_notify_insert(repo, canonical_queue_name(flow_slug)) do
       :ok ->
         :ok
 
