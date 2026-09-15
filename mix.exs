@@ -1,7 +1,7 @@
 defmodule PgFlow.MixProject do
   use Mix.Project
 
-  @version "0.3.4"
+  @version "0.4.0"
   @source_url "https://github.com/agoodway/pgflow"
 
   def project do
