@@ -25,9 +25,11 @@ PgFlow is a native Elixir implementation of [pgflow](https://pgflow.dev) - a Pos
     -------------------------------------------------
 ```
 
-**Compatibility:** Same pgflow.* schema, same core SQL functions, same pgmq message format. Elixir and TypeScript workers can run side-by-side processing the same flows.
+**Compatibility:** Same pgflow.* schema, same core SQL functions, same pgmq message format. Elixir and TypeScript workers can run side-by-side processing the same flows when pinned to the same upstream SHA (`PgFlow.upstream_sha/0`). See [UPSTREAM_COMPATIBILITY.md](UPSTREAM_COMPATIBILITY.md).
 
-**Elixir extensions:** Adds helper SQL functions for OTP worker lifecycle. Backward-compatible - TypeScript workers can safely ignore them.
+**Elixir extensions:** Adds helper SQL functions for OTP worker lifecycle. Backward-compatible - TypeScript workers can safely ignore them. Queue identity, four-argument claim, and startup compilation follow upstream core V02; helpers V05 reconcile recovery and pruning with persisted `(queue_name, message_id)` routes.
+
+**Schema verification:** `mix pgflow.check_schema` validates installed core/helpers versions, function signatures, queue constraints, and the eight-field `step_task_record` before production deploys.
 
 ## DSL
 
@@ -206,7 +208,7 @@ This avoids reliance on NOTIFY for task continuation while still benefiting from
 | Worker State | Database Tables                        |
 |--------------|----------------------------------------|
 | worker_id    | pgflow.workers.id                      |
-| flow_slug    | pgmq.q_{flow_slug}                     |
+| queue_name   | pgmq.q_{lower(flow_slug)}              |
 | active_tasks | pgflow.step_tasks (status: 'started')  |
 
 ## Task Processing
@@ -317,7 +319,10 @@ Elixir-specific additions:
 | `pgflow.get_step_output`         | Retrieve output of a completed step         |
 | `pgflow.recover_stalled_tasks`   | Reset stalled tasks to queued               |
 | `pgflow.prune_data_older_than`   | Clean up old run data                       |
-| `pgflow.analyze_and_create_flow` | Compile flow definition from Elixir DSL     |
+| `pgflow.analyze_and_create_flow` | Explicit legacy definition compilation; destructive runtime upsert is deprecated |
+| `pgflow.ensure_flow_compiled` | Compile or verify worker definition under the upstream shape/advisory-lock contract |
+| `pgflow.track_worker_function` | Register `elixir:<Module>` with start mode `process` |
+| `pgflow.is_valid_queue_name` | Validate physical queue identity, derived from `lower(flow_slug)` |
 
 pgmq functions used:
 

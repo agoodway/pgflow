@@ -1,7 +1,9 @@
 defmodule PgFlow.FlowStarterTest do
   use ExUnit.Case, async: false
 
-  alias PgFlow.FlowStarter
+  alias Ecto.Adapters.SQL.Sandbox
+  alias PgFlow.{FlowStarter, WorkerSupervisor}
+  alias PgFlow.TestRepo
 
   @moduletag timeout: 10_000
 
@@ -34,6 +36,99 @@ defmodule PgFlow.FlowStarterTest do
       assert snap.healthy? == true
       assert snap.modules == []
       assert %DateTime{} = snap.started_at
+    end
+  end
+
+  describe "permanent failure (flow shape mismatch)" do
+    @describetag :integration
+    defmodule ShapeMismatchFlow do
+      use PgFlow.Flow
+
+      @flow slug: :flow_starter_shape_mismatch, max_attempts: 3, timeout: 60
+
+      step :process do
+        fn input, _ctx -> %{value: input["value"]} end
+      end
+    end
+
+    setup do
+      :ok = Sandbox.checkout(TestRepo)
+      :ok = Sandbox.mode(TestRepo, {:shared, self()})
+      TestRepo.query!("SET LOCAL app.settings.jwt_secret = 'production-secret'")
+      TestRepo.query!("SELECT pgflow_tests.reset_db()")
+      :persistent_term.put({PgFlow, :repo}, TestRepo)
+
+      TestRepo.query!("SELECT pgflow.create_flow($1)", ["flow_starter_shape_mismatch"])
+
+      TestRepo.query!("SELECT pgflow.add_step($1, $2)", ["flow_starter_shape_mismatch", "process"])
+
+      TestRepo.query!("SELECT pgflow.add_step($1, $2, ARRAY['process']::text[])", [
+        "flow_starter_shape_mismatch",
+        "extra_step"
+      ])
+
+      worker_config = [
+        repo: TestRepo,
+        max_concurrency: 2,
+        batch_size: 2,
+        signal_strategy: :polling,
+        min_poll_interval: 50,
+        max_poll_interval: 50,
+        notify_fallback_interval: 30_000,
+        heartbeat_interval: 10_000
+      ]
+
+      start_supervised!({Task.Supervisor, name: PgFlow.TaskSupervisor})
+      start_supervised!({WorkerSupervisor, worker_config})
+
+      starter_pid =
+        start_supervised!({FlowStarter, repo: TestRepo, flows: [ShapeMismatchFlow], jobs: []})
+
+      Sandbox.allow(TestRepo, self(), starter_pid)
+
+      on_exit(fn ->
+        :persistent_term.erase({PgFlow, :repo})
+        Sandbox.mode(TestRepo, :manual)
+      end)
+
+      wait_for_failed_permanent(ShapeMismatchFlow)
+      :ok
+    end
+
+    test "module reaches :failed_permanent at worker phase" do
+      ms = FlowStarter.module_status(ShapeMismatchFlow)
+      assert ms.status == :failed_permanent
+      assert ms.last_error.class == :permanent
+      assert ms.last_error.phase == :worker
+      assert match?({:flow_shape_mismatch, _}, ms.last_error.reason)
+    end
+
+    @tag :destructive_schema
+    test "missing claim protocol is a permanent startup failure" do
+      TestRepo.query!("DROP FUNCTION pgflow.start_tasks(text,bigint[],uuid,text)")
+      FlowStarter.retry_now(ShapeMismatchFlow)
+
+      assert wait_until(fn ->
+               match?(
+                 %{last_error: %{reason: {:schema_incompatible, :start_tasks}}},
+                 FlowStarter.module_status(ShapeMismatchFlow)
+               )
+             end)
+
+      assert FlowStarter.module_status(ShapeMismatchFlow).status == :failed_permanent
+      refute Map.has_key?(:sys.get_state(FlowStarter).timers, ShapeMismatchFlow)
+    end
+
+    test "no retry timer scheduled after shape mismatch" do
+      state = :sys.get_state(FlowStarter)
+
+      refute Map.has_key?(state.timers, ShapeMismatchFlow),
+             "timers map should not contain a retry after permanent shape mismatch: #{inspect(state.timers)}"
+    end
+
+    test "healthy? is false when bootstrap fails permanently" do
+      assert FlowStarter.ready?()
+      refute FlowStarter.healthy?()
     end
   end
 
@@ -97,6 +192,11 @@ defmodule PgFlow.FlowStarterTest do
   end
 
   describe "retry_now/1" do
+    test "does not schedule another attempt for a succeeded module" do
+      state = %{modules: %{NotAFlow => %{status: :succeeded}}}
+      assert {:noreply, ^state} = FlowStarter.handle_cast({:retry_now, NotAFlow}, state)
+    end
+
     test "is idempotent and does not crash", %{repo: repo} do
       start_supervised!({FlowStarter, repo: repo, flows: [NotAFlow], jobs: []})
       wait_for_terminal(NotAFlow)
@@ -183,18 +283,6 @@ defmodule PgFlow.FlowStarterTest do
 
   # ── Helpers ────────────────────────────────────────────────────────
 
-  defp wait_for_terminal(module, timeout \\ 1_000) do
-    wait_until(
-      fn ->
-        case FlowStarter.module_status(module) do
-          %{status: s} when s in [:succeeded, :failed_permanent] -> true
-          _ -> false
-        end
-      end,
-      timeout
-    )
-  end
-
   defp wait_until(fun, timeout \\ 1_000) do
     deadline = System.monotonic_time(:millisecond) + timeout
 
@@ -210,5 +298,26 @@ defmodule PgFlow.FlowStarterTest do
       :ok -> true
       :retry -> System.monotonic_time(:millisecond) >= deadline
     end) || flunk("wait_until condition did not become true within #{timeout}ms")
+  end
+
+  defp wait_for_failed_permanent(module, timeout \\ 1_000) do
+    wait_until(
+      fn ->
+        match?(%{status: :failed_permanent}, FlowStarter.module_status(module))
+      end,
+      timeout
+    )
+  end
+
+  defp wait_for_terminal(module, timeout \\ 1_000) do
+    wait_until(
+      fn ->
+        case FlowStarter.module_status(module) do
+          %{status: s} when s in [:succeeded, :failed_permanent] -> true
+          _ -> false
+        end
+      end,
+      timeout
+    )
   end
 end

@@ -134,13 +134,13 @@ defmodule PgFlowDashboard.MigrationTest do
     TestRepo.query!("INSERT INTO pgflow.flows (flow_slug) VALUES ($1)", [@flow_slug])
 
     TestRepo.query!(
-      "INSERT INTO pgflow.steps (flow_slug, step_slug, step_index) VALUES ($1, 'step_a', 0)",
-      [@flow_slug]
+      "INSERT INTO pgflow.steps (flow_slug, step_slug, step_index, queue_name) VALUES ($1, 'step_a', 0, $2)",
+      [@flow_slug, String.downcase(@flow_slug)]
     )
 
     TestRepo.query!(
-      "INSERT INTO pgflow.steps (flow_slug, step_slug, step_index) VALUES ($1, 'step_b', 1)",
-      [@flow_slug]
+      "INSERT INTO pgflow.steps (flow_slug, step_slug, step_index, queue_name) VALUES ($1, 'step_b', 1, $2)",
+      [@flow_slug, String.downcase(@flow_slug)]
     )
 
     run_id = Ecto.UUID.generate()
@@ -183,6 +183,34 @@ defmodule PgFlowDashboard.MigrationTest do
     )
 
     run_id
+  end
+
+  test "worker view preserves mixed-case flow identity and type" do
+    run_up!()
+
+    TestRepo.transaction(fn ->
+      TestRepo.query!(
+        "INSERT INTO pgflow.flows (flow_slug, flow_type) VALUES ('MixedCaseDashboard', 'job')"
+      )
+
+      worker_id = Ecto.UUID.bingenerate()
+
+      TestRepo.query!(
+        """
+        INSERT INTO pgflow.workers (worker_id, queue_name, function_name, started_at, last_heartbeat_at)
+        VALUES ($1, 'mixedcasedashboard', 'test', now(), now())
+        """,
+        [worker_id]
+      )
+
+      assert %{rows: [["MixedCaseDashboard", "job"]]} =
+               TestRepo.query!(
+                 "SELECT flow_slug, flow_type FROM pgflow_dashboard.workers_with_load WHERE worker_id = $1",
+                 [worker_id]
+               )
+
+      TestRepo.rollback(:test_complete)
+    end)
   end
 
   describe "up/0 (v02)" do

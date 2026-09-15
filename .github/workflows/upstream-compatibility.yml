@@ -1,0 +1,131 @@
+name: Upstream Compatibility
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "lib/**"
+      - "priv/**"
+      - "test/**"
+      - "demo/**"
+      - ".github/workflows/upstream-compatibility.yml"
+
+jobs:
+  upstream-compatibility:
+    runs-on: ubuntu-latest
+
+    env:
+      PGFLOW_REQUIRE_DB: "1"
+      PGFLOW_TEST_PORT: "54323"
+      PGFLOW_TEST_DATABASE: pgflow_test
+      PGFLOW_UPSTREAM_ADMIN_URL: postgres://postgres:postgres@localhost:54323/postgres
+      PGFLOW_UPSTREAM_CHECKOUT: ${{ github.workspace }}/upstream-pin
+      PGFLOW_PNPM: pnpm
+      MIX_ENV: test
+      PGFLOW_UPSTREAM_SHA: 94490709f79ebf366141dd925b047f0c1013e759
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: erlef/setup-beam@0f75c29430f34bb5af4cce5e3b7f6a8860fca236 # v1
+        with:
+          otp-version: "27.2"
+          elixir-version: "1.18.4"
+
+      - name: Start the dedicated test database
+        run: docker compose -f test/support/db/compose.yaml up -d --wait
+
+      - name: Pin upstream checkout
+        run: |
+          git clone --no-checkout https://github.com/pgflow-dev/pgflow.git "$PGFLOW_UPSTREAM_CHECKOUT"
+          git -C "$PGFLOW_UPSTREAM_CHECKOUT" checkout --detach "$PGFLOW_UPSTREAM_SHA"
+
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.20.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: upstream-pin/pnpm-lock.yaml
+
+      - uses: supabase/setup-cli@ab058987d8d6c725971f6cf9d0b5c98467e30bd1 # v1
+        with:
+          version: 2.117.0
+
+      - name: Install Elixir dependencies
+        run: mix deps.get
+
+      - name: Install pgTAP in Postgres service
+        run: |
+          CONTAINER_ID=$(docker compose -f test/support/db/compose.yaml ps -q db)
+          if [ -z "$CONTAINER_ID" ]; then
+            echo "Postgres service container not found" >&2
+            exit 1
+          fi
+          docker exec "$CONTAINER_ID" bash -ex -c '
+            apt-get update -qq
+            apt-get install -y -qq postgresql-17-pgtap || apt-get install -y -qq postgresql-pgtap
+          '
+
+      - name: Prepare compatibility database
+        run: |
+          mix run --no-start -e '
+            Application.ensure_all_started(:ecto_sql)
+            fixture = PgFlow.Test.UpstreamHarness.setup_compat_database!(
+              admin_url: System.fetch_env!("PGFLOW_UPSTREAM_ADMIN_URL")
+            )
+            File.write!("/tmp/pgflow_compat_url.txt", fixture.database_url)
+          '
+          echo "PGFLOW_COMPAT_DATABASE_URL=$(cat /tmp/pgflow_compat_url.txt)?sslmode=disable" >> "$GITHUB_ENV"
+
+      - name: Install upstream Node dependencies
+        working-directory: upstream-pin
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Run upstream harness
+        run: |
+          mix run --no-start test/support/upstream/run.exs \
+            --checkout "$PGFLOW_UPSTREAM_CHECKOUT" \
+            --sha "$PGFLOW_UPSTREAM_SHA" \
+            --database-url "$PGFLOW_COMPAT_DATABASE_URL" \
+            --suite all
+
+      - name: Run integration tests
+        run: PGFLOW_REQUIRE_DB=1 mix test
+
+      - name: Run migration tests
+        run: PGFLOW_REQUIRE_DB=1 mix test --only migration
+
+      - name: Run quality checks
+        run: |
+          mix compile --warnings-as-errors --force
+          mix format --check-formatted
+          mix credo --strict
+
+      - name: Prepare demo verification database
+        working-directory: demo
+        env:
+          PGFLOW_DEMO_DB_HOST: localhost
+          PGFLOW_DEMO_DB_PORT: "54323"
+          PGFLOW_DEMO_DB_NAME: pgflow_demo_test
+        run: |
+          mix deps.get
+          mix pgflow_demo.test.setup
+
+      - name: Run demo scenario verification
+        working-directory: demo
+        env:
+          MIX_ENV: test
+          PGFLOW_DEMO_DB_HOST: localhost
+          PGFLOW_DEMO_DB_PORT: "54323"
+          PGFLOW_DEMO_DB_NAME: pgflow_demo_test
+        run: |
+          mix test
+          mix format --check-formatted
+          mix pgflow_demo.verify_scenarios
+          PGFLOW_DEMO_LOCAL=1 MIX_ENV=prod mix compile --warnings-as-errors

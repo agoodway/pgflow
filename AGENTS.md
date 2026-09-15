@@ -52,6 +52,20 @@ mix doctor --raise
 docker compose up -d
 mix pgflow.test.setup
 
+# Migration tests alter the shared test schema; run separately.
+PGFLOW_REQUIRE_DB=1 mix test --only migration
+
+# Upstream harness: requires psql, git, supabase CLI, node, pnpm, and server pgTAP.
+# Install local pgTAP using test/support/db/install-pgtap.sh.
+# Create a disposable DB using PgFlow.Test.UpstreamHarness.setup_compat_database!/1.
+MIX_ENV=test mix run --no-start test/support/upstream/run.exs \
+  --checkout /path/to/upstream \
+  --sha 94490709f79ebf366141dd925b047f0c1013e759 \
+  --database-url postgres://postgres:postgres@localhost:54323/pgflow_compat_xxx \
+  --suite all
+# Set PGFLOW_UPSTREAM_CHECKOUT to include upstream_checkout ExUnit tests.
+# Pinned TypeScript falsy-output parity is unresolved; Elixir preserves false/0/"".
+
 # Reset test database
 mix pgflow.test.reset
 ```

@@ -22,11 +22,13 @@ A native Elixir implementation of [pgflow](https://pgflow.dev) — a PostgreSQL-
 - [COMPARISON.md](docs/COMPARISON.md) — PgFlow vs Oban, Broadway, Temporal, Inngest, and others
 - [ELIXIR_VS_SUPABASE.md](docs/ELIXIR_VS_SUPABASE.md) — Elixir vs Deno/TypeScript (Supabase) implementation
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — OTP supervision tree, worker model, and internals
+- [UPSTREAM_COMPATIBILITY.md](docs/UPSTREAM_COMPATIBILITY.md) — Pinned upstream SHA, overlays, and schema contract
+- [UPGRADING_UPSTREAM_2026_09.md](docs/UPGRADING_UPSTREAM_2026_09.md) — Coordinated upgrade procedure for existing installs
 - [LIVE_CLIENT.md](docs/LIVE_CLIENT.md) — LiveView integration for real-time flow/job tracking
 
 ## Prerequisites
 
-- Elixir 1.17+
+- Elixir 1.18+
 - PostgreSQL 17+ with:
   - **pgmq** — pgflow's queue backbone. The `mix pgflow.gen.pgmq_migration` task installs it via SQL (works on Neon, self-hosted, and any plain Postgres). Skip this step if your environment already ships pgmq (e.g. Supabase projects or managed services where pgmq is pre-enabled).
   - **pg_cron** (only for cron-scheduled flows/jobs) — requires two server-level settings before `CREATE EXTENSION pg_cron` will succeed:
@@ -97,9 +99,12 @@ mix pgflow.setup
 mix ecto.migrate
 ```
 
-The generated `setup_pgflow.exs` migration just calls `PgFlow.Migration.up/0`
-and `PgFlow.HelpersMigration.up/0` — new pgflow releases bump the vendored
-SQL, not your migration list.
+The generated `setup_pgflow.exs` migration calls `PgFlow.Migration.up/0`
+and `PgFlow.HelpersMigration.up/0`. A fresh database installs all bundled versions.
+Ecto does not rerun an already recorded wrapper when the dependency changes.
+When a release adds a core or helpers version, generate a new wrapper with
+`mix pgflow.setup --upgrade`; follow the coordinated
+[upgrade procedure](docs/UPGRADING_UPSTREAM_2026_09.md).
 
 ### 2. Define a Flow
 
@@ -133,14 +138,18 @@ See `PgFlow.Flow` moduledocs for the full DSL reference (step options, map macro
 
 ### 3. Compile the Flow to Database
 
-Before workers can process a flow, it must be "compiled" into the database. This creates the flow record, PGMQ queue, and step definitions:
+Workers compile new definitions at startup and verify existing definitions before polling.
+Generated definition migrations remain available for existing deployment workflows:
 
 ```bash
 mix pgflow.gen.flow_migration MyApp.Flows.ProcessOrder
 mix ecto.migrate
 ```
 
-> **Note:** If you start a worker for a flow that hasn't been compiled, you'll get a helpful error message with the exact command to run.
+For a production shape change, drain and stop the affected workers first. Prefer a
+new flow slug to preserve old run history. Explicitly replacing an existing
+definition through a generated migration or runtime upsert can delete its history;
+back up and follow the [upgrade guidance](docs/UPGRADING_UPSTREAM_2026_09.md).
 
 ### 4. Configure and Start
 
@@ -243,6 +252,7 @@ Run these once when adding pgflow to a project. Migrations are applied via `mix 
 | `mix pgflow.gen.postgres_extensions_migration`   | Migration: citext, pg_trgm, pgcrypto, pg_cron               |
 | `mix pgflow.gen.pgmq_migration`                  | Migration: pgmq via SQL-only install                        |
 | `mix pgflow.setup`                               | Wrapper migration: core schema + helpers                    |
+| `mix pgflow.setup --upgrade`                     | New forward-only wrapper for core/helpers version bumps       |
 | `mix pgflow.gen.helpers_migration`               | Migration: Elixir helpers standalone (setup bundles these)  |
 | `mix pgflow.stamp`                               | Adopt an existing pgflow schema into EctoEvolver tracking   |
 
@@ -307,18 +317,24 @@ PgFlow emits `:telemetry` events across worker, poll, task, and run lifecycles f
 ## Testing
 
 ```bash
-# Start the database (same as Quick Start step 1)
-docker compose up -d
+# Start the dedicated integration database
+docker compose -f test/support/db/compose.yaml up -d
 
 # Run tests
-mix test
+PGFLOW_REQUIRE_DB=1 mix test
+# Run separately: migration tests change the shared test schema.
+PGFLOW_REQUIRE_DB=1 mix test --only migration
 ```
 
 Without a database at `localhost:54323` the suite silently excludes every `:integration` test and still reports success. Set `PGFLOW_REQUIRE_DB=1` (recommended in CI) to make an unreachable database fail the run instead.
 
 ## Compatibility with PgFlow TypeScript/Deno
 
-This Elixir implementation is compatible with the TypeScript/Deno version — same PostgreSQL schema, same SQL functions, same PGMQ message format. Workers can run side-by-side. See [ELIXIR_VS_SUPABASE.md](docs/ELIXIR_VS_SUPABASE.md) for a detailed comparison and schema divergences.
+Compatibility targets upstream commit `94490709f79ebf366141dd925b047f0c1013e759`,
+reported by `PgFlow.upstream_sha/0`. Matching workers share the database protocol.
+Pinned TypeScript coerces falsy handler output (`false`, `0`, `""`) to null;
+Elixir preserves those values. See [UPSTREAM_COMPATIBILITY.md](docs/UPSTREAM_COMPATIBILITY.md)
+for the tested profiles and limitations.
 
 ## License
 

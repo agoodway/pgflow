@@ -70,7 +70,8 @@ defmodule PgFlow.SchemaConstraintsTest do
           run_id: run_id,
           step_slug: "missing_step",
           task_index: 0,
-          status: "queued"
+          status: "queued",
+          queue_name: "step_task_constraint"
         })
 
       assert {:error, changeset} = TestRepo.insert(changeset)

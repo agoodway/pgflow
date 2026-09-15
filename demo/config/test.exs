@@ -6,15 +6,16 @@ import Config
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
 config :pgflow_demo, PgflowDemo.Repo,
-  username: "postgres",
-  password: "postgres",
-  hostname: "localhost",
-  port: 54323,
-  # Uses the same database as dev — Ecto Sandbox provides isolation.
-  # Required because pg_cron only supports one database per cluster.
-  database: "pgflow_demo_dev",
+  username: System.get_env("PGFLOW_DEMO_DB_USER", "postgres"),
+  password: System.get_env("PGFLOW_DEMO_DB_PASSWORD", "postgres"),
+  hostname: System.get_env("PGFLOW_DEMO_DB_HOST", "localhost"),
+  port: String.to_integer(System.get_env("PGFLOW_DEMO_DB_PORT", "54323")),
+  # Test setup owns this database; never default to the development database.
+  database: System.get_env("PGFLOW_DEMO_DB_NAME", "pgflow_demo_test"),
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: System.schedulers_online() * 2
+  pool_size: 40,
+  queue_target: 5000,
+  queue_interval: 1000
 
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
@@ -25,6 +26,12 @@ config :pgflow_demo, PgflowDemoWeb.Endpoint,
 
 # Print only warnings and errors during test
 config :logger, level: :warning
+
+config :pgflow_demo,
+  signal_strategy:
+    if(System.get_env("PGFLOW_DEMO_SIGNAL") == "notify", do: :notify, else: :polling),
+  min_poll_interval: 100,
+  max_poll_interval: 500
 
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime

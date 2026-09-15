@@ -224,6 +224,17 @@ defmodule PgFlow.Worker.LifecycleTest do
       refute Lifecycle.can_accept_work?(starting)
     end
 
+    test "stopping?/1 is true only in :stopping" do
+      stopping =
+        Lifecycle.new()
+        |> Lifecycle.transition!(:starting)
+        |> Lifecycle.transition!(:running)
+        |> Lifecycle.transition!(:stopping)
+
+      assert Lifecycle.stopping?(stopping)
+      refute Lifecycle.running?(stopping)
+    end
+
     test "false in :stopping" do
       stopping =
         Lifecycle.new()

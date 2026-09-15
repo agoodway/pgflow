@@ -10,7 +10,7 @@ defmodule PgFlow.Worker.TaskRowTest do
   end
 
   describe "decode/1" do
-    test "maps the seven base columns onto named fields" do
+    test "maps the eight-column row onto named fields" do
       assert %{
                flow_slug: "my_flow",
                run_id: <<0::128>>,
@@ -18,20 +18,21 @@ defmodule PgFlow.Worker.TaskRowTest do
                input: %{"a" => 1},
                msg_id: 42,
                task_index: 0,
-               flow_input: %{"in" => true}
-             } = TaskRow.decode(v02_row())
+               flow_input: %{"in" => true},
+               attempt: 3
+             } = TaskRow.decode(v02_row() ++ [3])
     end
 
-    test "carries the attempt through from an eight-column row" do
-      assert %{attempt: 3} = TaskRow.decode(v02_row() ++ [3])
+    test "rejects legacy seven-column rows instead of substituting attempt 1" do
+      assert_raise ArgumentError, ~r/8-column/, fn ->
+        TaskRow.decode(v02_row())
+      end
     end
 
-    test "a pre-v03 seven-column row reports attempt 1" do
-      assert %{attempt: 1} = TaskRow.decode(v02_row())
-    end
-
-    test "a null attempts_count reports attempt 1 rather than nil" do
-      assert %{attempt: 1} = TaskRow.decode(v02_row() ++ [nil])
+    test "rejects a null attempts_count instead of substituting attempt 1" do
+      assert_raise ArgumentError, ~r/attempts_count/, fn ->
+        TaskRow.decode(v02_row() ++ [nil])
+      end
     end
 
     test "the first attempt is 1, matching the documented 1-indexing" do

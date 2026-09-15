@@ -5,6 +5,10 @@ defmodule PgFlow.Worker.Server do
   Each worker is responsible for a single flow/queue and can execute
   multiple tasks concurrently up to the configured limit.
 
+  Deprecated workers drain and exit with `:deprecated` so supervision replaces
+  them. These replacements count against the supervisor's restart budget:
+  deprecate at most 10 workers per minute per node (fewer when crashes occur).
+
   Implements the two-phase protocol:
   1. pgmq.read() - Reserve messages from pgmq (non-blocking)
   2. start_tasks() - Create step_tasks records and get task details
@@ -62,14 +66,15 @@ defmodule PgFlow.Worker.Server do
   The worker maintains the following state:
 
     * `flow_module` - The flow module being processed
-    * `flow_slug` - String slug for the queue name
+    * `flow_slug` - String slug for the flow being processed
+    * `queue_name` - Canonical PGMQ queue route for polling and claims
     * `worker_id` - UUID for this worker (string format)
     * `repo` - Ecto repo module
     * `task_supervisor` - PID of Task.Supervisor for async execution
     * `active_tasks` - Map of task_ref => task_metadata (includes timeout_timer_ref)
     * `max_concurrency` - Max parallel tasks (default: 10)
     * `batch_size` - Messages per poll (default: 10)
-    * `visibility_timeout` - Seconds for message visibility (derived from flow's opt_timeout)
+    * `visibility_timeout` - Short read reservation in seconds (default: 5); claims apply the execution timeout
     * `signal_strategy` - `:polling` or `:notify`
     * `heartbeat_interval` - Milliseconds between persisted worker heartbeats
     * `heartbeat_timer_ref` - Reference for the independent heartbeat timer
@@ -107,6 +112,7 @@ defmodule PgFlow.Worker.Server do
   alias PgFlow.Queries.Flows
   alias PgFlow.Queries.Workers, as: WorkerQueries
   alias PgFlow.Telemetry
+  alias PgFlow.Worker.Bootstrap
   alias PgFlow.Worker.Lifecycle
   alias PgFlow.Worker.TaskRow
 
@@ -134,6 +140,7 @@ defmodule PgFlow.Worker.Server do
   @type state :: %{
           flow_module: module(),
           flow_slug: String.t(),
+          queue_name: String.t(),
           worker_id: String.t(),
           worker_name: String.t(),
           repo: module(),
@@ -150,7 +157,11 @@ defmodule PgFlow.Worker.Server do
           notify_fallback_interval: pos_integer(),
           fallback_timer_ref: reference() | nil,
           flow_def: term(),
+          compilation_status: String.t() | nil,
+          execution_options: %{String.t() => map()},
           lifecycle: Lifecycle.t(),
+          stop_waiters: [GenServer.from()],
+          stop_reason: :operator | :deprecated | nil,
           emitted_skips: %{String.t() => MapSet.t(String.t())},
           emitted_skip_runs: [String.t()]
         }
@@ -181,13 +192,26 @@ defmodule PgFlow.Worker.Server do
   end
 
   @doc """
-  Gracefully stops the worker.
+  Gracefully stops the worker process.
 
   The worker will stop accepting new tasks and wait for active tasks to complete.
+  This stops only the GenServer; if the worker is supervised with a permanent
+  restart policy, the supervisor may start a replacement unless the child is
+  removed. For a durable operator stop, use `PgFlow.WorkerSupervisor.stop_worker/1`
+  (or `PgFlow.stop_worker/1`), which drains, terminates the supervised child,
+  and unregisters the worker so restart does not undo the stop.
   """
   @spec stop(pid()) :: :ok
   def stop(pid) do
     GenServer.call(pid, :stop, :infinity)
+  catch
+    # Concurrent/idempotent stops: the server may exit after another waiter
+    # already drained, or GenServer.call may see {:normal, call_mfa} when the
+    # process stops after deferred replies.
+    :exit, :normal -> :ok
+    :exit, {:normal, _} -> :ok
+    :exit, {:noproc, _} -> :ok
+    :exit, {:shutdown, _} -> :ok
   end
 
   @doc """
@@ -210,9 +234,6 @@ defmodule PgFlow.Worker.Server do
     flow_def = flow_module.__pgflow_definition__()
     flow_slug = Atom.to_string(flow_def.slug)
 
-    # Derive visibility_timeout from flow's opt_timeout (default: 60s)
-    visibility_timeout = Keyword.get(flow_def.opts, :timeout, 60)
-
     # Signal strategy config
     signal_strategy = Map.get(config, :signal_strategy, :polling)
     heartbeat_interval = Map.get(config, :heartbeat_interval, 10_000)
@@ -230,7 +251,10 @@ defmodule PgFlow.Worker.Server do
     task_supervisor = Map.get(config, :task_supervisor, Process.whereis(PgFlow.TaskSupervisor))
 
     with task_supervisor when is_pid(task_supervisor) <- task_supervisor,
-         :ok <- validate_flow_exists(repo, flow_slug, flow_module) do
+         {:ok, bootstrap} <- Bootstrap.prepare(repo, flow_def),
+         {:ok, execution_options} <- Flows.execution_options(repo, flow_slug) do
+      visibility_timeout = Map.get(config, :read_visibility_timeout, 5)
+
       # Build signal state for adaptive backoff
       signal_state = %{
         current_interval: min_poll_interval,
@@ -243,6 +267,7 @@ defmodule PgFlow.Worker.Server do
       state = %{
         flow_module: flow_module,
         flow_slug: flow_slug,
+        queue_name: bootstrap.queue_name,
         worker_id: worker_id,
         worker_name: worker_name,
         repo: repo,
@@ -259,8 +284,12 @@ defmodule PgFlow.Worker.Server do
         notify_fallback_interval: notify_fallback_interval,
         fallback_timer_ref: nil,
         flow_def: flow_def,
+        compilation_status: bootstrap.compilation_status,
+        execution_options: execution_options,
         lifecycle:
           Lifecycle.new() |> Lifecycle.transition!(:starting) |> Lifecycle.transition!(:running),
+        stop_waiters: [],
+        stop_reason: nil,
         emitted_skips: %{},
         emitted_skip_runs: []
       }
@@ -272,8 +301,8 @@ defmodule PgFlow.Worker.Server do
           PgLogger.startup_banner(%{
             worker_name: worker_name,
             worker_id: worker_id,
-            queue_name: flow_slug,
-            flows: [%{flow_slug: flow_slug, status: :ready}]
+            queue_name: bootstrap.queue_name,
+            flows: [%{flow_slug: flow_slug, status: bootstrap.compilation_status}]
           })
 
           # Emit telemetry event
@@ -293,7 +322,11 @@ defmodule PgFlow.Worker.Server do
           {:stop, {:registration_failed, reason}}
       end
     else
-      nil -> {:stop, :task_supervisor_not_found}
+      nil ->
+        {:stop, :task_supervisor_not_found}
+
+      {:error, reason} ->
+        {:stop, {:bootstrap_failed, reason}}
     end
   end
 
@@ -334,16 +367,22 @@ defmodule PgFlow.Worker.Server do
   end
 
   @impl true
-  def handle_info({:heartbeat, token}, %{heartbeat_token: token} = state) do
-    case register_worker(state) do
-      {:ok, _} ->
-        :ok
+  def handle_info({:heartbeat, token}, %{heartbeat_token: token, lifecycle: lifecycle} = state) do
+    if Lifecycle.stopped?(lifecycle) do
+      {:noreply, state}
+    else
+      case heartbeat_worker(state) do
+        {:ok, :alive} ->
+          {:noreply, schedule_heartbeat(state)}
 
-      {:error, reason} ->
-        Logger.warning("Failed to heartbeat worker #{state.worker_id}: #{inspect(reason)}")
+        {:ok, :deprecated} ->
+          handle_deprecated_heartbeat(state)
+
+        {:error, reason} ->
+          Logger.warning("Failed to heartbeat worker #{state.worker_id}: #{inspect(reason)}")
+          {:noreply, schedule_heartbeat(state)}
+      end
     end
-
-    {:noreply, schedule_heartbeat(state)}
   end
 
   def handle_info({:heartbeat, _stale_token}, state), do: {:noreply, state}
@@ -388,7 +427,7 @@ defmodule PgFlow.Worker.Server do
             state
           end
 
-        {:noreply, state}
+        finalize_if_draining(state)
     end
   end
 
@@ -415,7 +454,7 @@ defmodule PgFlow.Worker.Server do
             state
           end
 
-        {:noreply, state}
+        finalize_if_draining(state)
     end
   end
 
@@ -457,7 +496,7 @@ defmodule PgFlow.Worker.Server do
             state
           end
 
-        {:noreply, state}
+        finalize_if_draining(state)
     end
   end
 
@@ -473,8 +512,20 @@ defmodule PgFlow.Worker.Server do
   end
 
   @impl true
-  def handle_call(:stop, _from, state) do
-    {:stop, :normal, :ok, do_stop(state)}
+  def handle_call(:stop, from, %{lifecycle: %{state: :stopping}} = state) do
+    {:noreply, %{state | stop_reason: :operator, stop_waiters: [from | state.stop_waiters]}}
+  end
+
+  def handle_call(:stop, from, state) do
+    state = begin_stop(state, :operator, from)
+
+    if map_size(state.active_tasks) == 0 do
+      state = finalize_stop(state)
+      reply_stop_waiters(state)
+      {:stop, :normal, state}
+    else
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -482,45 +533,10 @@ defmodule PgFlow.Worker.Server do
     {:reply, state, state}
   end
 
-  # Private function to handle graceful stop
-  defp do_stop(state) do
-    # Transition to stopping state
-    lifecycle = Lifecycle.transition!(state.lifecycle, :stopping)
-    state = %{state | lifecycle: lifecycle}
-
-    # Log waiting phase if there are active tasks
-    if map_size(state.active_tasks) > 0 do
-      PgLogger.shutdown(state.worker_name, :waiting)
-    end
-
-    # Wait for all active tasks to complete
-    wait_for_tasks(state)
-
-    # Mark worker as stopped in database
-    mark_worker_stopped(state)
-
-    # Transition to stopped state
-    lifecycle = Lifecycle.transition!(state.lifecycle, :stopped)
-    state = %{state | lifecycle: lifecycle}
-
-    # Log stopped phase
-    PgLogger.shutdown(state.worker_name, :stopped)
-
-    # Emit telemetry event
-    emit_telemetry([:worker, :stop], %{}, %{
-      worker_id: state.worker_id,
-      worker_name: state.worker_name,
-      flow_slug: state.flow_slug
-    })
-
-    state
-  end
-
   @impl true
   def terminate(reason, state) do
     Logger.debug("Worker #{state.worker_id} terminating: #{inspect(reason)}")
 
-    # Only mark stopped if do_stop hasn't already done it
     unless Lifecycle.stopped?(state.lifecycle) do
       mark_worker_stopped(state)
     end
@@ -532,8 +548,105 @@ defmodule PgFlow.Worker.Server do
 
   @spec register_worker(state()) :: {:ok, term()} | {:error, term()}
   defp register_worker(state) do
-    function_name = "elixir:#{state.flow_module}"
-    WorkerQueries.register_worker(state.repo, state.worker_id, state.flow_slug, function_name)
+    function_name = elixir_function_name(state.flow_module)
+    WorkerQueries.register_worker(state.repo, state.worker_id, state.queue_name, function_name)
+  end
+
+  @spec heartbeat_worker(state()) :: {:ok, :alive | :deprecated} | {:error, term()}
+  defp heartbeat_worker(state) do
+    WorkerQueries.heartbeat_worker(state.repo, state.worker_id)
+  end
+
+  @spec begin_stop(state(), :operator | :deprecated, GenServer.from() | nil) :: state()
+  defp begin_stop(state, reason, from) do
+    lifecycle = Lifecycle.transition!(state.lifecycle, :stopping)
+
+    stop_waiters =
+      if from do
+        [from | state.stop_waiters]
+      else
+        state.stop_waiters
+      end
+
+    state = %{
+      state
+      | lifecycle: lifecycle,
+        stop_reason: reason,
+        stop_waiters: stop_waiters
+    }
+
+    if map_size(state.active_tasks) > 0 do
+      PgLogger.shutdown(state.worker_name, :waiting)
+    end
+
+    state
+    |> cancel_poll_timer()
+    |> cancel_fallback_timer()
+  end
+
+  defp cancel_fallback_timer(%{fallback_timer_ref: ref} = state) when is_reference(ref) do
+    Process.cancel_timer(ref)
+
+    receive do
+      :fallback_poll -> :ok
+    after
+      0 -> :ok
+    end
+
+    %{state | fallback_timer_ref: nil}
+  end
+
+  defp cancel_fallback_timer(state), do: state
+
+  defp cancel_heartbeat_timer(%{heartbeat_timer_ref: ref} = state) when is_reference(ref) do
+    Process.cancel_timer(ref)
+    %{state | heartbeat_timer_ref: nil, heartbeat_token: nil}
+  end
+
+  defp cancel_heartbeat_timer(state), do: state
+
+  @spec finalize_if_draining(state()) :: {:noreply, state()} | {:stop, :normal, state()}
+  defp finalize_if_draining(%{lifecycle: %{state: :stopping}, active_tasks: active_tasks} = state)
+       when map_size(active_tasks) == 0 do
+    state = finalize_stop(state)
+    reply_stop_waiters(state)
+    {:stop, if(state.stop_reason == :deprecated, do: :deprecated, else: :normal), state}
+  end
+
+  defp finalize_if_draining(state), do: {:noreply, state}
+
+  defp handle_deprecated_heartbeat(%{lifecycle: %{state: :stopping}} = state),
+    do: {:noreply, schedule_heartbeat(state)}
+
+  defp handle_deprecated_heartbeat(state) do
+    Logger.info("Worker #{state.worker_id} deprecated; draining before replacement")
+    state |> schedule_heartbeat() |> begin_stop(:deprecated, nil) |> finalize_if_draining()
+  end
+
+  @spec finalize_stop(state()) :: state()
+  defp finalize_stop(state) do
+    state = cancel_heartbeat_timer(state)
+    mark_worker_stopped(state)
+
+    lifecycle = Lifecycle.transition!(state.lifecycle, :stopped)
+    state = %{state | lifecycle: lifecycle}
+
+    PgLogger.shutdown(state.worker_name, :stopped)
+
+    emit_telemetry([:worker, :stop], %{}, %{
+      worker_id: state.worker_id,
+      worker_name: state.worker_name,
+      flow_slug: state.flow_slug,
+      stop_reason: state.stop_reason
+    })
+
+    state
+  end
+
+  @spec reply_stop_waiters(state()) :: :ok
+  defp reply_stop_waiters(%{stop_waiters: waiters}) do
+    Enum.each(waiters, &GenServer.reply(&1, :ok))
+    :ok
   end
 
   @spec schedule_heartbeat(state()) :: state()
@@ -551,29 +664,6 @@ defmodule PgFlow.Worker.Server do
 
       {:error, reason} ->
         Logger.warning("Failed to mark worker as stopped: #{inspect(reason)}")
-        :ok
-    end
-  end
-
-  defp validate_flow_exists(repo, flow_slug, flow_module) do
-    case Flows.flow_exists?(repo, flow_slug) do
-      {:ok, true} ->
-        :ok
-
-      {:ok, false} ->
-        raise """
-        Flow "#{flow_slug}" is not compiled in the database.
-
-        The PGMQ queue for this flow does not exist. Run the migration to compile it:
-
-            mix pgflow.gen.flow_migration #{inspect(flow_module)}
-            mix ecto.migrate
-
-        Or if you haven't created the migration yet, generate it first.
-        """
-
-      {:error, error} ->
-        Logger.warning("Failed to check if flow exists: #{inspect(error)}")
         :ok
     end
   end
@@ -720,7 +810,7 @@ defmodule PgFlow.Worker.Server do
 
       case Flows.read(
              state.repo,
-             state.flow_slug,
+             state.queue_name,
              state.visibility_timeout,
              batch_size
            ) do
@@ -734,7 +824,7 @@ defmodule PgFlow.Worker.Server do
           {state, :found_messages}
 
         {:error, reason} ->
-          Logger.error("Failed to poll queue #{state.flow_slug}: #{inspect(reason)}")
+          Logger.error("Failed to poll queue #{state.queue_name}: #{inspect(reason)}")
           {state, :empty}
       end
     end
@@ -742,11 +832,24 @@ defmodule PgFlow.Worker.Server do
 
   @spec start_and_dispatch_tasks(state(), list(list())) :: state()
   defp start_and_dispatch_tasks(state, messages) do
+    case refresh_execution_options(state) do
+      {:ok, state} -> dispatch_started_tasks(state, messages)
+      {:error, reason} -> fail_closed_on_execution_options(state, reason)
+    end
+  end
+
+  defp dispatch_started_tasks(state, messages) do
     # Extract message IDs
     msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
 
     # Call start_tasks to create step_tasks records and get task details
-    case Flows.start_tasks(state.repo, state.flow_slug, msg_ids, state.worker_id) do
+    case Flows.start_tasks(
+           state.repo,
+           state.flow_slug,
+           msg_ids,
+           state.worker_id,
+           state.queue_name
+         ) do
       {:ok, task_details} ->
         # Dispatch each task
         state =
@@ -767,6 +870,25 @@ defmodule PgFlow.Worker.Server do
     end
   end
 
+  defp refresh_execution_options(state) do
+    case Flows.execution_options(state.repo, state.flow_slug) do
+      {:ok, execution_options} ->
+        {:ok, %{state | execution_options: execution_options}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp fail_closed_on_execution_options(state, reason) do
+    Logger.error(
+      "Failed to refresh execution options for flow #{state.flow_slug}: #{inspect(reason)}; " <>
+        "skipping dispatch for this batch"
+    )
+
+    state
+  end
+
   # `pgflow.start_tasks` declining a polled message is normally the benign
   # half of a race: the step went terminal between `pgmq.read` and
   # `start_tasks`, and the same SQL transaction that ended the step archived
@@ -785,7 +907,12 @@ defmodule PgFlow.Worker.Server do
   end
 
   defp reap_orphaned_messages(state, declined_msg_ids) do
-    case Flows.orphaned_queue_messages(state.repo, state.flow_slug, declined_msg_ids) do
+    case Flows.orphaned_queue_messages(
+           state.repo,
+           state.flow_slug,
+           state.queue_name,
+           declined_msg_ids
+         ) do
       {:ok, []} ->
         # Benign race: the messages were archived in the same transaction
         # that ended their steps — exactly what the invariant promises.
@@ -816,19 +943,20 @@ defmodule PgFlow.Worker.Server do
     steps = Enum.map(orphans, &{&1.step_slug, &1.step_status})
 
     Logger.error(
-      "pgflow archive invariant violated for flow #{state.flow_slug}: " <>
-        "messages #{inspect(msg_ids)} are still queued for terminal steps " <>
-        "#{inspect(steps)}; archiving them so they stop redelivering"
+      "pgflow archive invariant violated for flow #{state.flow_slug} " <>
+        "queue #{state.queue_name}: messages #{inspect(msg_ids)} are still queued " <>
+        "for terminal steps #{inspect(steps)}; archiving them so they stop redelivering"
     )
 
-    case Flows.archive_messages(state.repo, state.flow_slug, msg_ids) do
+    case Flows.archive_messages(state.repo, state.queue_name, msg_ids) do
       {:ok, _archived} ->
         :ok
 
       {:error, reason} ->
         Logger.error(
           "Failed to archive orphaned messages #{inspect(msg_ids)} for flow " <>
-            "#{state.flow_slug}: #{inspect(reason)}; they will redeliver"
+            "#{state.flow_slug} queue #{state.queue_name}: #{inspect(reason)}; " <>
+            "they will redeliver"
         )
 
         :ok
@@ -843,17 +971,43 @@ defmodule PgFlow.Worker.Server do
     # visibility timeout lapsed mid-run). Not ours to archive — the running
     # attempt's complete/fail path owns the message — but worth a warning,
     # since recurring hits mean the visibility timeout is too short.
-    details = Enum.map(orphans, &{&1.msg_id, &1.step_slug, &1.step_status})
+    details =
+      Enum.map(orphans, fn orphan ->
+        {orphan.msg_id, orphan.step_slug, orphan.step_status}
+      end)
 
     Logger.warning(
-      "start_tasks declined still-queued messages for flow #{state.flow_slug}: " <>
-        "#{inspect(details)}; leaving them to redeliver"
+      "start_tasks declined still-queued messages for flow #{state.flow_slug} " <>
+        "queue #{state.queue_name}: #{inspect(details)}; leaving them to redeliver"
     )
   end
 
   @spec dispatch_task(state(), list()) :: state()
   defp dispatch_task(state, task_detail) do
-    # Row shape and the seven/eight column split live in `TaskRow`:
+    row = TaskRow.decode(task_detail)
+
+    case get_step_definition(state.flow_module, row.step_slug) do
+      nil ->
+        error = "unknown step #{inspect(row.step_slug)} in #{inspect(state.flow_module)}"
+        Logger.error(error)
+
+        Flows.fail_task(
+          state.repo,
+          Ecto.UUID.load!(row.run_id),
+          row.step_slug,
+          row.task_index,
+          error
+        )
+
+        state
+
+      step_def ->
+        dispatch_known_task(state, task_detail, step_def)
+    end
+  end
+
+  defp dispatch_known_task(state, task_detail, step_def) do
+    # Row shape and eight-column decode live in `TaskRow`:
     # - input: step-specific input (raw element for map, {} for root, deps for dependent)
     # - flow_input: original flow input (only for root non-map steps, NULL otherwise)
     # - attempt: 1-indexed, from attempts_count, which start_tasks increments before dispatch
@@ -885,27 +1039,6 @@ defmodule PgFlow.Worker.Server do
       attempt: attempt
     } = row
 
-    # Looked up by the database's string slug. The atom is then taken off the
-    # compiled definition rather than built from the row, so a queue carrying an
-    # unknown slug cannot add to the atom table on its way to the raise below.
-    step_def = get_step_definition(state.flow_module, step_slug)
-
-    unless step_def do
-      defined_steps =
-        state.flow_module.__pgflow_definition__().steps
-        |> Enum.map(& &1.slug)
-
-      raise """
-      Step #{inspect(step_slug)} not found in #{inspect(state.flow_module)} definition.
-
-      Steps defined in module: #{inspect(defined_steps)}
-      Step slug (queue) from database: #{inspect(step_slug)}
-
-      This usually means the database schema is out of sync with your Elixir code.
-      Re-run the migration to sync: mix ecto.migrate
-      """
-    end
-
     step_slug_atom = step_def.slug
 
     # `input` and `flow_input` arrive from jsonb columns, so Postgrex has already
@@ -931,7 +1064,8 @@ defmodule PgFlow.Worker.Server do
       task_index: task_index,
       attempt: attempt,
       repo: state.repo,
-      flow_input: flow_input || :not_loaded
+      flow_input:
+        Context.normalize_flow_input(flow_input, flow_input_snapshot_included?(step_def))
     }
 
     # Start task under supervisor
@@ -950,33 +1084,12 @@ defmodule PgFlow.Worker.Server do
         try do
           result = handler.(handler_input, context)
           duration = System.monotonic_time() - start_time
-
-          emit_telemetry([:worker, :task, :stop], %{duration: duration}, %{
-            worker_id: state.worker_id,
-            flow_slug: state.flow_slug,
-            run_id: run_id,
-            step_slug: step_slug,
-            task_index: task_index,
-            output: result
-          })
-
-          {:ok, result}
+          {:ok, result, duration}
         catch
           kind, reason ->
             duration = System.monotonic_time() - start_time
             stacktrace = __STACKTRACE__
-
-            emit_telemetry([:worker, :task, :exception], %{duration: duration}, %{
-              worker_id: state.worker_id,
-              flow_slug: state.flow_slug,
-              run_id: run_id,
-              step_slug: step_slug,
-              task_index: task_index,
-              kind: kind,
-              reason: reason
-            })
-
-            {:error, Exception.format(kind, reason, stacktrace)}
+            {:error, Exception.format(kind, reason, stacktrace), duration}
         end
       end)
 
@@ -998,12 +1111,13 @@ defmodule PgFlow.Worker.Server do
     %{state | active_tasks: active_tasks}
   end
 
-  # Resolves the timeout for a task: step-level override > flow-level > default 60s
+  # Resolves the timeout for a task from the database-backed execution options
+  # refreshed for each claimed batch.
   defp resolve_task_timeout(state, step_slug) do
-    step_def = get_step_definition(state.flow_module, step_slug)
-    flow_timeout = Keyword.get(state.flow_def.opts, :timeout, 60)
-
-    if step_def && step_def.timeout, do: step_def.timeout, else: flow_timeout
+    case Map.get(state.execution_options, step_slug) do
+      %{timeout: timeout} when is_integer(timeout) -> timeout
+      _ -> 60
+    end
   end
 
   # Cancels a task's timeout timer if it exists and flushes any already-sent message
@@ -1020,44 +1134,41 @@ defmodule PgFlow.Worker.Server do
   defp cancel_task_timeout(_task_meta), do: :ok
 
   @spec handle_task_success(task_metadata(), term(), state()) :: state()
-  defp handle_task_success(task_meta, {:ok, output}, state) do
-    serialized = serialize_handler_output(output)
+  defp handle_task_success(task_meta, {:ok, output, duration}, state) do
+    case serialize_handler_output(output) do
+      {:ok, serialized} ->
+        case Flows.complete_task(
+               state.repo,
+               task_meta.run_id,
+               task_meta.step_slug,
+               task_meta.task_index,
+               serialized
+             ) do
+          {:ok, row} ->
+            state =
+              state
+              |> maybe_emit_task_completed(task_meta, duration, serialized, row)
+              |> maybe_emit_task_failed_after_success(task_meta, duration, row)
+              |> emit_new_skips(task_meta.run_id)
+              |> emit_run_terminal(task_meta.run_id, nil)
 
-    case Flows.complete_task(
-           state.repo,
-           task_meta.run_id,
-           task_meta.step_slug,
-           task_meta.task_index,
-           serialized
-         ) do
-      {:ok, _} ->
-        state = emit_new_skips(state, task_meta.run_id)
-        state = emit_run_terminal(state, task_meta.run_id, nil)
-        # Delete message from queue ONLY after DB state is confirmed updated.
-        # If we delete unconditionally (including on the :error branch below),
-        # a transient complete_task failure (deadlock, conn hiccup, serializable
-        # rollback) orphans the task: step_tasks row stays un-updated but pgmq
-        # message is gone, so no worker can re-pick it up and stalled_recovery
-        # can't resurrect it. The step hangs forever waiting on a task that
-        # will never run.
-        delete_message(state, task_meta.msg_id)
-        state
+            state
 
-      {:error, reason} ->
-        Logger.error(
-          "Failed to mark task as completed: #{task_meta.step_slug}[#{task_meta.task_index}] - #{inspect(reason)}"
-        )
+          {:error, reason} ->
+            Logger.error(
+              "Failed to mark task as completed: #{task_meta.step_slug}[#{task_meta.task_index}] - #{inspect(reason)}"
+            )
 
-        # Intentionally DO NOT delete the message. pgmq visibility timeout
-        # will expire and the task will be re-delivered. Handlers must be
-        # idempotent (the same contract required for pgflow retries on
-        # genuine task crashes).
-        state
+            state
+        end
+
+      {:error, error_message} ->
+        handle_task_failure(task_meta, error_message, state, duration)
     end
   end
 
-  defp handle_task_success(task_meta, {:error, error_message}, state) do
-    handle_task_failure(task_meta, error_message, state)
+  defp handle_task_success(task_meta, {:error, error_message, duration}, state) do
+    handle_task_failure(task_meta, error_message, state, duration)
   end
 
   defp handle_task_success(task_meta, unexpected_result, state) do
@@ -1066,12 +1177,14 @@ defmodule PgFlow.Worker.Server do
     handle_task_failure(
       task_meta,
       "Task returned unexpected result: #{inspect(unexpected_result)}",
-      state
+      state,
+      nil
     )
   end
 
-  @spec handle_task_failure(task_metadata(), term(), state()) :: state()
-  defp handle_task_failure(task_meta, reason, state) do
+  @spec handle_task_failure(task_metadata(), term(), state(), non_neg_integer() | nil) ::
+          state()
+  defp handle_task_failure(task_meta, reason, state, duration \\ nil) do
     error_message =
       case reason do
         :normal -> "Task exited normally without result"
@@ -1101,12 +1214,11 @@ defmodule PgFlow.Worker.Server do
            error_message
          ) do
       {:ok, result} ->
-        # Extract retry info from the fail_task result if available
-        # The fail_task function returns step_task record with attempts_count and max_attempts
         retry_info = extract_retry_info(result, state)
         PgLogger.task_failed(log_ctx, error_message, retry_info)
 
         state
+        |> maybe_emit_task_failed(task_meta, duration, error_message, result)
         |> emit_new_skips(task_meta.run_id)
         |> emit_run_terminal(task_meta.run_id, error_message)
 
@@ -1124,16 +1236,16 @@ defmodule PgFlow.Worker.Server do
   defp extract_retry_info(nil, _state), do: nil
 
   defp extract_retry_info(result, state) when is_list(result) do
-    # pgflow.fail_task returns: (flow_slug, run_id, step_slug, task_index, status, attempts_count, ...)
-    # We need attempts_count (index 5) and we can get max_attempts from flow definition
+    # pgflow.fail_task returns the physical step_tasks row, including message_id.
     case result do
-      [_flow_slug, _run_id, _step_slug, _task_index, _status, attempts_count | _rest]
+      [_flow_slug, _run_id, step_slug, _message_id, _task_index, _status, attempts_count | _rest]
       when is_integer(attempts_count) ->
-        flow_def = state.flow_def
-        max_attempts = Keyword.get(flow_def.opts, :max_attempts, 3)
-        base_delay = Keyword.get(flow_def.opts, :base_delay, 1)
+        %{max_attempts: max_attempts, base_delay: base_delay} =
+          Map.get(state.execution_options, step_slug, %{
+            max_attempts: 3,
+            base_delay: 1
+          })
 
-        # Calculate next retry delay using exponential backoff
         delay_seconds = base_delay * :math.pow(2, attempts_count - 1)
 
         %{
@@ -1149,46 +1261,90 @@ defmodule PgFlow.Worker.Server do
 
   defp extract_retry_info(_, _state), do: nil
 
-  @spec delete_message(state(), pos_integer()) :: :ok
-  defp delete_message(state, msg_id) do
-    case Flows.delete_message(state.repo, state.flow_slug, msg_id) do
-      {:ok, _} ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("Failed to delete message #{msg_id}: #{inspect(reason)}")
-        :ok
-    end
+  @spec elixir_function_name(module()) :: String.t()
+  defp elixir_function_name(module) when is_atom(module) do
+    "elixir:" <> (module |> Module.split() |> Enum.join("."))
   end
 
-  # Validates handler output is JSON-serializable before storing.
-  # Gracefully falls back to inspected output on serialization failure.
-  defp serialize_handler_output(nil), do: %{}
-
-  defp serialize_handler_output(output) when is_map(output) or is_list(output) do
+  defp serialize_handler_output(output) do
     case Jason.encode(output) do
-      {:ok, _} ->
-        output
-
-      {:error, reason} ->
-        Logger.warning("Handler output not JSON-serializable: #{inspect(reason)}")
-        %{"_serialization_error" => inspect(reason), "_raw" => inspect(output)}
+      {:ok, _encoded} -> {:ok, output}
+      {:error, _reason} -> {:error, "Handler output is not JSON encodable"}
     end
   end
 
-  defp serialize_handler_output(output), do: %{"_raw" => inspect(output)}
+  @spec maybe_emit_task_completed(state(), task_metadata(), non_neg_integer(), term(), term()) ::
+          state()
+  defp maybe_emit_task_completed(state, task_meta, duration, output, row) do
+    if Flows.complete_task_applied?(row) do
+      emit_telemetry([:worker, :task, :stop], %{duration: duration}, %{
+        worker_id: state.worker_id,
+        flow_slug: state.flow_slug,
+        run_id: task_meta.run_id,
+        step_slug: task_meta.step_slug,
+        task_index: task_meta.task_index,
+        output: output
+      })
+    end
+
+    state
+  end
+
+  @spec maybe_emit_task_failed_after_success(state(), task_metadata(), non_neg_integer(), term()) ::
+          state()
+  defp maybe_emit_task_failed_after_success(state, task_meta, duration, row) do
+    if Flows.step_task_status(row) == "failed" do
+      maybe_emit_task_failed(
+        state,
+        task_meta,
+        duration,
+        "Task failed during completion",
+        row
+      )
+    else
+      state
+    end
+  end
+
+  @spec maybe_emit_task_failed(
+          state(),
+          task_metadata(),
+          non_neg_integer() | nil,
+          String.t(),
+          term()
+        ) ::
+          state()
+  defp maybe_emit_task_failed(state, task_meta, duration, error_message, row)
+       when not is_nil(row) do
+    if Flows.fail_task_applied?(row) do
+      emit_task_failed_telemetry(state, task_meta, duration, error_message)
+    else
+      state
+    end
+  end
+
+  defp maybe_emit_task_failed(state, task_meta, duration, error_message, nil) do
+    emit_task_failed_telemetry(state, task_meta, duration, error_message)
+  end
+
+  defp emit_task_failed_telemetry(state, task_meta, duration, error_message) do
+    emit_telemetry([:worker, :task, :exception], %{duration: duration || 0}, %{
+      worker_id: state.worker_id,
+      flow_slug: state.flow_slug,
+      run_id: task_meta.run_id,
+      step_slug: task_meta.step_slug,
+      task_index: task_meta.task_index,
+      reason: error_message
+    })
+
+    state
+  end
 
   # Get step definition from flow module
-  # Accepts the slug as either the atom the flow module defined or the string the
-  # database stores. Matching the string form against the compiled steps is what
+  # Accepts the string slug the database stores. Matching the string form against the compiled steps is what
   # lets callers avoid `String.to_atom/1` on a database value: a stale or
   # unrecognized queue row simply finds nothing, rather than growing the atom
   # table on the way to the same conclusion.
-  defp get_step_definition(flow_module, step_slug) when is_atom(step_slug) do
-    flow_module.__pgflow_definition__().steps
-    |> Enum.find(&(&1.slug == step_slug))
-  end
-
   defp get_step_definition(flow_module, step_slug) when is_binary(step_slug) do
     flow_module.__pgflow_definition__().steps
     |> Enum.find(&(Atom.to_string(&1.slug) == step_slug))
@@ -1224,68 +1380,8 @@ defmodule PgFlow.Worker.Server do
     end
   end
 
-  @spec wait_for_tasks(state()) :: :ok
-  defp wait_for_tasks(%{active_tasks: active_tasks}) when map_size(active_tasks) == 0 do
-    :ok
-  end
-
-  defp wait_for_tasks(state) do
-    receive do
-      {ref, result} when is_reference(ref) ->
-        # Process the task result during shutdown
-        case Map.pop(state.active_tasks, ref) do
-          {nil, _} ->
-            wait_for_tasks(state)
-
-          {task_meta, new_active_tasks} ->
-            cancel_task_timeout(task_meta)
-            state = handle_task_success(task_meta, result, state)
-            wait_for_tasks(%{state | active_tasks: new_active_tasks})
-        end
-
-      {:DOWN, ref, :process, _pid, reason} ->
-        # Process the task failure during shutdown
-        case Map.pop(state.active_tasks, ref) do
-          {nil, _} ->
-            wait_for_tasks(state)
-
-          {task_meta, new_active_tasks} ->
-            cancel_task_timeout(task_meta)
-            state = handle_task_failure(task_meta, reason, state)
-            wait_for_tasks(%{state | active_tasks: new_active_tasks})
-        end
-
-      {:task_timeout, ref} ->
-        case Map.pop(state.active_tasks, ref) do
-          {nil, _} ->
-            # Already completed, ignore
-            wait_for_tasks(state)
-
-          {task_meta, new_active_tasks} ->
-            # Terminate the task and report failure (same as normal handler)
-            if task_meta.task_pid do
-              Task.Supervisor.terminate_child(state.task_supervisor, task_meta.task_pid)
-            end
-
-            timeout_seconds = resolve_task_timeout(state, task_meta.step_slug)
-
-            state =
-              handle_task_failure(
-                task_meta,
-                "Task timed out after #{timeout_seconds}s",
-                state
-              )
-
-            wait_for_tasks(%{state | active_tasks: new_active_tasks})
-        end
-    after
-      30_000 ->
-        Logger.warning(
-          "Timeout waiting for tasks to complete, #{map_size(state.active_tasks)} tasks still active"
-        )
-
-        :ok
-    end
+  defp flow_input_snapshot_included?(step_def) do
+    step_def.step_type != :map and Enum.empty?(step_def.depends_on)
   end
 
   # Announces skips this worker has not announced yet for `run_id`.

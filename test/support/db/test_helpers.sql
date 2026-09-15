@@ -105,7 +105,7 @@ as $$
   -- 1. make sure the worker exists / update its heartbeat
   WITH w AS (
     SELECT pgflow_tests.ensure_worker(
-             queue_name   => flow_slug,
+             queue_name   => lower(flow_slug),
              worker_uuid  => worker_uuid,
              function_name => function_name
            ) AS wid
@@ -113,7 +113,7 @@ as $$
   -- 2. read messages from the queue
   msgs AS (
     SELECT *
-      FROM pgmq.read_with_poll(flow_slug, vt, qty, 1, 50)
+      FROM pgmq.read_with_poll(lower(flow_slug), vt, qty, 1, 50)
      LIMIT qty
   ),
   -- 3. collect their msg_ids
@@ -125,7 +125,8 @@ as $$
     FROM pgflow.start_tasks(
            flow_slug,
            (SELECT msg_ids FROM ids),
-           (SELECT wid FROM w)
+           (SELECT wid FROM w),
+           lower(flow_slug)
          );
 $$;
 
@@ -646,4 +647,4 @@ $$ language sql;
 
 
 -- Configure local JWT secret for is_local() detection
-ALTER DATABASE pgflow_test SET app.settings.jwt_secret = 'super-secret-jwt-token-with-at-least-32-characters-long';
+ALTER DATABASE :"db_name" SET app.settings.jwt_secret = 'super-secret-jwt-token-with-at-least-32-characters-long';

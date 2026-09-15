@@ -1,0 +1,377 @@
+{
+  "cases": [
+    {
+      "id": "charge_after_approval",
+      "definition": {
+        "slug": "payment_flow",
+        "opts": [],
+        "flow_type": "flow",
+        "steps": [
+          {
+            "slug": "charge",
+            "depends_on": ["approval"],
+            "step_type": "single"
+          }
+        ]
+      },
+      "shape": {
+        "steps": [
+          {
+            "slug": "charge",
+            "stepType": "single",
+            "dependencies": ["approval"],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false}
+          }
+        ]
+      }
+    },
+    {
+      "id": "root_map",
+      "definition": {
+        "slug": "map_root_flow",
+        "opts": [],
+        "flow_type": "flow",
+        "steps": [
+          {
+            "slug": "process_items",
+            "step_type": "map",
+            "depends_on": []
+          }
+        ]
+      },
+      "shape": {
+        "steps": [
+          {
+            "slug": "process_items",
+            "stepType": "map",
+            "dependencies": [],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false}
+          }
+        ]
+      }
+    },
+    {
+      "id": "dependent_map",
+      "definition": {
+        "slug": "map_dep_flow",
+        "opts": [],
+        "flow_type": "flow",
+        "steps": [
+          {"slug": "get_items", "depends_on": [], "step_type": "single"},
+          {
+            "slug": "process",
+            "depends_on": ["get_items"],
+            "step_type": "map"
+          }
+        ]
+      },
+      "shape": {
+        "steps": [
+          {
+            "slug": "get_items",
+            "stepType": "single",
+            "dependencies": [],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false}
+          },
+          {
+            "slug": "process",
+            "stepType": "map",
+            "dependencies": ["get_items"],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false}
+          }
+        ]
+      }
+    },
+    {
+      "id": "zero_delays",
+      "definition": {
+        "slug": "zero_delay_flow",
+        "opts": [{"key": "base_delay", "value": 0}],
+        "flow_type": "flow",
+        "steps": [
+          {
+            "slug": "delayed",
+            "depends_on": [],
+            "step_type": "single",
+            "base_delay": 0,
+            "start_delay": 0
+          }
+        ]
+      },
+      "shape": {
+        "steps": [
+          {
+            "slug": "delayed",
+            "stepType": "single",
+            "dependencies": [],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false},
+            "options": {"baseDelay": 0, "startDelay": 0}
+          }
+        ],
+        "options": {"baseDelay": 0}
+      }
+    },
+    {
+      "id": "condition_modes",
+      "definition": {
+        "slug": "modes_flow",
+        "opts": [],
+        "flow_type": "flow",
+        "steps": [
+          {
+            "slug": "conditional",
+            "depends_on": [],
+            "step_type": "single",
+            "if": {"status": "ready"},
+            "when_unmet": "skip_cascade",
+            "when_exhausted": "skip"
+          }
+        ]
+      },
+      "shape": {
+        "steps": [
+          {
+            "slug": "conditional",
+            "stepType": "single",
+            "dependencies": [],
+            "whenUnmet": "skip-cascade",
+            "whenExhausted": "skip",
+            "requiredInputPattern": {"defined": true, "value": {"status": "ready"}},
+            "forbiddenInputPattern": {"defined": false}
+          }
+        ]
+      }
+    },
+    {
+      "id": "pattern_variants",
+      "definition": {
+        "slug": "patterns_flow",
+        "opts": [],
+        "flow_type": "flow",
+        "steps": [
+          {
+            "slug": "scalar",
+            "depends_on": [],
+            "step_type": "single",
+            "if": "active",
+            "if_defined": true
+          },
+          {
+            "slug": "array",
+            "depends_on": [],
+            "step_type": "single",
+            "if_not": ["blocked", "deleted"],
+            "if_not_defined": true
+          },
+          {
+            "slug": "null_pattern",
+            "depends_on": [],
+            "step_type": "single",
+            "if": null,
+            "if_defined": true
+          }
+        ]
+      },
+      "shape": {
+        "steps": [
+          {
+            "slug": "scalar",
+            "stepType": "single",
+            "dependencies": [],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": true, "value": "active"},
+            "forbiddenInputPattern": {"defined": false}
+          },
+          {
+            "slug": "array",
+            "stepType": "single",
+            "dependencies": [],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": true, "value": ["blocked", "deleted"]}
+          },
+          {
+            "slug": "null_pattern",
+            "stepType": "single",
+            "dependencies": [],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": true, "value": null},
+            "forbiddenInputPattern": {"defined": false}
+          }
+        ]
+      }
+    },
+    {
+      "id": "job_flow_type",
+      "definition": {
+        "slug": "nightly_job",
+        "opts": [],
+        "flow_type": "job",
+        "steps": [{"slug": "run_once", "depends_on": [], "step_type": "single"}]
+      },
+      "shape": {
+        "steps": [
+          {
+            "slug": "run_once",
+            "stepType": "single",
+            "dependencies": [],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false}
+          }
+        ]
+      }
+    },
+    {
+      "id": "sorted_dependencies",
+      "definition": {
+        "slug": "sort_deps_flow",
+        "opts": [],
+        "flow_type": "flow",
+        "steps": [
+          {"slug": "zebra", "depends_on": [], "step_type": "single"},
+          {"slug": "apple", "depends_on": [], "step_type": "single"},
+          {"slug": "mango", "depends_on": [], "step_type": "single"},
+          {
+            "slug": "combined",
+            "depends_on": ["zebra", "apple", "mango"],
+            "step_type": "single"
+          }
+        ]
+      },
+      "shape": {
+        "steps": [
+          {
+            "slug": "zebra",
+            "stepType": "single",
+            "dependencies": [],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false}
+          },
+          {
+            "slug": "apple",
+            "stepType": "single",
+            "dependencies": [],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false}
+          },
+          {
+            "slug": "mango",
+            "stepType": "single",
+            "dependencies": [],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false}
+          },
+          {
+            "slug": "combined",
+            "stepType": "single",
+            "dependencies": ["apple", "mango", "zebra"],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false}
+          }
+        ]
+      }
+    },
+    {
+      "id": "runtime_options",
+      "definition": {
+        "slug": "analyze_website",
+        "opts": [
+          {"key": "max_attempts", "value": 3},
+          {"key": "base_delay", "value": 5},
+          {"key": "timeout", "value": 10}
+        ],
+        "flow_type": "flow",
+        "steps": [
+          {"slug": "website", "depends_on": [], "step_type": "single"},
+          {
+            "slug": "sentiment",
+            "depends_on": ["website"],
+            "step_type": "single",
+            "max_attempts": 5,
+            "timeout": 30
+          }
+        ]
+      },
+      "shape": {
+        "steps": [
+          {
+            "slug": "website",
+            "stepType": "single",
+            "dependencies": [],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false}
+          },
+          {
+            "slug": "sentiment",
+            "stepType": "single",
+            "dependencies": ["website"],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false},
+            "options": {"maxAttempts": 5, "timeout": 30}
+          }
+        ],
+        "options": {"maxAttempts": 3, "baseDelay": 5, "timeout": 10}
+      }
+    }
+  ],
+  "comparison": {
+    "structural_pair": {
+      "left_case": "charge_after_approval",
+      "right": {
+        "steps": [
+          {
+            "slug": "charge",
+            "stepType": "map",
+            "dependencies": ["approval"],
+            "whenUnmet": "skip",
+            "whenExhausted": "fail",
+            "requiredInputPattern": {"defined": false},
+            "forbiddenInputPattern": {"defined": false}
+          }
+        ]
+      }
+    },
+    "options_pair": {
+      "left_case": "runtime_options",
+      "right_override": {
+        "options": {"maxAttempts": 99, "baseDelay": 99, "timeout": 99},
+        "steps": [
+          {"options": {"maxAttempts": 99, "baseDelay": 99, "timeout": 99, "startDelay": 99}},
+          {"options": {"maxAttempts": 99, "timeout": 99}}
+        ]
+      }
+    }
+  }
+}

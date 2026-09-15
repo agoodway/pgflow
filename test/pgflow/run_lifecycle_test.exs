@@ -41,7 +41,7 @@ defmodule PgFlow.RunLifecycleTest do
                Runs.count_queue_messages(TestRepo, "count_messages", unrelated_run_id)
     end
 
-    test "counts live and archive tables in one combined query for a consistent snapshot" do
+    test "counts live and archive routes using persisted queue and message identity" do
       create_flow("count_single_snapshot")
       add_step("count_single_snapshot", "work", type: "map")
       run_id = start_flow_run("count_single_snapshot", ["live", "archive"])
@@ -70,18 +70,15 @@ defmodule PgFlow.RunLifecycleTest do
         :telemetry.detach(handler_id)
       end
 
-      payload_count_queries =
+      queries =
         []
         |> collect_count_queries()
-        |> Enum.filter(&String.contains?(&1, "message->>'run_id'"))
 
-      assert [combined_query] = payload_count_queries
-      assert combined_query =~ "UNION ALL"
-      assert combined_query =~ ~s("pgmq".q_count_single_snapshot)
-      assert combined_query =~ ~s("pgmq".a_count_single_snapshot)
+      assert Enum.any?(queries, &String.contains?(&1, "msg_id = ANY"))
+      assert Enum.any?(queries, &String.contains?(&1, "array_agg(message_id)"))
     end
 
-    test "counts durable orphaned messages after relational lifecycle rows disappear" do
+    test "returns zero when relational task rows no longer exist" do
       create_flow("count_orphaned_messages")
       add_step("count_orphaned_messages", "work")
       run_id = start_flow_run("count_orphaned_messages", %{})
@@ -98,7 +95,7 @@ defmodule PgFlow.RunLifecycleTest do
         TestRepo.query!("DELETE FROM pgflow.runs WHERE run_id = $1", [Ecto.UUID.dump!(run_id)])
       end)
 
-      assert {:ok, 1} = Runs.count_queue_messages(TestRepo, "count_orphaned_messages", run_id)
+      assert {:ok, 0} = Runs.count_queue_messages(TestRepo, "count_orphaned_messages", run_id)
     end
 
     test "uses PGMQ canonical queue names and treats missing queues and empty IDs as empty" do

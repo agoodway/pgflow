@@ -15,6 +15,7 @@ defmodule PgFlow.Schema.Step do
   schema "steps" do
     field(:flow_slug, :string, primary_key: true)
     field(:step_slug, :string, primary_key: true)
+    field(:queue_name, :string)
     field(:step_type, :string)
     field(:step_index, :integer)
     field(:deps_count, :integer)
@@ -41,6 +42,7 @@ defmodule PgFlow.Schema.Step do
     |> cast(attrs, [
       :flow_slug,
       :step_slug,
+      :queue_name,
       :step_type,
       :step_index,
       :deps_count,

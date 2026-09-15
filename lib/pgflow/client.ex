@@ -241,13 +241,15 @@ defmodule PgFlow.Client do
   @doc """
   Recompiles a flow definition at runtime.
 
-  This is the primary API for runtime flow management. Unlike the compile-time
-  DSL (`use PgFlow.Flow`), this function creates flow definitions from plain
-  data - ideal for per-tenant automations where flows are defined dynamically.
+  Elixir workers verify definitions through
+  `PgFlow.Worker.Bootstrap.prepare/2` and upstream `ensure_flow_compiled/2`.
+  This API remains for explicit runtime management and per-tenant automations
+  where callers intentionally perform destructive recompilation.
 
-  If the flow already exists, this operation is destructive: the existing
-  definition and historical run/task data for the slug are deleted before
-  recompiling.
+  Unlike the compile-time DSL (`use PgFlow.Flow`), this function creates flow
+  definitions from plain data. If the flow already exists, this operation is
+  destructive: the existing definition and historical run/task data for the
+  slug are deleted before recompiling.
 
   ## Options
 

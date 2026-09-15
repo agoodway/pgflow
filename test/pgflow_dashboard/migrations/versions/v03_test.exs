@@ -17,8 +17,8 @@ defmodule PgFlowDashboard.Migrations.Versions.V03Test do
   defp down_sql, do: File.read!(@down_path)
 
   describe "registration" do
-    test "v03 is the current dashboard version" do
-      assert PgFlowDashboard.Migration.current_version() == 3
+    test "v04 follows the retained v03 dashboard migration" do
+      assert PgFlowDashboard.Migration.current_version() == 4
     end
 
     test "the v03 version module exists and is listed in the migration module" do

@@ -5,6 +5,10 @@ defmodule PgFlow.JobCompiler do
   Delegates to `PgFlow.FlowCompiler` for base SQL generation (create_flow + add_step),
   then appends an UPDATE statement to set `flow_type = 'job'` on the flow record.
 
+  Worker startup preserves `flow_type` through `PgFlow.Worker.Bootstrap.prepare/2`
+  after upstream compilation. Generated job migrations remain supported for explicit
+  compatibility but do not replace startup verification.
+
   ## Example
 
       definition = MyApp.Jobs.SendEmail.__pgflow_definition__()

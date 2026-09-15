@@ -120,7 +120,7 @@ defmodule PgFlow.MigrationTest do
         SELECT obj_description(('pgflow.pgflow_version')::regclass, 'pg_class')
         """)
 
-      assert comment =~ ~r/version=1/, "expected version=1 comment, got #{inspect(comment)}"
+      assert comment =~ ~r/version=2/, "expected version=2 comment, got #{inspect(comment)}"
     end
 
     test "creates pgflow functions" do
@@ -150,17 +150,10 @@ defmodule PgFlow.MigrationTest do
   end
 
   describe "down/0" do
-    test "drops the pgflow schema" do
+    test "raises because core V02 is forward-only" do
       run_up!()
-      run_down!()
 
-      {:ok, %{rows: rows}} =
-        TestRepo.query(
-          "SELECT schema_name FROM information_schema.schemata WHERE schema_name = $1",
-          ["pgflow"]
-        )
-
-      assert rows == []
+      assert_raise Postgrex.Error, ~r/forward-only/, fn -> run_down!() end
     end
   end
 

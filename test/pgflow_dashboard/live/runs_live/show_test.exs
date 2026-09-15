@@ -87,12 +87,39 @@ defmodule PgFlowDashboard.Live.RunsLive.ShowTest do
         step_states: [state],
         step_state_map: %{"fanout" => "failed"},
         flow_steps: [%{step_slug: "fanout", deps: []}],
-        step_task_counts: %{"fanout" => %{total: 2, completed: 1, failed: 1}}
+        step_task_counts: %{
+          "fanout" => %{total: 2, completed: 1, failed: 1, skipped: 0, cancelled: 0}
+        }
       )
 
     assert html =~ "Tasks: 1/2"
     assert html =~ "(1 failed)"
     refute html =~ "Tasks: 2/2"
+  end
+
+  test "renders cancelled task counts" do
+    state = %StepState{
+      step_slug: "fanout",
+      status: "cancelled",
+      initial_tasks: 2,
+      remaining_tasks: 0,
+      started_at: @run_start,
+      completed_at: @run_end
+    }
+
+    html =
+      render_show(
+        step_states: [state],
+        step_state_map: %{"fanout" => "cancelled"},
+        flow_steps: [%{step_slug: "fanout", deps: []}],
+        step_task_counts: %{
+          "fanout" => %{total: 2, completed: 0, failed: 0, skipped: 0, cancelled: 2}
+        }
+      )
+
+    assert html =~ "(2 cancelled)"
+    assert html =~ "Cancelled"
+    assert html =~ "bg-slate-200"
   end
 
   test "omits task counts for an unresolved map step without persisted tasks" do
@@ -126,7 +153,7 @@ defmodule PgFlowDashboard.Live.RunsLive.ShowTest do
           step_states: [@skipped_state],
           step_state_map: %{"send_welcome" => "skipped"},
           step_task_counts: %{
-            "send_welcome" => %{total: 1, completed: 0, failed: 1}
+            "send_welcome" => %{total: 1, completed: 0, failed: 1, skipped: 0, cancelled: 0}
           },
           flow_steps: [%{step_slug: "send_welcome", deps: ["create_account"]}]
         ],

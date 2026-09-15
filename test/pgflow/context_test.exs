@@ -529,7 +529,7 @@ defmodule PgFlow.ContextTest do
       assert is_atom(ctx.repo)
     end
 
-    test "flow_input is either :not_loaded or a map" do
+    test "flow_input is either :not_loaded or a cached JSON value" do
       ctx1 =
         Context.new(
           run_id: "550e8400-e29b-41d4-a716-446655440000",
@@ -540,6 +540,7 @@ defmodule PgFlow.ContextTest do
         )
 
       assert ctx1.flow_input == :not_loaded
+      refute Context.flow_input_loaded?(ctx1)
 
       ctx2 =
         Context.new(
@@ -552,6 +553,29 @@ defmodule PgFlow.ContextTest do
         )
 
       assert is_map(ctx2.flow_input)
+      assert Context.flow_input_loaded?(ctx2)
+
+      ctx3 =
+        Context.new(
+          run_id: "550e8400-e29b-41d4-a716-446655440000",
+          step_slug: :test,
+          task_index: 0,
+          attempt: 1,
+          repo: TestRepo,
+          flow_input: false
+        )
+
+      assert Context.get_flow_input(ctx3) == false
+    end
+
+    test "normalize_flow_input/1 distinguishes SQL null from JSON false" do
+      assert Context.normalize_flow_input(nil) == :not_loaded
+      assert Context.normalize_flow_input(false) == false
+    end
+
+    test "normalize_flow_input/2 distinguishes loaded JSON null from an absent snapshot" do
+      assert Context.normalize_flow_input(nil, true) == nil
+      assert Context.normalize_flow_input(nil, false) == :not_loaded
     end
   end
 end

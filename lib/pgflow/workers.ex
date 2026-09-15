@@ -179,12 +179,15 @@ defmodule PgFlow.Workers do
   defp worker_summary_query(query, limit) do
     paginated_workers =
       query
-      |> join(:left, [worker], flow in Flow, on: flow.flow_slug == worker.queue_name)
+      |> join(:left, [worker], flow in Flow,
+        on: fragment("lower(?)", flow.flow_slug) == worker.queue_name
+      )
       |> order_by([worker], desc: worker.last_heartbeat_at, desc: worker.worker_id)
       |> limit(^limit)
       |> select([worker, flow], %{
         worker_id: worker.worker_id,
-        flow_slug: worker.queue_name,
+        flow_slug: coalesce(flow.flow_slug, worker.queue_name),
+        queue_name: worker.queue_name,
         flow_type: coalesce(flow.flow_type, "flow"),
         last_heartbeat_at: worker.last_heartbeat_at,
         health_status:
@@ -219,6 +222,7 @@ defmodule PgFlow.Workers do
       select: %{
         worker_id: worker.worker_id,
         flow_slug: worker.flow_slug,
+        queue_name: worker.queue_name,
         flow_type: worker.flow_type,
         last_heartbeat_at: worker.last_heartbeat_at,
         health_status: worker.health_status,
@@ -239,8 +243,9 @@ defmodule PgFlow.Workers do
 
   defp filter_flow_slug(query, nil), do: query
 
-  defp filter_flow_slug(query, flow_slug),
-    do: where(query, [worker], worker.queue_name == ^flow_slug)
+  defp filter_flow_slug(query, flow_slug) do
+    where(query, [worker], worker.queue_name == fragment("lower(?)", ^flow_slug))
+  end
 
   defp filter_health_status(query, nil), do: query
 

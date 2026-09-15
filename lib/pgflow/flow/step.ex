@@ -51,7 +51,9 @@ defmodule PgFlow.Flow.Step do
     :when_unmet,
     :when_exhausted,
     step_type: :single,
-    depends_on: []
+    depends_on: [],
+    if_defined?: false,
+    if_not_defined?: false
   ]
 
   @type step_type :: :single | :map
@@ -65,10 +67,12 @@ defmodule PgFlow.Flow.Step do
           base_delay: pos_integer() | nil,
           timeout: pos_integer() | nil,
           start_delay: pos_integer() | nil,
-          if: map() | nil,
-          if_not: map() | nil,
+          if: term() | nil,
+          if_not: term() | nil,
           when_unmet: skip_mode() | nil,
-          when_exhausted: skip_mode() | nil
+          when_exhausted: skip_mode() | nil,
+          if_defined?: boolean(),
+          if_not_defined?: boolean()
         }
 
   @doc """
@@ -142,6 +146,8 @@ defmodule PgFlow.Flow.Step do
       start_delay: Keyword.get(opts, :start_delay),
       if: Keyword.get(opts, :if),
       if_not: Keyword.get(opts, :if_not),
+      if_defined?: Keyword.has_key?(opts, :if),
+      if_not_defined?: Keyword.has_key?(opts, :if_not),
       when_unmet: Keyword.get(opts, :when_unmet),
       when_exhausted: Keyword.get(opts, :when_exhausted)
     }

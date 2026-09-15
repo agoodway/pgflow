@@ -21,6 +21,7 @@ defmodule PgFlow.Worker.ServerTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.Queries.Flows, as: FlowQueries
+  alias PgFlow.Test.UnavailableRepo, as: UnavailableHeartbeatRepo
   alias PgFlow.TestFlows.DependentStringMapFlow
   alias PgFlow.TestFlows.StringMapFlow
   alias PgFlow.TestRepo
@@ -81,10 +82,6 @@ defmodule PgFlow.Worker.ServerTest do
         %{result: input["value"] * 2}
       end
     end
-  end
-
-  defmodule UnavailableHeartbeatRepo do
-    def query(_sql, _params), do: {:error, :database_unavailable}
   end
 
   defmodule FailingWorkerFlow do
@@ -365,6 +362,47 @@ defmodule PgFlow.Worker.ServerTest do
           attempt: ctx.attempt,
           has_run_id: is_binary(ctx.run_id)
         }
+      end
+    end
+  end
+
+  defmodule ContextSnapshotFlow do
+    @moduledoc false
+    use PgFlow.Flow
+
+    @flow slug: :context_snapshot_flow, max_attempts: 1
+
+    step :root do
+      fn input, ctx ->
+        send(
+          Process.whereis(:pgflow_context_snapshot_receiver),
+          {:context_snapshot, :root, input, ctx.flow_input,
+           PgFlow.Context.flow_input_loaded?(ctx)}
+        )
+
+        [1]
+      end
+    end
+
+    step :dependent, depends_on: [:root] do
+      fn _input, ctx ->
+        send(
+          Process.whereis(:pgflow_context_snapshot_receiver),
+          {:context_snapshot, :dependent, ctx.flow_input, PgFlow.Context.flow_input_loaded?(ctx)}
+        )
+
+        %{ok: true}
+      end
+    end
+
+    map :mapped, array: :root do
+      fn item, ctx ->
+        send(
+          Process.whereis(:pgflow_context_snapshot_receiver),
+          {:context_snapshot, :map, ctx.flow_input, PgFlow.Context.flow_input_loaded?(ctx)}
+        )
+
+        item
       end
     end
   end
@@ -774,10 +812,24 @@ defmodule PgFlow.Worker.ServerTest do
           )
 
         state = Server.get_state(worker_pid)
-        initial_heartbeat = get_worker(state.worker_id).last_heartbeat_at
+
+        %{rows: [[initial_heartbeat]]} =
+          TestRepo.query!(
+            """
+            UPDATE pgflow.workers
+            SET last_heartbeat_at = date_trunc('second', NOW()) - INTERVAL '1 microsecond'
+            WHERE worker_id = $1 RETURNING last_heartbeat_at
+            """,
+            [Ecto.UUID.dump!(state.worker_id)]
+          )
 
         assert wait_until(
-                 fn -> get_worker(state.worker_id).last_heartbeat_at > initial_heartbeat end,
+                 fn ->
+                   DateTime.compare(
+                     get_worker(state.worker_id).last_heartbeat_at,
+                     initial_heartbeat
+                   ) == :gt
+                 end,
                  1_000
                )
 
@@ -788,6 +840,7 @@ defmodule PgFlow.Worker.ServerTest do
     test "warns, remains alive, and reschedules after a heartbeat failure", %{
       task_supervisor: task_supervisor
     } do
+      start_supervised!(UnavailableHeartbeatRepo)
       _flow_slug = compile_flow(SimpleWorkerFlow)
 
       worker_pid =
@@ -818,7 +871,12 @@ defmodule PgFlow.Worker.ServerTest do
       :sys.replace_state(worker_pid, &%{&1 | repo: TestRepo})
 
       assert wait_until(
-               fn -> get_worker(state_before.worker_id).last_heartbeat_at > initial_heartbeat end,
+               fn ->
+                 DateTime.compare(
+                   get_worker(state_before.worker_id).last_heartbeat_at,
+                   initial_heartbeat
+                 ) == :gt
+               end,
                1_000
              )
 
@@ -1648,7 +1706,7 @@ defmodule PgFlow.Worker.ServerTest do
   # ============= Visibility Timeout Derivation Tests (Task 2.3) =============
 
   describe "visibility timeout derivation" do
-    test "derives visibility_timeout from flow definition opt_timeout", %{
+    test "read reservation stays independent of a shorter execution timeout", %{
       task_supervisor: task_supervisor
     } do
       # TimeoutTestFlow has @flow timeout: 2
@@ -1656,30 +1714,24 @@ defmodule PgFlow.Worker.ServerTest do
       worker_pid = start_worker(TimeoutTestFlow, task_supervisor)
 
       state = Server.get_state(worker_pid)
-      assert state.visibility_timeout == 2
+      assert state.visibility_timeout == 5
 
       Server.stop(worker_pid)
     end
 
-    test "defaults visibility_timeout to 60 when flow has no explicit timeout", %{
+    test "defaults read visibility_timeout to five seconds", %{
       task_supervisor: task_supervisor
     } do
-      # SimpleWorkerFlow has no timeout option, should default to 60
       _flow_slug = compile_flow(SimpleWorkerFlow)
       worker_pid = start_worker(SimpleWorkerFlow, task_supervisor)
 
       state = Server.get_state(worker_pid)
-      # Default timeout is 60s (matches pgflow DB default for opt_timeout)
-      # Note: SimpleWorkerFlow defines timeout: 30 in compile_flow helper
-      # The flow definition opts[:timeout] determines this value
-      flow_def = SimpleWorkerFlow.__pgflow_definition__()
-      expected_vt = Keyword.get(flow_def.opts, :timeout, 60)
-      assert state.visibility_timeout == expected_vt
+      assert state.visibility_timeout == 5
 
       Server.stop(worker_pid)
     end
 
-    test "visibility_timeout matches flow definition for custom timeout flow", %{
+    test "read reservation stays independent of a longer execution timeout", %{
       task_supervisor: task_supervisor
     } do
       # StepTimeoutFlow has @flow timeout: 30
@@ -1687,7 +1739,7 @@ defmodule PgFlow.Worker.ServerTest do
       worker_pid = start_worker(StepTimeoutFlow, task_supervisor)
 
       state = Server.get_state(worker_pid)
-      assert state.visibility_timeout == 30
+      assert state.visibility_timeout == 5
 
       Server.stop(worker_pid)
     end
@@ -2170,6 +2222,25 @@ defmodule PgFlow.Worker.ServerTest do
   # ============= Context Struct Tests =============
 
   describe "context struct" do
+    test "JSON null is loaded only for the root non-map claim", %{
+      task_supervisor: task_supervisor
+    } do
+      true = Process.register(self(), :pgflow_context_snapshot_receiver)
+      flow_slug = compile_flow(ContextSnapshotFlow)
+      worker_pid = start_worker(ContextSnapshotFlow, task_supervisor)
+      _ = Server.get_state(worker_pid)
+
+      run_id = start_flow_run(flow_slug, nil)
+      send(worker_pid, :poll_now)
+
+      assert_receive {:context_snapshot, :root, nil, nil, true}, 5_000
+      assert_receive {:context_snapshot, :dependent, :not_loaded, false}, 5_000
+      assert_receive {:context_snapshot, :map, :not_loaded, false}, 5_000
+      assert {:ok, "completed"} = wait_for_run_completion(run_id)
+
+      Server.stop(worker_pid)
+    end
+
     test "dependent step can access flow_input via Context.get_flow_input", %{
       task_supervisor: task_supervisor
     } do
@@ -2212,7 +2283,7 @@ defmodule PgFlow.Worker.ServerTest do
   # ============= Output Serialization Tests =============
 
   describe "output serialization" do
-    test "non-JSON-serializable output (PID in map) completes with fallback", %{
+    test "non-JSON-serializable output fails the task with a stable error", %{
       task_supervisor: task_supervisor
     } do
       flow_slug = compile_flow(BadJsonOutputFlow)
@@ -2221,20 +2292,26 @@ defmodule PgFlow.Worker.ServerTest do
 
       run_id = start_flow_run(flow_slug, %{})
       {:ok, status} = wait_for_run_completion(run_id)
-      assert status == "completed"
+      assert status == "failed"
 
-      run = get_run(run_id)
-      output = run.output["returns_bad_json"]
-      # Should have the serialization error fallback fields
-      assert is_binary(output["_serialization_error"])
-      assert is_binary(output["_raw"])
-      # The raw inspect should contain both the pid and the data
-      assert output["_raw"] =~ "hello"
+      %{rows: [[status, error_message, output]]} =
+        TestRepo.query!(
+          """
+          SELECT status, error_message, output
+          FROM pgflow.step_tasks
+          WHERE run_id = $1 AND step_slug = 'returns_bad_json'
+          """,
+          [Ecto.UUID.dump!(run_id)]
+        )
+
+      assert status == "failed"
+      assert error_message == "Handler output is not JSON encodable"
+      refute is_map(output) and Map.has_key?(output, "_raw")
 
       Server.stop(worker_pid)
     end
 
-    test "scalar output is wrapped in a map", %{task_supervisor: task_supervisor} do
+    test "scalar output is preserved as JSON", %{task_supervisor: task_supervisor} do
       flow_slug = compile_flow(ScalarOutputFlow)
       worker_pid = start_worker(ScalarOutputFlow, task_supervisor)
       Process.sleep(100)
@@ -2244,12 +2321,84 @@ defmodule PgFlow.Worker.ServerTest do
       assert status == "completed"
 
       run = get_run(run_id)
-      output = run.output["returns_scalar"]
-      # Scalar gets wrapped via inspect into %{"_raw" => ...}
-      assert is_binary(output["_raw"])
-      assert output["_raw"] =~ "just a string"
+      assert run.output["returns_scalar"] == "just a string"
 
       Server.stop(worker_pid)
+    end
+  end
+
+  describe "late callback telemetry" do
+    defmodule SlowLateCallbackFlow do
+      use PgFlow.Flow
+
+      @flow slug: :slow_late_callback_flow, max_attempts: 1
+
+      step :process do
+        fn input, _ctx ->
+          send(
+            Process.whereis(:pgflow_late_callback_test),
+            {:late_handler_started, self(), input}
+          )
+
+          receive do
+            :release -> :ok
+          end
+
+          %{done: true}
+        end
+      end
+    end
+
+    test "does not announce task completion after SQL declines the transition", %{
+      task_supervisor: task_supervisor
+    } do
+      handler_id = "late-callback-telemetry-#{System.unique_integer([:positive])}"
+      parent = self()
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:pgflow, :worker, :task, :stop],
+          fn _event, _measurements, metadata, _config ->
+            send(parent, {:task_stop, metadata})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      flow_slug = compile_flow(SlowLateCallbackFlow)
+      run_id = start_flow_run(flow_slug, %{"sleep_ms" => 400})
+      Process.register(self(), :pgflow_late_callback_test)
+
+      worker_pid = start_worker(SlowLateCallbackFlow, task_supervisor)
+      assert_receive {:late_handler_started, handler, _input}, 2_000
+
+      assert %{rows: [["started"]]} =
+               TestRepo.query!(
+                 "SELECT status FROM pgflow.step_tasks WHERE run_id = $1 AND step_slug = 'process'",
+                 [Ecto.UUID.dump!(run_id)]
+               )
+
+      TestRepo.query!(
+        """
+        UPDATE pgflow.step_states
+        SET status = 'skipped', skipped_at = now(), remaining_tasks = NULL, skip_reason = 'condition_unmet'
+        WHERE run_id = $1 AND step_slug = 'process'
+        """,
+        [Ecto.UUID.dump!(run_id)]
+      )
+
+      send(handler, :release)
+      Server.stop(worker_pid)
+
+      assert %{rows: [["started"]]} =
+               TestRepo.query!(
+                 "SELECT status FROM pgflow.step_tasks WHERE run_id = $1 AND step_slug = 'process'",
+                 [Ecto.UUID.dump!(run_id)]
+               )
+
+      refute_received {:task_stop, %{run_id: ^run_id, step_slug: "process"}}
     end
   end
 

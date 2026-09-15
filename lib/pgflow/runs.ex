@@ -232,14 +232,10 @@ defmodule PgFlow.Runs do
   @doc """
   Counts durable PGMQ messages belonging to one or more run UUIDs.
 
-  The count reads each message's embedded `run_id`, so it includes orphaned
-  queue messages whose relational lifecycle rows no longer exist. The
-  `:location` option accepts `:all` (the default), `:live`, or `:archive`.
-  Missing queues and an empty run-ID list both return `{:ok, 0}`.
-
-  The JSON payload predicate is diagnostic-oriented and requires an O(queue
-  size) scan unless the consumer adds matching expression indexes to its PGMQ
-  queue tables.
+  The count uses persisted `(queue_name, message_id)` pairs from
+  `pgflow.step_tasks`, scoped to the requested flow slug. The `:location`
+  option accepts `:all` (the default), `:live`, or `:archive`. Missing queues
+  and an empty run-ID list both return `{:ok, 0}`.
   """
   @spec count_queue_messages(
           module(),
@@ -262,18 +258,18 @@ defmodule PgFlow.Runs do
   defp count_queue_messages_for_ids(_repo, _prefixes, _flow_slug, []), do: {:ok, 0}
 
   defp count_queue_messages_for_ids(repo, prefixes, flow_slug, run_ids) do
-    with :ok <- Flows.validate_slug(repo, flow_slug) do
-      count_messages_in_queues(repo, prefixes, flow_slug, run_ids)
+    with :ok <- Flows.validate_slug(repo, flow_slug),
+         {:ok, routes} <- task_queue_routes(repo, run_ids, flow_slug) do
+      count_messages_in_routes(repo, prefixes, routes)
     end
   end
 
   @doc """
   Makes every queued task for a run immediately visible to workers.
 
-  Visibility is scoped by the exact run UUID embedded in the PGMQ payload so
-  it also covers an orphaned queue message whose task row is missing.
-
-  An absent run or queue is a successful no-op.
+  Visibility updates are grouped by each task's persisted `queue_name` and
+  scoped to that task's `message_id`. An absent run or queue is a successful
+  no-op.
   """
   @spec make_available(module(), Ecto.UUID.t()) ::
           :ok | {:error, :invalid_id | :invalid_flow_slug | term()}
@@ -284,10 +280,10 @@ defmodule PgFlow.Runs do
   @doc """
   Deletes a run and all of its queued and persisted lifecycle data.
 
-  The operation locks an existing run and performs all cleanup in one
-  transaction. Queue cleanup uses the exact run UUID embedded in each PGMQ
-  payload, including orphaned messages without a task row. An absent run or
-  queue is a successful no-op.
+  The operation locks an existing run, collects persisted queue routes from
+  `step_tasks`, and performs all cleanup in one transaction. Queue cleanup
+  uses each task's `(queue_name, message_id)` identity. An absent run or queue
+  is a successful no-op.
   """
   @spec delete(module(), Ecto.UUID.t()) ::
           :ok | {:error, :invalid_id | :invalid_flow_slug | term()}
@@ -319,8 +315,8 @@ defmodule PgFlow.Runs do
 
   defp make_run_available(repo, %Run{flow_slug: flow_slug, run_id: run_id}) do
     with :ok <- Flows.validate_slug(repo, flow_slug),
-         {:ok, queue_table} <- existing_queue_table(repo, "q", flow_slug) do
-      update_queue_visibility(repo, queue_table, run_id)
+         {:ok, routes} <- task_queue_routes(repo, [run_id], flow_slug) do
+      make_routes_available(repo, "q", routes)
     end
   end
 
@@ -352,17 +348,18 @@ defmodule PgFlow.Runs do
 
   defp delete_locked_run(repo, %Run{flow_slug: flow_slug, run_id: run_id}) do
     with :ok <- Flows.validate_slug(repo, flow_slug),
-         :ok <- delete_queue_messages(repo, "q", flow_slug, run_id),
-         :ok <- delete_queue_messages(repo, "a", flow_slug, run_id) do
+         {:ok, routes} <- task_queue_routes(repo, [run_id], flow_slug),
+         :ok <- delete_route_messages(repo, "q", routes),
+         :ok <- delete_route_messages(repo, "a", routes) do
       delete_relational_rows(repo, run_id)
     end
   end
 
-  defp existing_queue_table(repo, prefix, flow_slug) do
+  defp existing_queue_table(repo, prefix, queue_name) do
     case SQL.query(
            repo,
            "SELECT quote_ident(pgmq.format_table_name($1::text, $2::text))",
-           [flow_slug, prefix]
+           [queue_name, prefix]
          ) do
       {:ok, %{rows: [[quoted_table_name]]}} ->
         find_queue_table(repo, ~s("pgmq".#{quoted_table_name}))
@@ -406,76 +403,99 @@ defmodule PgFlow.Runs do
   defp queue_prefixes(:archive), do: {:ok, ["a"]}
   defp queue_prefixes(_location), do: {:error, :invalid_location}
 
-  defp count_messages_in_queues(repo, prefixes, flow_slug, run_ids) do
-    with {:ok, queue_tables} <- existing_queue_tables(repo, prefixes, flow_slug) do
-      count_messages_in_tables(repo, queue_tables, run_ids)
+  defp task_queue_routes(repo, run_ids, flow_slug) do
+    sql = """
+    SELECT queue_name, array_agg(message_id) AS message_ids
+    FROM pgflow.step_tasks
+    WHERE run_id = ANY($1::uuid[])
+      AND flow_slug = $2::text
+      AND message_id IS NOT NULL
+    GROUP BY queue_name
+    """
+
+    uuid_binaries = Enum.map(run_ids, &Ecto.UUID.dump!/1)
+
+    case SQL.query(repo, sql, [uuid_binaries, flow_slug]) do
+      {:ok, %{rows: rows}} ->
+        {:ok, Enum.map(rows, fn [queue_name, message_ids] -> {queue_name, message_ids} end)}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp existing_queue_tables(repo, prefixes, flow_slug) do
-    Enum.reduce_while(prefixes, {:ok, []}, fn prefix, {:ok, queue_tables} ->
-      case existing_queue_table(repo, prefix, flow_slug) do
-        {:ok, nil} -> {:cont, {:ok, queue_tables}}
-        {:ok, queue_table} -> {:cont, {:ok, [queue_table | queue_tables]}}
+  defp count_messages_in_routes(_repo, _prefixes, []), do: {:ok, 0}
+
+  defp count_messages_in_routes(repo, prefixes, routes) do
+    Enum.reduce_while(routes, {:ok, 0}, fn {queue_name, message_ids}, {:ok, acc} ->
+      case count_route_messages(repo, prefixes, queue_name, message_ids) do
+        {:ok, route_count} -> {:cont, {:ok, acc + route_count}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
-    |> case do
-      {:ok, queue_tables} -> {:ok, Enum.reverse(queue_tables)}
-      {:error, reason} -> {:error, reason}
-    end
   end
 
-  defp count_messages_in_tables(_repo, [], _run_ids), do: {:ok, 0}
+  defp count_route_messages(_repo, _prefixes, _queue_name, []), do: {:ok, 0}
 
-  defp count_messages_in_tables(repo, queue_tables, run_ids) do
-    messages_sql =
-      Enum.map_join(queue_tables, " UNION ALL ", fn queue_table ->
-        "SELECT message FROM #{queue_table}"
+  defp count_route_messages(repo, prefixes, queue_name, message_ids) do
+    Enum.reduce_while(prefixes, {:ok, 0}, fn prefix, {:ok, acc} ->
+      result =
+        each_existing_route(repo, prefix, [{queue_name, message_ids}], fn table, ids ->
+          SQL.query(repo, "SELECT count(*) FROM #{table} WHERE msg_id = ANY($1::bigint[])", [ids])
+        end)
+
+      case result do
+        {:ok, results} ->
+          {:cont, {:ok, acc + Enum.sum(for %{rows: [[count]]} <- results, do: count)}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp make_routes_available(_repo, _prefix, []), do: :ok
+
+  defp make_routes_available(repo, prefix, routes) do
+    result =
+      each_existing_route(repo, prefix, routes, fn table, ids ->
+        SQL.query(
+          repo,
+          "UPDATE #{table} SET vt = clock_timestamp() WHERE msg_id = ANY($1::bigint[])",
+          [ids]
+        )
       end)
 
-    case SQL.query(
-           repo,
-           "SELECT count(*) FROM (#{messages_sql}) AS messages WHERE message->>'run_id' = ANY($1::text[])",
-           [run_ids]
-         ) do
-      {:ok, %{rows: [[count]]}} -> {:ok, count}
-      {:error, reason} -> {:error, reason}
-    end
+    route_result(result)
   end
 
-  defp update_queue_visibility(_repo, nil, _run_id), do: :ok
+  defp delete_route_messages(_repo, _prefix, []), do: :ok
 
-  defp update_queue_visibility(repo, queue_table, run_id) do
-    case SQL.query(
-           repo,
-           "UPDATE #{queue_table} SET vt = clock_timestamp() WHERE message->>'run_id' = $1::text",
-           [run_id]
-         ) do
-      {:ok, _result} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+  defp delete_route_messages(repo, prefix, routes) do
+    result =
+      each_existing_route(repo, prefix, routes, fn table, ids ->
+        SQL.query(repo, "DELETE FROM #{table} WHERE msg_id = ANY($1::bigint[])", [ids])
+      end)
+
+    route_result(result)
   end
 
-  defp delete_queue_messages(repo, prefix, flow_slug, run_id) do
-    with {:ok, queue_table} <- existing_queue_table(repo, prefix, flow_slug) do
-      delete_queue_messages(repo, queue_table, run_id)
-    end
+  defp route_result({:ok, _}), do: :ok
+  defp route_result({:error, _} = error), do: error
+
+  defp each_existing_route(repo, prefix, routes, operation) do
+    Enum.reduce_while(routes, {:ok, []}, fn {queue, ids}, {:ok, results} ->
+      with {:ok, table} <- existing_queue_table(repo, prefix, queue),
+           {:ok, result} <- apply_route_operation(table, ids, operation) do
+        {:cont, {:ok, [result | results]}}
+      else
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
-  defp delete_queue_messages(_repo, nil, _run_id), do: :ok
-
-  # The UUID in the PGMQ payload is the durable run boundary. Scoping by
-  # step-task message IDs would leave orphaned live or archived messages
-  # behind when their relational task row is already missing.
-  defp delete_queue_messages(repo, queue_table, run_id) do
-    case SQL.query(repo, "DELETE FROM #{queue_table} WHERE message->>'run_id' = $1::text", [
-           run_id
-         ]) do
-      {:ok, _result} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  defp apply_route_operation(nil, _ids, _operation), do: {:ok, nil}
+  defp apply_route_operation(table, ids, operation), do: operation.(table, ids)
 
   defp delete_relational_rows(repo, run_id) do
     StepTask

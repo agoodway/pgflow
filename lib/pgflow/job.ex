@@ -245,7 +245,9 @@ defmodule PgFlow.Job do
       max_attempts: flow_opts[:max_attempts],
       base_delay: flow_opts[:base_delay],
       timeout: flow_opts[:timeout],
-      start_delay: 0
+      start_delay: 0,
+      if_defined?: false,
+      if_not_defined?: false
     }
   end
 

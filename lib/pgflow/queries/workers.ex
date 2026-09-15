@@ -6,6 +6,7 @@ defmodule PgFlow.Queries.Workers do
   """
 
   import PgFlow.Queries.Helpers, only: [execute_rpc: 4, parse_uuid: 1]
+  alias Ecto.Adapters.SQL
 
   @pgflow_schema "pgflow"
 
@@ -57,5 +58,58 @@ defmodule PgFlow.Queries.Workers do
       schema: @pgflow_schema,
       mode: :void
     )
+  end
+
+  @doc """
+  Refreshes a worker heartbeat and reports whether it has been deprecated.
+
+  Missing registration is treated as deprecated, matching upstream edge-worker
+  behavior when a worker row no longer exists.
+  """
+  @spec heartbeat_worker(Ecto.Repo.t(), String.t()) ::
+          {:ok, :alive | :deprecated} | {:error, term()}
+  def heartbeat_worker(repo, worker_id) do
+    sql = """
+    UPDATE pgflow.workers
+    SET last_heartbeat_at = NOW()
+    WHERE worker_id = $1::uuid
+    RETURNING (deprecated_at IS NOT NULL) AS deprecated
+    """
+
+    case repo_query(repo, sql, [parse_uuid(worker_id)]) do
+      {:ok, %{num_rows: 0}} ->
+        {:ok, :deprecated}
+
+      {:ok, %{rows: [[true]]}} ->
+        {:ok, :deprecated}
+
+      {:ok, %{rows: [[false]]}} ->
+        {:ok, :alive}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp repo_query(repo, sql, params) do
+    SQL.query(repo, sql, params)
+  end
+
+  @doc """
+  Registers an edge/worker function for monitoring by `pgflow.ensure_workers()`.
+
+  Elixir workers call this on startup with `"process"` start mode after flow
+  compilation succeeds.
+  """
+  @spec track_worker_function(Ecto.Repo.t(), String.t(), String.t()) ::
+          {:ok, nil} | {:error, term()}
+  def track_worker_function(repo, function_name, start_mode)
+      when is_binary(function_name) and is_binary(start_mode) do
+    sql = "SELECT pgflow.track_worker_function($1::text, $2::text)"
+
+    case SQL.query(repo, sql, [function_name, start_mode]) do
+      {:ok, _} -> {:ok, nil}
+      {:error, error} -> {:error, error}
+    end
   end
 end

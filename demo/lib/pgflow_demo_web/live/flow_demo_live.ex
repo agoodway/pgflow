@@ -1049,6 +1049,15 @@ defmodule PgflowDemoWeb.FlowDemoLive do
 
         <!-- Header -->
         <div class="text-center mb-8">
+          <div class="mb-4">
+            <a
+              href="/scenarios"
+              id="scenarios-nav-link"
+              class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-800/70 text-purple-200 hover:bg-slate-700/70 transition-colors"
+            >
+              Scenario catalogue
+            </a>
+          </div>
           <h1 class="text-4xl font-bold text-white mb-2">
             <span class="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400">
               PgFlow

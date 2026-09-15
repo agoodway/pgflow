@@ -132,29 +132,29 @@ defmodule PgFlow.Queries.Flows do
           :ok | {:error, term()}
   def delay_run(_repo, _flow_slug, _run_id, 0), do: :ok
 
-  def delay_run(repo, flow_slug, run_id, delay_seconds)
+  def delay_run(repo, _flow_slug, run_id, delay_seconds)
       when is_integer(delay_seconds) and delay_seconds > 0 do
     sql = """
     WITH task AS (
-      SELECT step_tasks.message_id
+      SELECT step_tasks.message_id, step_tasks.queue_name
       FROM pgflow.step_tasks AS step_tasks
-      WHERE step_tasks.flow_slug = $1::text
-        AND step_tasks.run_id = $2::uuid
+      WHERE step_tasks.run_id = $1::uuid
+        AND step_tasks.message_id IS NOT NULL
       ORDER BY step_tasks.queued_at ASC
       LIMIT 1
     ),
     delayed AS (
       SELECT pgflow.set_vt_batch(
-        $1::text,
+        task.queue_name,
         ARRAY[task.message_id]::bigint[],
-        ARRAY[$3::integer]::integer[]
+        ARRAY[$2::integer]::integer[]
       )
       FROM task
     )
     SELECT count(*) FROM delayed
     """
 
-    case SQL.query(repo, sql, [flow_slug, parse_uuid(run_id), delay_seconds]) do
+    case SQL.query(repo, sql, [parse_uuid(run_id), delay_seconds]) do
       {:ok, %{rows: [[1]]}} -> :ok
       {:ok, %{rows: [[0]]}} -> {:error, :task_not_found}
       {:error, error} -> {:error, error}
@@ -229,6 +229,29 @@ defmodule PgFlow.Queries.Flows do
     end
   end
 
+  @step_task_status_index 5
+
+  @doc """
+  Reads the `status` field from a `pgflow.complete_task/4` or `fail_task/4` row.
+  """
+  @spec step_task_status(term()) :: String.t() | nil
+  def step_task_status(row) when is_list(row), do: Enum.at(row, @step_task_status_index)
+  def step_task_status(_), do: nil
+
+  @doc """
+  Returns whether a task callback row reflects an applied completion transition.
+  """
+  @spec complete_task_applied?(term()) :: boolean()
+  def complete_task_applied?(row), do: step_task_status(row) == "completed"
+
+  @doc """
+  Returns whether a task callback row reflects an applied failure transition.
+
+  A retry schedules the task back to `queued`; both are worker-visible outcomes.
+  """
+  @spec fail_task_applied?(term()) :: boolean()
+  def fail_task_applied?(row), do: step_task_status(row) in ["failed", "queued"]
+
   @doc """
   Marks a task as completed with output data.
 
@@ -238,14 +261,14 @@ defmodule PgFlow.Queries.Flows do
     * `run_id` - The flow run UUID
     * `step_slug` - The step identifier slug
     * `task_index` - The task index (0-based)
-    * `output` - Output data as an Elixir term (will be encoded as JSONB)
+    * `output` - Output data as an Elixir JSON term (will be encoded as JSONB)
 
   ## Returns
 
     * `{:ok, result}` - Success result from the database
     * `{:error, reason}` - Error details if the operation fails
   """
-  @spec complete_task(Ecto.Repo.t(), String.t(), String.t(), non_neg_integer(), map() | list()) ::
+  @spec complete_task(Ecto.Repo.t(), String.t(), String.t(), non_neg_integer(), term()) ::
           {:ok, term()} | {:error, term()}
   def complete_task(repo, run_id, step_slug, task_index, output) do
     sql = "SELECT * FROM pgflow.complete_task($1, $2, $3, $4::jsonb)"
@@ -339,21 +362,32 @@ defmodule PgFlow.Queries.Flows do
     * `flow_slug` - The flow identifier slug
     * `msg_ids` - List of message IDs from pgmq
     * `worker_id` - The worker UUID string
+    * `queue_name` - Persisted pgmq route for the claim (canonical lowercase)
 
   ## Returns
 
     * `{:ok, task_details}` - List of task detail records
     * `{:error, reason}` - Error details if the operation fails
   """
-  @spec start_tasks(Ecto.Repo.t(), String.t(), list(pos_integer()), String.t()) ::
-          {:ok, list(list())} | {:error, term()}
-  def start_tasks(repo, flow_slug, msg_ids, worker_id) do
-    sql = "SELECT * FROM pgflow.start_tasks($1, $2, $3)"
+  @spec start_tasks(
+          Ecto.Repo.t(),
+          String.t(),
+          list(pos_integer()),
+          String.t(),
+          String.t()
+        ) :: {:ok, list(list())} | {:error, term()}
+  def start_tasks(repo, flow_slug, msg_ids, worker_id, queue_name)
+      when is_binary(queue_name) and queue_name != "" do
+    sql = "SELECT * FROM pgflow.start_tasks($1::text, $2::bigint[], $3::uuid, $4::text)"
 
-    case SQL.query(repo, sql, [flow_slug, msg_ids, parse_uuid(worker_id)]) do
+    case SQL.query(repo, sql, [flow_slug, msg_ids, parse_uuid(worker_id), queue_name]) do
       {:ok, %{rows: rows}} -> {:ok, rows}
       {:error, error} -> {:error, error}
     end
+  end
+
+  def start_tasks(_repo, _flow_slug, _msg_ids, _worker_id, _queue_name) do
+    {:error, :invalid_queue_name}
   end
 
   @doc """
@@ -370,33 +404,47 @@ defmodule PgFlow.Queries.Flows do
   Each returned orphan is `%{msg_id:, step_slug:, step_status:}`; the step
   fields are `nil` when the message has no matching `step_tasks` row.
   """
-  @spec orphaned_queue_messages(Ecto.Repo.t(), String.t(), [pos_integer()]) ::
+  @spec orphaned_queue_messages(
+          Ecto.Repo.t(),
+          String.t(),
+          String.t(),
+          [pos_integer()]
+        ) ::
           {:ok,
            [%{msg_id: integer(), step_slug: String.t() | nil, step_status: String.t() | nil}]}
           | {:error, term()}
-  def orphaned_queue_messages(repo, flow_slug, msg_ids) do
-    # The queue table name derives from the flow slug, which pgflow validates
-    # as an identifier — same interpolation precedent as ensure_queue_dropped/2.
-    sql = """
-    SELECT q.msg_id, st.step_slug, ss.status
-    FROM pgmq.q_#{flow_slug} AS q
-    LEFT JOIN pgflow.step_tasks AS st
-      ON st.flow_slug = $1 AND st.message_id = q.msg_id
-    LEFT JOIN pgflow.step_states AS ss
-      ON ss.run_id = st.run_id AND ss.step_slug = st.step_slug
-    WHERE q.msg_id = ANY($2::bigint[])
-    """
+  def orphaned_queue_messages(repo, flow_slug, queue_name, msg_ids)
+      when is_binary(queue_name) and queue_name != "" do
+    with {:ok, quoted_queue_table} <- quote_pgmq_queue_table(repo, queue_name) do
+      # Queue table names follow the persisted lowercase route; message identity is
+      # scoped to (queue_name, message_id), with flow_slug checked for ownership.
+      sql = """
+      SELECT q.msg_id, st.step_slug, ss.status
+      FROM pgmq.#{quoted_queue_table} AS q
+      LEFT JOIN pgflow.step_tasks AS st
+        ON st.flow_slug = $1
+       AND st.queue_name = $2
+       AND st.message_id = q.msg_id
+      LEFT JOIN pgflow.step_states AS ss
+        ON ss.run_id = st.run_id AND ss.step_slug = st.step_slug
+      WHERE q.msg_id = ANY($3::bigint[])
+      """
 
-    case SQL.query(repo, sql, [flow_slug, msg_ids]) do
-      {:ok, %{rows: rows}} ->
-        {:ok,
-         Enum.map(rows, fn [msg_id, step_slug, status] ->
-           %{msg_id: msg_id, step_slug: step_slug, step_status: status}
-         end)}
+      case SQL.query(repo, sql, [flow_slug, queue_name, msg_ids]) do
+        {:ok, %{rows: rows}} ->
+          {:ok,
+           Enum.map(rows, fn [msg_id, step_slug, status] ->
+             %{msg_id: msg_id, step_slug: step_slug, step_status: status}
+           end)}
 
-      {:error, error} ->
-        {:error, error}
+        {:error, error} ->
+          {:error, error}
+      end
     end
+  end
+
+  def orphaned_queue_messages(_repo, _flow_slug, _queue_name, _msg_ids) do
+    {:error, :invalid_queue_name}
   end
 
   @doc """
@@ -414,6 +462,95 @@ defmodule PgFlow.Queries.Flows do
     case SQL.query(repo, sql, [flow_slug, msg_ids]) do
       {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, fn [msg_id] -> msg_id end)}
       {:error, error} -> {:error, error}
+    end
+  end
+
+  @doc """
+  Ensures a flow definition matches the upstream JSON shape at worker startup.
+
+  Returns `{:ok, %{status:, differences:}}` for `compiled`, `verified`, or
+  `recompiled`. Production shape mismatches return
+  `{:error, {:flow_shape_mismatch, differences}}` without deleting run history.
+  """
+  @spec ensure_flow_compiled(Ecto.Repo.t(), String.t(), map()) ::
+          {:ok, %{status: String.t(), differences: [String.t()]}}
+          | {:error, {:flow_shape_mismatch, [String.t()]} | term()}
+  def ensure_flow_compiled(repo, flow_slug, shape) when is_map(shape) do
+    sql = "SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb) AS result"
+
+    case SQL.query(repo, sql, [flow_slug, shape]) do
+      {:ok, %{rows: [[result]]}} -> parse_ensure_flow_compiled_result(result)
+      {:ok, %{rows: []}} -> {:error, :no_result}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp parse_ensure_flow_compiled_result(%{"status" => "mismatch", "differences" => differences}) do
+    {:error, {:flow_shape_mismatch, normalize_differences(differences)}}
+  end
+
+  defp parse_ensure_flow_compiled_result(%{"status" => status, "differences" => differences})
+       when status in ["compiled", "verified", "recompiled"] do
+    {:ok, %{status: status, differences: normalize_differences(differences)}}
+  end
+
+  defp parse_ensure_flow_compiled_result(other) do
+    {:error, {:unexpected_ensure_flow_compiled_result, other}}
+  end
+
+  defp normalize_differences(differences) when is_list(differences), do: differences
+
+  defp normalize_differences(differences) when is_binary(differences) do
+    case Jason.decode(differences) do
+      {:ok, list} when is_list(list) -> list
+      _ -> []
+    end
+  end
+
+  defp normalize_differences(_), do: []
+
+  @typedoc """
+  Effective execution options for a step after applying flow-level defaults.
+  """
+  @type execution_options :: %{
+          timeout: pos_integer(),
+          max_attempts: pos_integer(),
+          base_delay: non_neg_integer()
+        }
+
+  @doc """
+  Loads effective timeout and retry options for each step in a flow.
+
+  SQL remains authoritative for retry decisions; workers refresh these options
+  before each claimed batch so OTP timeouts and logs reflect persisted values.
+  Changes apply to subsequent dispatches, not handlers already running.
+  """
+  @spec execution_options(Ecto.Repo.t(), String.t()) ::
+          {:ok, %{String.t() => execution_options()}} | {:error, term()}
+  def execution_options(repo, flow_slug) do
+    sql = """
+    SELECT s.step_slug,
+           coalesce(s.opt_timeout, f.opt_timeout) AS timeout,
+           coalesce(s.opt_max_attempts, f.opt_max_attempts) AS max_attempts,
+           coalesce(s.opt_base_delay, f.opt_base_delay) AS base_delay
+    FROM pgflow.steps s JOIN pgflow.flows f USING (flow_slug)
+    WHERE s.flow_slug = $1::text
+    """
+
+    case SQL.query(repo, sql, [flow_slug]) do
+      {:ok, %{rows: rows}} ->
+        {:ok,
+         Map.new(rows, fn [step_slug, timeout, max_attempts, base_delay] ->
+           {step_slug,
+            %{
+              timeout: timeout,
+              max_attempts: max_attempts,
+              base_delay: base_delay
+            }}
+         end)}
+
+      {:error, error} ->
+        {:error, error}
     end
   end
 
@@ -441,6 +578,11 @@ defmodule PgFlow.Queries.Flows do
 
   @doc """
   Recompiles a flow definition from runtime options.
+
+  **Deprecated:** Prefer `ensure_flow_compiled/3` at worker startup for
+  verification and local recompilation. This function remains for explicit
+  Elixir compatibility (`Client.upsert_flow/2`, generated migrations) and
+  always performs destructive recompilation when the slug already exists.
 
   Uses `create_flow` + `add_step` (the proven low-level SQL functions) to
   register a flow. If the flow already exists, it is dropped and re-created
@@ -533,78 +675,61 @@ defmodule PgFlow.Queries.Flows do
     end
   end
 
-  # Deletes all flow data in dependency order:
-  # tasks -> states -> runs -> deps -> steps -> flow -> queue
   defp delete_flow_rows(repo, slug) do
-    with {:ok, _} <- delete_step_tasks(repo, slug),
-         {:ok, _} <- delete_step_states(repo, slug),
-         {:ok, _} <- delete_runs(repo, slug),
-         {:ok, _} <- delete_deps(repo, slug),
-         {:ok, _} <- delete_steps(repo, slug),
-         {:ok, _} <- delete_flow_record(repo, slug),
-         :ok <- drop_queue(repo, slug) do
-      :ok
+    with {:ok, %{rows: [[true]]}} <- authorize_queue_cleanup(repo, slug),
+         {:ok, _} <- ensure_delete_queues(repo, slug) do
+      delete_flow_and_queues(repo, slug)
     else
-      {:error, reason} -> {:error, reason}
+      {:ok, %{rows: [[false]]}} -> :ok
+      {:error, _} = error -> error
     end
   end
 
-  defp delete_step_tasks(repo, slug) do
-    SQL.query(repo, "DELETE FROM pgflow.step_tasks WHERE flow_slug = $1", [slug])
-  end
-
-  defp delete_step_states(repo, slug) do
+  defp authorize_queue_cleanup(repo, slug) do
     SQL.query(
       repo,
       """
-      DELETE FROM pgflow.step_states WHERE run_id IN (
-        SELECT run_id FROM pgflow.runs WHERE flow_slug = $1
-      )
+      SELECT EXISTS (SELECT 1 FROM pgflow.flows WHERE flow_slug = $1)
+        OR (
+          NOT EXISTS (SELECT 1 FROM pgflow.flows WHERE lower(flow_slug) = lower($1::text))
+          AND NOT EXISTS (SELECT 1 FROM pgflow.steps WHERE lower(queue_name) = lower($1::text))
+        )
       """,
       [slug]
     )
   end
 
-  defp delete_runs(repo, slug) do
-    SQL.query(repo, "DELETE FROM pgflow.runs WHERE flow_slug = $1", [slug])
+  defp ensure_delete_queues(repo, slug) do
+    SQL.query(
+      repo,
+      """
+      SELECT pgmq.create(route.queue_name)
+      FROM (
+        SELECT DISTINCT queue_name FROM pgflow.steps WHERE flow_slug = $1
+        UNION SELECT lower($1::text)
+        WHERE NOT EXISTS (SELECT 1 FROM pgflow.steps WHERE flow_slug = $1)
+      ) route
+      WHERE to_regclass('pgmq.' || pgmq.format_table_name(route.queue_name, 'q')) IS NULL
+      """,
+      [slug]
+    )
   end
 
-  defp delete_deps(repo, slug) do
-    SQL.query(repo, "DELETE FROM pgflow.deps WHERE flow_slug = $1", [slug])
-  end
+  defp delete_flow_and_queues(repo, slug) do
+    sql = """
+    SELECT CASE WHEN EXISTS (SELECT 1 FROM pgflow.flows WHERE flow_slug = $1)
+      THEN pgflow.delete_flow_and_data($1::text) IS NULL
+      ELSE pgmq.drop_queue(lower($1::text)) END
+    """
 
-  defp delete_steps(repo, slug) do
-    SQL.query(repo, "DELETE FROM pgflow.steps WHERE flow_slug = $1", [slug])
-  end
-
-  defp delete_flow_record(repo, slug) do
-    SQL.query(repo, "DELETE FROM pgflow.flows WHERE flow_slug = $1", [slug])
-  end
-
-  # pgmq.drop_queue raises if the queue doesn't exist, which poisons the
-  # enclosing transaction. Check existence first via to_regclass so a
-  # missing queue (flow had rows but queue was already dropped or was
-  # never created) resolves cleanly.
-  defp drop_queue(repo, slug) do
-    queue_table = "pgmq.q_" <> slug
-
-    case SQL.query(repo, "SELECT to_regclass($1::text) IS NOT NULL", [queue_table]) do
-      {:ok, %{rows: [[true]]}} ->
-        case SQL.query(repo, "SELECT pgmq.drop_queue($1::text)", [slug]) do
-          {:ok, _} -> :ok
-          {:error, reason} -> {:error, reason}
-        end
-
-      {:ok, _} ->
-        :ok
-
-      {:error, reason} ->
-        {:error, reason}
+    case SQL.query(repo, sql, [slug]) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
   defp advisory_lock_slug(repo, slug) do
-    SQL.query(repo, "SELECT pg_advisory_xact_lock(hashtext($1))", [slug])
+    SQL.query(repo, "SELECT pg_advisory_xact_lock(1, hashtext(lower($1::text)))", [slug])
   end
 
   defp maybe_delete_existing_flow(_repo, _slug, false), do: :ok
@@ -848,6 +973,17 @@ defmodule PgFlow.Queries.Flows do
       {:ok, %{recovered_count: count}} -> {:ok, count}
       {:error, :not_found} -> {:ok, 0}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp quote_pgmq_queue_table(repo, queue_name) do
+    case SQL.query(
+           repo,
+           "SELECT quote_ident(pgmq.format_table_name($1::text, 'q'::text))",
+           [queue_name]
+         ) do
+      {:ok, %{rows: [[quoted_table]]}} -> {:ok, quoted_table}
+      {:error, error} -> {:error, error}
     end
   end
 end

@@ -7,7 +7,7 @@ defmodule PgflowDemo.DashboardMigrationTest do
         "SELECT obj_description('pgflow_dashboard.runs_with_progress'::regclass, 'pg_class')"
       )
 
-    assert comment == "PgFlowDashboard version=3"
+    assert comment == "PgFlowDashboard version=4"
   end
 
   test "exposes skipped step counts to dashboard run queries" do

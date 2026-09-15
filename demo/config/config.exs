@@ -9,7 +9,8 @@ import Config
 
 config :pgflow_demo,
   ecto_repos: [PgflowDemo.Repo],
-  generators: [timestamp_type: :utc_datetime, binary_id: true]
+  generators: [timestamp_type: :utc_datetime, binary_id: true],
+  scenario_controls_enabled: false
 
 # Configure PgFlow to use our repo
 config :pgflow,

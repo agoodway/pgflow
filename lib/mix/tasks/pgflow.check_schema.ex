@@ -20,52 +20,48 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
 
   ## What It Checks
 
-    1. The `pgflow` schema exists
-    2. Required tables exist: flows, steps, deps, runs, step_states, step_tasks, workers
-    3. Required functions exist: start_flow, complete_task, fail_task, etc.
-    4. pgmq extension is available
+    1. The `pgflow` schema and required tables exist
+    2. Installed core and helpers versions meet the bundled minimums
+    3. Required function signatures: four-argument `start_tasks/4`,
+       `ensure_flow_compiled/2`, and no obsolete three-argument claim
+    4. Queue identity constraints on `step_tasks` and `steps`
+    5. Eight-field `step_task_record` layout including `attempts_count`
+    6. Task status enum includes `skipped` and `cancelled`
+    7. pgmq extension is available
+
+  See `docs/UPSTREAM_COMPATIBILITY.md` for the full contract.
 
   """
 
   use Mix.Task
 
-  @required_tables ~w(flows steps deps runs step_states step_tasks workers)
-  @required_functions ~w(start_flow complete_task fail_task start_tasks)
+  alias PgFlow.SchemaCheck
 
   @impl Mix.Task
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, switches: [repo: :string])
 
-    # Start the application to get config
     Mix.Task.run("app.config")
 
     repo = get_repo(opts)
 
     Mix.shell().info("Checking pgflow schema in #{inspect(repo)}...")
 
-    # Start the repo
     {:ok, _} = Application.ensure_all_started(:ecto_sql)
     start_repo(repo)
 
-    results = [
-      check_schema_exists(repo),
-      check_tables_exist(repo),
-      check_functions_exist(repo),
-      check_pgmq_extension(repo)
-    ]
+    case SchemaCheck.run(repo) do
+      :ok ->
+        Mix.shell().info("\n✓ All checks passed! pgflow schema is compatible.")
 
-    errors = Enum.filter(results, &match?({:error, _}, &1))
+      {:error, errors} ->
+        Mix.shell().error("\n✗ Schema check failed:")
 
-    if Enum.empty?(errors) do
-      Mix.shell().info("\n✓ All checks passed! pgflow schema is compatible.")
-    else
-      Mix.shell().error("\n✗ Schema check failed:")
+        Enum.each(errors, fn message ->
+          Mix.shell().error("  - #{message}")
+        end)
 
-      Enum.each(errors, fn {:error, message} ->
-        Mix.shell().error("  - #{message}")
-      end)
-
-      Mix.raise("pgflow schema is not compatible")
+        Mix.raise("pgflow schema is not compatible")
     end
   end
 
@@ -87,115 +83,6 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
       {:ok, _} -> :ok
       {:error, {:already_started, _}} -> :ok
       {:error, error} -> raise "Failed to start repo: #{inspect(error)}"
-    end
-  end
-
-  defp check_schema_exists(repo) do
-    query = """
-    SELECT schema_name
-    FROM information_schema.schemata
-    WHERE schema_name = 'pgflow'
-    """
-
-    case repo.query(query) do
-      {:ok, %{num_rows: 1}} ->
-        Mix.shell().info("  ✓ pgflow schema exists")
-        :ok
-
-      {:ok, %{num_rows: 0}} ->
-        {:error, "pgflow schema does not exist"}
-
-      {:error, error} ->
-        {:error, "Failed to check schema: #{inspect(error)}"}
-    end
-  end
-
-  defp check_tables_exist(repo) do
-    query = """
-    SELECT table_name
-    FROM information_schema.tables
-    WHERE table_schema = 'pgflow'
-    """
-
-    case repo.query(query) do
-      {:ok, %{rows: rows}} ->
-        existing_tables = Enum.map(rows, fn [name] -> name end)
-        missing = @required_tables -- existing_tables
-
-        if Enum.empty?(missing) do
-          Mix.shell().info("  ✓ All required tables exist")
-          :ok
-        else
-          {:error, "Missing tables: #{Enum.join(missing, ", ")}"}
-        end
-
-      {:error, error} ->
-        {:error, "Failed to check tables: #{inspect(error)}"}
-    end
-  end
-
-  defp check_functions_exist(repo) do
-    query = """
-    SELECT routine_name
-    FROM information_schema.routines
-    WHERE routine_schema = 'pgflow'
-      AND routine_type = 'FUNCTION'
-    """
-
-    case repo.query(query) do
-      {:ok, %{rows: rows}} ->
-        existing_functions = Enum.map(rows, fn [name] -> name end)
-        missing = @required_functions -- existing_functions
-
-        if Enum.empty?(missing) do
-          Mix.shell().info("  ✓ All required functions exist")
-          :ok
-        else
-          {:error, "Missing functions: #{Enum.join(missing, ", ")}"}
-        end
-
-      {:error, error} ->
-        {:error, "Failed to check functions: #{inspect(error)}"}
-    end
-  end
-
-  defp check_pgmq_extension(repo) do
-    extension_query = """
-    SELECT extname
-    FROM pg_extension
-    WHERE extname = 'pgmq'
-    """
-
-    case repo.query(extension_query) do
-      {:ok, %{num_rows: 1}} ->
-        Mix.shell().info("  ✓ pgmq extension is installed")
-        :ok
-
-      {:ok, %{num_rows: 0}} ->
-        check_vendored_pgmq(repo)
-
-      {:error, error} ->
-        {:error, "Failed to check pgmq extension: #{inspect(error)}"}
-    end
-  end
-
-  defp check_vendored_pgmq(repo) do
-    vendored_query = """
-    SELECT 1
-    FROM information_schema.tables
-    WHERE table_schema = 'pgmq' AND table_name = 'meta'
-    """
-
-    case repo.query(vendored_query) do
-      {:ok, %{num_rows: 1}} ->
-        Mix.shell().info("  ✓ pgmq is installed (vendored)")
-        :ok
-
-      {:ok, %{num_rows: 0}} ->
-        {:error, "pgmq extension is not installed"}
-
-      {:error, error} ->
-        {:error, "Failed to check pgmq installation: #{inspect(error)}"}
     end
   end
 end

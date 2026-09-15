@@ -327,6 +327,47 @@ defmodule PgFlow.RuntimeFlowManagementTest do
   # ── delete_flow ──────────────────────────────────────────────────
 
   describe "delete_flow/1" do
+    test "wrong-case deletion preserves the owning flow and its queued and archived messages" do
+      TestRepo.query!("SELECT pgflow.create_flow('MixedCaseDelete')")
+      TestRepo.query!("SELECT pgflow.add_step('MixedCaseDelete', 'work')")
+      {:ok, run_id} = Flows.start_flow(TestRepo, "MixedCaseDelete", %{"preserved" => true})
+      seed_archived_message("mixedcasedelete")
+      before = queue_data("mixedcasedelete")
+
+      assert :ok = Client.delete_flow("mixedcasedelete")
+      assert queue_exists?("mixedcasedelete")
+      assert queue_data("mixedcasedelete") == before
+      assert {:ok, true} = Client.flow_exists?("MixedCaseDelete")
+
+      assert %{rows: [[1]]} =
+               TestRepo.query!("SELECT count(*) FROM pgflow.runs WHERE run_id = $1", [
+                 Ecto.UUID.dump!(run_id)
+               ])
+    end
+
+    test "apparent orphan cleanup preserves a queue still referenced by another flow's steps" do
+      TestRepo.query!("SELECT pgflow.create_flow('route_owner')")
+      TestRepo.query!("SELECT pgflow.add_step('route_owner', 'work')")
+      TestRepo.query!("SELECT pgmq.create('protected_route')")
+
+      TestRepo.query!(
+        "UPDATE pgflow.steps SET queue_name = 'protected_route' WHERE flow_slug = 'route_owner'"
+      )
+
+      TestRepo.query!("SELECT pgmq.send('protected_route', '{\"preserved\":true}'::jsonb)")
+      seed_archived_message("protected_route")
+      before = queue_data("protected_route")
+
+      assert :ok = Client.delete_flow("protected_route")
+      assert queue_exists?("protected_route")
+      assert queue_data("protected_route") == before
+
+      assert %{rows: [["protected_route"]]} =
+               TestRepo.query!(
+                 "SELECT queue_name FROM pgflow.steps WHERE flow_slug = 'route_owner'"
+               )
+    end
+
     test "deletes existing flow, confirmed via flow_exists?" do
       {:ok, _} =
         Client.upsert_flow("test_delete_me",
@@ -566,5 +607,22 @@ defmodule PgFlow.RuntimeFlowManagementTest do
       TestRepo.query("SELECT to_regclass($1::text) IS NOT NULL", ["pgmq.q_" <> slug])
 
     exists?
+  end
+
+  defp seed_archived_message(queue) do
+    %{rows: [[id]]} =
+      TestRepo.query!("SELECT pgmq.send($1, $2::jsonb)", [queue, %{"archived" => true}])
+
+    TestRepo.query!("SELECT pgmq.archive($1, $2::bigint)", [queue, id])
+  end
+
+  defp queue_data(queue) do
+    for prefix <- ["q", "a"], into: %{} do
+      %{rows: rows} =
+        TestRepo.query!("SELECT msg_id, message FROM pgmq.#{prefix}_#{queue} ORDER BY msg_id")
+
+      assert rows != []
+      {prefix, rows}
+    end
   end
 end

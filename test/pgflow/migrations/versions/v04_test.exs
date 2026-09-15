@@ -16,8 +16,8 @@ defmodule PgFlow.Migrations.Versions.V04Test do
   defp down_sql, do: File.read!(@down_path)
 
   describe "registration" do
-    test "v04 is the current helpers version" do
-      assert PgFlow.HelpersMigration.current_version() == 4
+    test "v04 is registered in the helpers migration chain" do
+      assert PgFlow.HelpersMigration.current_version() >= 4
     end
   end
 

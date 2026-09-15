@@ -1,6 +1,14 @@
+repo_config = Application.fetch_env!(:pgflow, PgFlow.TestRepo)
+port = Keyword.fetch!(repo_config, :port)
+database = Keyword.fetch!(repo_config, :database)
+
 # Only start the test repository if we can connect
 db_available? =
-  case System.cmd("pg_isready", ["-h", "localhost", "-p", "54323"], stderr_to_stdout: true) do
+  case System.cmd(
+         "pg_isready",
+         ["-h", "localhost", "-p", Integer.to_string(port), "-d", database],
+         stderr_to_stdout: true
+       ) do
     {_, 0} -> true
     _ -> false
   end
@@ -10,15 +18,22 @@ db_available? =
 # test — an otherwise-green run that exercised none of the worker.
 if not db_available? and System.get_env("PGFLOW_REQUIRE_DB") == "1" do
   raise """
-  PGFLOW_REQUIRE_DB=1 is set but no database answered at localhost:54323.
+  PGFLOW_REQUIRE_DB=1 is set but no database answered at localhost:#{port}.
 
   Start it with `docker compose up -d`, then re-run the suite.
   """
 end
 
+upstream_test_excludes =
+  if System.get_env("PGFLOW_UPSTREAM_CHECKOUT") == nil do
+    [:migration, :upstream_checkout]
+  else
+    [:migration]
+  end
+
 if db_available? do
   {:ok, _} = Application.ensure_all_started(:ecto_sql)
-  {:ok, _} = PgFlow.TestRepo.start_link()
+  {:ok, test_repo_pid} = PgFlow.TestRepo.start_link()
 
   # Bootstrap the schema exactly the way consumers do: via EctoEvolver-backed
   # PgFlow.Migration + PgFlow.HelpersMigration. This proves our generated
@@ -36,9 +51,21 @@ if db_available? do
     def down, do: PgFlow.HelpersMigration.down()
   end
 
+  defmodule PgFlow.Test.CoreUpgradeMigration do
+    use Ecto.Migration
+    def up, do: PgFlow.Migration.up()
+    def down, do: PgFlow.Migration.down()
+  end
+
+  defmodule PgFlow.Test.HelpersUpgradeMigration do
+    use Ecto.Migration
+    def up, do: PgFlow.HelpersMigration.up()
+    def down, do: PgFlow.HelpersMigration.down()
+  end
+
   # pgmq and pg_cron are pre-installed in the atlas-postgres-pgflow image;
   # register them in the test DB once. The test compose configuration binds
-  # pg_cron's metadata to pgflow_test through cron.database_name.
+  # pg_cron's metadata to the selected test database through cron.database_name.
   {:ok, _} = PgFlow.TestRepo.query("CREATE EXTENSION IF NOT EXISTS pgmq")
   {:ok, _} = PgFlow.TestRepo.query("CREATE EXTENSION IF NOT EXISTS pg_cron")
 
@@ -48,6 +75,28 @@ if db_available? do
   # silently succeed because of the stub.
   Ecto.Migrator.up(PgFlow.TestRepo, 0, PgFlow.Test.CoreMigration, log: false)
   Ecto.Migrator.up(PgFlow.TestRepo, 1, PgFlow.Test.HelpersMigration, log: false)
+
+  # The original wrapper migration may already be recorded in a persistent
+  # test database. A new Ecto migration identity asks EctoEvolver to apply
+  # any newly registered core versions without rebuilding unrelated state.
+  Ecto.Migrator.up(PgFlow.TestRepo, 2, PgFlow.Test.CoreUpgradeMigration, log: false)
+  Ecto.Migrator.up(PgFlow.TestRepo, 3, PgFlow.Test.HelpersUpgradeMigration, log: false)
+
+  applied_core_version =
+    EctoEvolver.Adapters.Postgres.get_version(
+      PgFlow.TestRepo,
+      "pgflow",
+      {:view, "pgflow_version"}
+    )
+
+  if applied_core_version != PgFlow.Migration.current_version() do
+    raise """
+    Test database is at pgflow core version #{applied_core_version}, but \
+    this checkout defines version #{PgFlow.Migration.current_version()}.
+
+    Recreate the test database before running this checkout.
+    """
+  end
 
   # `Ecto.Migrator` skips a migration whose version it has already recorded, so
   # the line above is a no-op on any test DB created before a new helpers
@@ -111,22 +160,8 @@ if db_available? do
   {_, 0} =
     System.cmd(
       "psql",
-      [
-        "-h",
-        "localhost",
-        "-p",
-        "54323",
-        "-U",
-        "postgres",
-        "-d",
-        "pgflow_test",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-q",
-        "-f",
-        "test/support/db/test_helpers.sql"
-      ],
-      env: [{"PGPASSWORD", "postgres"}],
+      PgFlow.Test.DatabaseHelpers.psql_args(repo_config, "test/support/db/test_helpers.sql"),
+      env: [{"PGPASSWORD", Keyword.fetch!(repo_config, :password)}],
       stderr_to_stdout: true
     )
 
@@ -134,8 +169,20 @@ if db_available? do
   IO.puts("Database available - running all tests including integration")
   # `:migration` tests DROP/CREATE the pgflow schema; they pollute shared
   # state and must be run in isolation with `mix test --only migration`.
-  ExUnit.start(exclude: [:migration])
+  ExUnit.start(exclude: [:destructive_schema | upstream_test_excludes])
+
+  ExUnit.after_suite(fn _results ->
+    unless Process.whereis(PgFlow.TestRepo) == test_repo_pid do
+      raise "PgFlow.TestRepo was restarted or stopped during the test suite"
+    end
+
+    %{pid: sandbox_manager} = Ecto.Adapter.lookup_meta(PgFlow.TestRepo)
+
+    unless :sys.get_state(sandbox_manager).mode == :manual do
+      raise "PgFlow.TestRepo sandbox mode was not restored to :manual"
+    end
+  end)
 else
   IO.puts("Database not available - skipping integration tests")
-  ExUnit.start(exclude: [:integration, :migration])
+  ExUnit.start(exclude: [:integration, :destructive_schema | upstream_test_excludes])
 end

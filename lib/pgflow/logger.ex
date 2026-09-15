@@ -65,7 +65,7 @@ defmodule PgFlow.Logger do
           required(:worker_name) => String.t(),
           required(:worker_id) => String.t(),
           required(:queue_name) => String.t(),
-          required(:flows) => [%{flow_slug: String.t() | atom(), status: atom()}]
+          required(:flows) => [%{flow_slug: String.t() | atom(), status: String.t() | atom()}]
         }
 
   @type shutdown_phase :: :waiting | :stopped
@@ -438,7 +438,11 @@ defmodule PgFlow.Logger do
   defp fancy_startup_banner(ctx) do
     flows_lines =
       Enum.map_join(ctx.flows, "\n", fn flow ->
-        icon = if flow.status in [:compiled, :verified, :ready], do: "✓", else: "!"
+        icon =
+          if flow.status in [:compiled, :verified, :ready, "compiled", "verified", "ready"],
+            do: "✓",
+            else: "!"
+
         "   #{icon} #{flow.flow_slug} (#{flow.status})"
       end)
 

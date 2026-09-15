@@ -315,8 +315,34 @@ defmodule PgFlow.DSL.ValidationTest do
     end
 
     test "rejects keyword-list if" do
-      assert_raise CompileError, ~r/:if must be a map/, fn ->
+      assert_raise CompileError, ~r/:if must be JSON-compatible/, fn ->
         Validation.validate_step_opts!([if: [plan: "premium"]], fake_env())
+      end
+    end
+
+    test "rejects nested keyword lists and non JSON values" do
+      for value <- [
+            %{nested: [bad: 1]},
+            [self()],
+            %{bad: :unsupported},
+            %URI{},
+            <<255>>,
+            %{<<255>> => 1},
+            [1 | 2]
+          ] do
+        assert_raise CompileError, ~r/:if must be JSON-compatible/, fn ->
+          Validation.validate_step_opts!([if: value], fake_env())
+        end
+      end
+    end
+
+    test "compiles every accepted JSON condition including explicit null" do
+      for value <- [nil, false, 0, "", [], [1, %{ok: true}], %{ok: true}] do
+        assert :ok = Validation.validate_step_opts!([if: value], fake_env())
+        step = %PgFlow.Flow.Step{slug: :condition, if: value, if_defined?: true}
+
+        assert PgFlow.FlowCompiler.add_step_sql(:condition_flow, step) =~
+                 "required_input_pattern => '#{Jason.encode!(value)}'::jsonb"
       end
     end
 

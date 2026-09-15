@@ -278,7 +278,9 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
        %{
          total: length(step_tasks),
          completed: Enum.count(step_tasks, &match?(%StepTask{status: "completed"}, &1)),
-         failed: Enum.count(step_tasks, &match?(%StepTask{status: "failed"}, &1))
+         failed: Enum.count(step_tasks, &match?(%StepTask{status: "failed"}, &1)),
+         skipped: Enum.count(step_tasks, &match?(%StepTask{status: "skipped"}, &1)),
+         cancelled: Enum.count(step_tasks, &match?(%StepTask{status: "cancelled"}, &1))
        }}
     end)
   end
@@ -446,6 +448,8 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
                     <div :if={task_counts.total > 0} class="mt-2 text-xs text-slate-950 dark:text-white">
                       Tasks: {task_counts.completed}/{task_counts.total}
                       <span :if={task_counts.failed > 0} class="text-rose-900 dark:text-rose-100">({task_counts.failed} failed)</span>
+                      <span :if={task_counts.skipped > 0} class="text-orange-900 dark:text-orange-100">({task_counts.skipped} skipped)</span>
+                      <span :if={task_counts.cancelled > 0} class="text-slate-700 dark:text-slate-300">({task_counts.cancelled} cancelled)</span>
                     </div>
                   </button>
                 <% end %>
@@ -511,7 +515,10 @@ defmodule PgFlowDashboard.Live.RunsLive.Show do
                   <div class="space-y-3">
                     <%= for task <- @step_tasks do %>
                       <div class="border-l-2 border-slate-300 dark:border-slate-600 pl-3">
-                        <p class="text-xs text-slate-500 dark:text-slate-400 mb-1">Task {task.task_index}</p>
+                        <div class="flex items-center gap-2 mb-1">
+                          <p class="text-xs text-slate-500 dark:text-slate-400">Task {task.task_index}</p>
+                          <StatusBadge.status_badge status={task.status} size={:sm} />
+                        </div>
                         <JsonViewer.json_viewer
                           id={"step-output-#{@selected_step}-task-#{task.task_index}"}
                           data={task.output}

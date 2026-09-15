@@ -100,11 +100,12 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
   defp setup_started(flow_module \\ StalledFlow, input \\ %{"value" => 42}) do
     flow_slug = compile_flow(flow_module)
     run_id = start_flow_run(flow_slug, input)
-    {:ok, messages} = Flows.read(TestRepo, flow_slug, 30, 10)
+    queue_name = String.downcase(flow_slug)
+    {:ok, messages} = Flows.read(TestRepo, queue_name, 30, 10)
     msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
     worker_id = Ecto.UUID.generate()
-    {:ok, _} = WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
-    {:ok, _} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
+    {:ok, _} = WorkerQueries.register_worker(TestRepo, worker_id, queue_name, "elixir:test")
+    {:ok, _} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id, queue_name)
     {:ok, run_id_bin} = Ecto.UUID.dump(run_id)
     %{flow_slug: flow_slug, msg_ids: msg_ids, run_id_bin: run_id_bin, run_id: run_id}
   end
@@ -178,8 +179,8 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
   # Builds `fanout -> items` where `items` is a 3-task map step whose
   # `when_exhausted` mode skips the whole step. Drives it to the moment right
   # after task 0 exhausts its single attempt: `items` is `skipped`, the run is
-  # terminal, the two sibling messages are archived — and the sibling TASK rows
-  # are still sitting in `started`, which is what a stalled sweep would see.
+  # terminal, sibling messages are archived, and unfinished siblings are
+  # terminalized as `skipped` rather than left in `started`.
   defp setup_skipped_map(when_exhausted) do
     flow_slug = "skip_map_#{System.unique_integer([:positive])}"
 
@@ -200,7 +201,10 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
     {:ok, run_id_bin} = Ecto.UUID.dump(run_id)
 
     worker_id = Ecto.UUID.generate()
-    {:ok, _} = WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+    queue_name = String.downcase(flow_slug)
+
+    {:ok, _} =
+      WorkerQueries.register_worker(TestRepo, worker_id, queue_name, "elixir:test")
 
     # fanout emits three elements, which fans `items` out to three tasks.
     start_all(flow_slug, worker_id)
@@ -222,9 +226,10 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
   end
 
   defp start_all(flow_slug, worker_id) do
-    {:ok, messages} = Flows.read(TestRepo, flow_slug, 30, 10)
+    queue_name = String.downcase(flow_slug)
+    {:ok, messages} = Flows.read(TestRepo, queue_name, 30, 10)
     msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
-    {:ok, _} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id)
+    {:ok, _} = Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id, queue_name)
     msg_ids
   end
 
@@ -446,8 +451,8 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
       TestRepo.query!(
         """
         INSERT INTO pgflow.step_tasks
-          (flow_slug, run_id, step_slug, message_id, task_index, status, attempts_count, queued_at, started_at, requeued_count)
-        SELECT flow_slug, run_id, step_slug, $2::bigint, 1, 'started', attempts_count, queued_at, started_at, requeued_count
+          (flow_slug, run_id, step_slug, queue_name, message_id, task_index, status, attempts_count, queued_at, started_at, requeued_count)
+        SELECT flow_slug, run_id, step_slug, queue_name, $2::bigint, 1, 'started', attempts_count, queued_at, started_at, requeued_count
         FROM pgflow.step_tasks WHERE run_id = $1 AND step_slug = 'process' AND task_index = 0
         """,
         [rid, hd(msg_ids) + 100_000]
@@ -476,8 +481,7 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
 
         assert step_status(rid, "items") == "skipped"
         assert run_status(rid) == "completed"
-        # The premise: siblings are left non-terminal by the skip.
-        assert task_statuses(rid, "items") == ~w(failed started started)
+        assert task_statuses(rid, "items") == ~w(failed skipped skipped)
 
         backdate(rid, 120)
         assert {:ok, 0} = Flows.recover_stalled_tasks(TestRepo, 60)
