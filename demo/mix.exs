@@ -104,7 +104,7 @@ defmodule PgflowDemo.MixProject do
     if Mix.env() != :prod or System.get_env("PGFLOW_DEMO_LOCAL") == "1" do
       {:pgflow, path: ".."}
     else
-      {:pgflow, "~> 0.3.4"}
+      {:pgflow, "~> 0.4.0"}
     end
   end
 
