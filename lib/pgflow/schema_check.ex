@@ -65,7 +65,7 @@ defmodule PgFlow.SchemaCheck do
   defp validate_helpers_version(comment) do
     case Regex.run(~r/version=(\d+)/, comment, capture: :all_but_first) do
       [version] ->
-        if String.to_integer(version) >= 5,
+        if String.to_integer(version) >= 6,
           do: :ok,
           else: {:error, {:schema_incompatible, :helpers_version}}
 

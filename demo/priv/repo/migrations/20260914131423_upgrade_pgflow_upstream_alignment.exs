@@ -7,7 +7,7 @@ defmodule PgflowDemo.Repo.Migrations.UpgradePgflowUpstreamAlignment do
 
   def up do
     PgFlow.Migration.up()
-    PgFlow.HelpersMigration.up()
+    PgFlow.HelpersMigration.up(version: 5)
     PgFlowDashboard.Migration.up()
   end
 

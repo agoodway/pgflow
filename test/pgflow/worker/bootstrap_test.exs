@@ -129,7 +129,7 @@ defmodule PgFlow.Worker.BootstrapTest do
     end
 
     test "rejects old helpers even when claim signature exists" do
-      TestRepo.query!("COMMENT ON VIEW pgflow.extensions_version IS 'PgFlow helpers version=4'")
+      TestRepo.query!("COMMENT ON VIEW pgflow.extensions_version IS 'PgFlow helpers version=5'")
 
       assert {:error, {:schema_incompatible, :helpers_version}} =
                Bootstrap.prepare(TestRepo, BootstrapCompileFlow.__pgflow_definition__())

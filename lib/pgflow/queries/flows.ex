@@ -976,6 +976,20 @@ defmodule PgFlow.Queries.Flows do
     end
   end
 
+  @doc """
+  Escalates tasks stamped permanently stalled by recovery or earlier helper
+  versions. Run this after `recover_stalled_tasks/2` returns, in a separate
+  database transaction, so lock acquisition follows `fail_task`.
+  """
+  @spec escalate_permanently_stalled(Ecto.Repo.t()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def escalate_permanently_stalled(repo) do
+    case SQL.query(repo, "SELECT pgflow.escalate_permanently_stalled()", []) do
+      {:ok, %{rows: [[count]]}} -> {:ok, count}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp quote_pgmq_queue_table(repo, queue_name) do
     case SQL.query(
            repo,

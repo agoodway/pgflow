@@ -35,12 +35,13 @@ mix phx.server
 
 The demo keeps its historical committed migrations for Postgres extensions, pgmq,
 pgflow setup, flow/job compilation, and dashboard upgrades. Do **not** regenerate
-duplicate setup or definition migrations on existing databases; apply new
-upstream alignment work through the committed wrapper migration
-`upgrade_pgflow_upstream_alignment`.
+duplicate setup or definition migrations on existing databases. The committed
+`upgrade_pgflow_upstream_alignment` wrapper advances core V02, helpers V05, and
+dashboard V04; `add_pgflow_helpers_v06` then adds stalled-task escalation and
+the `pgflow.step_progress` view.
 
-On fresh databases, `mix ecto.migrate` replays the full chain including that
-wrapper. On existing installations, only the new wrapper migration runs.
+On fresh databases, `mix ecto.migrate` replays the full chain. On existing
+installations, Ecto runs only the pending migrations.
 
 - Demo app: http://localhost:4022
 - PgFlow Dashboard: http://localhost:4022/pgflow
@@ -59,18 +60,18 @@ Article/LLM integration is opt-in (`--include-llm`) and never required for CI.
 
 ## Local production verification
 
-The demo-only Docker build context cannot resolve `{:pgflow, path: ".."}`.
-Production-mode verification against the parent checkout must run from the
-demo directory:
+The demo temporarily uses `{:pgflow, path: ".."}` in every Mix environment
+while the 0.5.0 release is being tuned. Production-mode verification must run
+from the demo directory with the parent checkout available:
 
 ```bash
-PGFLOW_DEMO_LOCAL=1 MIX_ENV=prod mix compile --warnings-as-errors
+MIX_ENV=prod mix compile --warnings-as-errors
 ```
 
-Production refuses to boot with a PgFlow dependency whose bundled core version is
-below 2. The demo-only Docker context currently resolves the published Hex
-dependency, so it cannot serve the synchronized scenarios until a matching release
-is published. `PGFLOW_DEMO_LOCAL=1` selects the parent checkout for local builds.
+Production refuses to boot unless its PgFlow dependency includes core V02 and
+helpers V06. The demo-only Docker context contains no parent checkout, so its
+image build cannot resolve the temporary path dependency. Include the parent
+checkout in that context or return to a Hex dependency after publication.
 
 ## Release acceptance commands
 
@@ -80,7 +81,7 @@ From `demo/`:
 mix precommit
 mix assets.build
 MIX_ENV=test mix pgflow_demo.verify_scenarios
-PGFLOW_DEMO_LOCAL=1 MIX_ENV=prod mix compile --warnings-as-errors
+MIX_ENV=prod mix compile --warnings-as-errors
 ```
 
 ## LLM configuration

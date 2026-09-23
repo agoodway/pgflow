@@ -4,6 +4,8 @@ defmodule PgFlow.Runs do
 
   Every function receives the consumer repository explicitly so callers can
   use their configured repository and tests can use an isolated repository.
+  Hosts that need SQL-level run-step progress can read the versioned
+  `pgflow.step_progress` view.
   """
 
   import Ecto.Query

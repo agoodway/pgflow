@@ -355,6 +355,129 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
     end
   end
 
+  describe "permanent stall escalation" do
+    test "step_progress exposes one row per run step" do
+      %{run_id_bin: rid} = setup_started()
+
+      assert %{rows: [["process", "started", "started", nil]]} =
+               TestRepo.query!(
+                 "SELECT step_slug, run_status, step_status, step_output FROM pgflow.step_progress WHERE run_id = $1",
+                 [rid]
+               )
+    end
+
+    test "fails the task, step, and run after the requeue cap" do
+      %{run_id: run_id, run_id_bin: rid} = setup_started()
+      TestRepo.query!("UPDATE pgflow.step_tasks SET requeued_count = 3 WHERE run_id = $1", [rid])
+      backdate(rid, 120)
+
+      assert {:ok, 0} = Flows.recover_stalled_tasks(TestRepo, 60)
+      assert task(rid, "status") == ["started"]
+      assert {:ok, 1} = Flows.escalate_permanently_stalled(TestRepo)
+      assert task(rid, "status") == ["failed"]
+      assert step_status(rid, "process") == "failed"
+      assert run_status(rid) == "failed"
+
+      assert {:ok, _} = Flows.complete_task(TestRepo, run_id, "process", 0, %{"late" => true})
+      assert step_status(rid, "process") == "failed"
+    end
+
+    test "skips an exhausted task and starts its dependent" do
+      slug = "stall_skip_#{System.unique_integer([:positive])}"
+      TestRepo.query!("SELECT pgflow.create_flow($1, 1, 1, 30)", [slug])
+
+      TestRepo.query!(
+        "SELECT pgflow.add_step($1, 'process', ARRAY[]::text[], 1, null, null, null, 'single', null, null, 'skip', 'skip')",
+        [slug]
+      )
+
+      TestRepo.query!("SELECT pgflow.add_step($1, 'finalize', ARRAY['process']::text[])", [slug])
+      run_id = start_flow_run(slug, %{})
+      {:ok, rid} = Ecto.UUID.dump(run_id)
+      worker_id = Ecto.UUID.generate()
+      {:ok, _} = WorkerQueries.register_worker(TestRepo, worker_id, slug, "elixir:test")
+      start_all(slug, worker_id)
+      TestRepo.query!("UPDATE pgflow.step_tasks SET requeued_count = 3 WHERE run_id = $1", [rid])
+      backdate(rid, 120)
+
+      assert {:ok, 0} = Flows.recover_stalled_tasks(TestRepo, 60)
+      assert {:ok, 1} = Flows.escalate_permanently_stalled(TestRepo)
+      assert task(rid, "status") == ["failed"]
+      assert step_status(rid, "process") == "skipped"
+      assert step_status(rid, "finalize") == "started"
+      assert task(rid, "status", "finalize") == ["queued"]
+    end
+
+    test "escalates a row stamped by an earlier helper version" do
+      %{run_id_bin: rid} = setup_started()
+
+      TestRepo.query!(
+        "UPDATE pgflow.step_tasks SET permanently_stalled_at = now() WHERE run_id = $1",
+        [rid]
+      )
+
+      assert {:ok, 1} = Flows.escalate_permanently_stalled(TestRepo)
+      assert run_status(rid) == "failed"
+      assert {:ok, 0} = Flows.escalate_permanently_stalled(TestRepo)
+    end
+
+    test "skip-cascade skips the dependent after escalation" do
+      slug = "stall_cascade_#{System.unique_integer([:positive])}"
+      TestRepo.query!("SELECT pgflow.create_flow($1, 1, 1, 30)", [slug])
+
+      TestRepo.query!(
+        "SELECT pgflow.add_step($1, 'process', ARRAY[]::text[], 1, null, null, null, 'single', null, null, 'skip', 'skip-cascade')",
+        [slug]
+      )
+
+      TestRepo.query!("SELECT pgflow.add_step($1, 'dependent', ARRAY['process']::text[])", [slug])
+      run_id = start_flow_run(slug, %{})
+      {:ok, rid} = Ecto.UUID.dump(run_id)
+      worker_id = Ecto.UUID.generate()
+      {:ok, _} = WorkerQueries.register_worker(TestRepo, worker_id, slug, "elixir:test")
+      start_all(slug, worker_id)
+      TestRepo.query!("UPDATE pgflow.step_tasks SET requeued_count = 3 WHERE run_id = $1", [rid])
+      backdate(rid, 120)
+
+      assert {:ok, 0} = Flows.recover_stalled_tasks(TestRepo, 60)
+      assert {:ok, 1} = Flows.escalate_permanently_stalled(TestRepo)
+      assert step_status(rid, "process") == "skipped"
+      assert step_status(rid, "dependent") == "skipped"
+      assert run_status(rid) == "completed"
+    end
+
+    test "a stalled map task skips active siblings" do
+      slug = "stall_map_#{System.unique_integer([:positive])}"
+      TestRepo.query!("SELECT pgflow.create_flow($1, 1, 1, 30)", [slug])
+      TestRepo.query!("SELECT pgflow.add_step($1, 'fanout', ARRAY[]::text[])", [slug])
+
+      TestRepo.query!(
+        "SELECT pgflow.add_step($1, 'items', ARRAY['fanout']::text[], 1, null, null, null, 'map', null, null, 'skip', 'skip')",
+        [slug]
+      )
+
+      run_id = start_flow_run(slug, %{})
+      {:ok, rid} = Ecto.UUID.dump(run_id)
+      worker_id = Ecto.UUID.generate()
+      {:ok, _} = WorkerQueries.register_worker(TestRepo, worker_id, slug, "elixir:test")
+      start_all(slug, worker_id)
+      {:ok, _} = Flows.complete_task(TestRepo, run_id, "fanout", 0, [1, 2])
+      start_all(slug, worker_id)
+
+      TestRepo.query!(
+        "UPDATE pgflow.step_tasks SET requeued_count = 3 WHERE run_id = $1 AND step_slug = 'items' AND task_index = 0",
+        [rid]
+      )
+
+      backdate(rid, 120)
+      assert {:ok, 1} = Flows.recover_stalled_tasks(TestRepo, 60)
+      assert {:ok, 1} = Flows.escalate_permanently_stalled(TestRepo)
+      assert step_status(rid, "items") == "skipped"
+      assert task_statuses(rid, "items") == ~w(failed skipped)
+      assert run_status(rid) == "completed"
+    end
+  end
+
   # --- forcing & mixed sweeps ---
 
   describe "recover_stalled_tasks/2 — forcing & mixed sweeps" do

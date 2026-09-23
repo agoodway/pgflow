@@ -5,7 +5,9 @@ defmodule PgFlow.Worker.StalledTaskRecovery do
   If a worker crashes while processing tasks, those tasks remain in 'started'
   status in the step_tasks table. The pgmq message eventually becomes visible
   again, but `start_tasks` can't re-process it because the step_task record
-  is stuck. This GenServer periodically finds and resets those records.
+  is stuck. This GenServer periodically finds and resets those records. After
+  the recovery query commits, it escalates permanently stalled tasks through
+  their step's `when_exhausted` policy.
 
   ## Configuration
 
@@ -64,6 +66,17 @@ defmodule PgFlow.Worker.StalledTaskRecovery do
 
       {:error, reason} ->
         Logger.warning("Failed to recover stalled tasks: #{inspect(reason)}")
+    end
+
+    case Flows.escalate_permanently_stalled(state.repo) do
+      {:ok, 0} ->
+        :ok
+
+      {:ok, count} ->
+        Logger.info("Escalated #{count} permanently stalled task(s)")
+
+      {:error, reason} ->
+        Logger.warning("Failed to escalate permanently stalled tasks: #{inspect(reason)}")
     end
 
     schedule_recovery(state)

@@ -256,7 +256,7 @@ States managed by `PgFlow.Worker.Lifecycle`:
 
 ## Stalled Task Recovery
 
-`StalledTaskRecovery` GenServer sweeps every `recovery_interval` (default: 15s) for tasks stuck in `started` status beyond `stale_threshold` (default: 60s). Resets them to `queued` and makes their pgmq messages immediately visible via `pgflow.set_vt_batch`.
+`StalledTaskRecovery` GenServer sweeps every `recovery_interval` (default: 15s) for tasks stuck in `started` status beyond `stale_threshold` (default: 60s). Resets them to `queued` and makes their pgmq messages immediately visible via `pgflow.set_vt_batch`. After three requeues, the next sweep archives the message and stamps `permanently_stalled_at`. A separate query then calls `pgflow.escalate_permanently_stalled()`, which applies the step's `when_exhausted` policy through `fail_task`. Alert on stamped tasks whose run remains `started`, which indicates escalation failed.
 
 ## OTP Integration
 
@@ -318,6 +318,7 @@ Elixir-specific additions:
 | `pgflow.get_flow_input`          | Retrieve input for a flow run               |
 | `pgflow.get_step_output`         | Retrieve output of a completed step         |
 | `pgflow.recover_stalled_tasks`   | Reset stalled tasks to queued               |
+| `pgflow.escalate_permanently_stalled` | Apply exhausted policy to stamped tasks |
 | `pgflow.prune_data_older_than`   | Clean up old run data                       |
 | `pgflow.analyze_and_create_flow` | Explicit legacy definition compilation; destructive runtime upsert is deprecated |
 | `pgflow.ensure_flow_compiled` | Compile or verify worker definition under the upstream shape/advisory-lock contract |

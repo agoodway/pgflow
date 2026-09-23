@@ -93,7 +93,7 @@ From `demo/`:
 mix precommit
 mix assets.build
 MIX_ENV=test mix pgflow_demo.verify_scenarios
-PGFLOW_DEMO_LOCAL=1 MIX_ENV=prod mix compile --warnings-as-errors
+MIX_ENV=prod mix compile --warnings-as-errors
 ```
 
 Production compile is a build check only — it does not start the app or run migrations in production.

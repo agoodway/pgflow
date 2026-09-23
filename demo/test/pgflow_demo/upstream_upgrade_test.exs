@@ -26,8 +26,9 @@ defmodule PgflowDemo.UpstreamUpgradeTest do
     UpstreamUpgradeFixture.migrate_all!(fixture)
 
     assert UpstreamUpgradeFixture.core_version(fixture) == 2
-    assert UpstreamUpgradeFixture.helpers_version(fixture) == 5
+    assert UpstreamUpgradeFixture.helpers_version(fixture) == 6
     assert catalog_contract!(fixture)
+    assert helpers_v06_contract!(fixture)
     assert dashboard_comment(fixture) == "PgFlowDashboard version=4"
   end
 
@@ -84,6 +85,17 @@ defmodule PgflowDemo.UpstreamUpgradeTest do
     end
 
     assert dashboard_comment(fixture) == "PgFlowDashboard version=4"
+
+    UpstreamUpgradeFixture.migrate_helpers_v06!(fixture)
+
+    assert UpstreamUpgradeFixture.helpers_version(fixture) == 6
+    assert helpers_v06_contract!(fixture)
+
+    assert UpstreamUpgradeFixture.scalar!(fixture, "SELECT count(*) FROM pgflow.step_progress") >
+             0
+
+    assert UpstreamUpgradeFixture.scalar!(fixture, "SELECT count(*) FROM pgflow.runs") ==
+             snapshot.run_count
   end
 
   test "upgrade wrapper is forward-only", %{fixture: fixture} do
@@ -108,6 +120,18 @@ defmodule PgflowDemo.UpstreamUpgradeTest do
     assert Enum.all?(PgFlow.FlowStarter.status().modules, fn state ->
              state.status == :succeeded
            end)
+  end
+
+  defp helpers_v06_contract!(fixture) do
+    assert UpstreamUpgradeFixture.scalar!(
+             fixture,
+             "SELECT to_regprocedure('pgflow.escalate_permanently_stalled()') IS NOT NULL"
+           )
+
+    assert UpstreamUpgradeFixture.scalar!(
+             fixture,
+             "SELECT to_regclass('pgflow.step_progress') IS NOT NULL"
+           )
   end
 
   defp catalog_contract!(fixture) do

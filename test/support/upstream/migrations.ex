@@ -18,6 +18,16 @@ defmodule PgFlow.Upstream.HelpersUpgradeMigration do
   def down, do: PgFlow.HelpersMigration.down(version: 4)
 end
 
+defmodule PgFlow.Upstream.HelpersV06Migration do
+  @moduledoc false
+  use Ecto.Migration
+
+  @doc "Installs permanent stall escalation and the progress view."
+  def up, do: PgFlow.HelpersMigration.up(version: 6)
+  @doc "Removes the version 6 helper additions."
+  def down, do: PgFlow.HelpersMigration.down(version: 5)
+end
+
 defmodule PgFlow.Upstream.HelpersFullChainMigration do
   @moduledoc false
   use Ecto.Migration

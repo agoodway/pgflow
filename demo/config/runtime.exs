@@ -45,16 +45,17 @@ config :pgflow_demo,
   ai_model_name: System.get_env("AI_MODEL_NAME", "accounts/fireworks/models/deepseek-v3p2")
 
 if config_env() == :prod do
-  unless Code.ensure_loaded?(PgFlow.Migration) and PgFlow.Migration.current_version() >= 2 do
+  unless Code.ensure_loaded?(PgFlow.Migration) and PgFlow.Migration.current_version() >= 2 and
+           Code.ensure_loaded?(PgFlow.HelpersMigration) and
+           PgFlow.HelpersMigration.current_version() >= 6 do
     raise """
-    [pgflow_demo] Production deployment is blocked until the synchronized PgFlow
-    release containing upstream alignment migrations is published to Hex.
-    For local verification against the parent checkout, build from the repository
-    root with:
+    [pgflow_demo] Production deployment requires PgFlow core V02 and helpers V06.
+    For local verification against the parent checkout, build from demo/ with:
 
-        PGFLOW_DEMO_LOCAL=1 MIX_ENV=prod mix compile --warnings-as-errors
+        MIX_ENV=prod mix compile --warnings-as-errors
 
-    The demo-only Docker build context cannot resolve `{:pgflow, path: \"..\"}`.
+    The demo-only Docker build context cannot resolve `{:pgflow, path: \"..\"}`
+    unless the parent checkout is included.
     """
   end
 end

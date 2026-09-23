@@ -16,27 +16,28 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
       install_latest!()
 
       assert core_version() == 2
-      assert helpers_version() == 5
+      assert helpers_version() == 6
       assert catalog_contract!()
     end)
   end
 
-  test "baseline fixture upgrades core V01 helpers V04 to latest" do
+  test "baseline fixture upgrades core V01 helpers V04 through V06" do
     fixture = baseline_fixture!()
 
     in_fixture(fixture, fn ->
       task_count = scalar!("SELECT count(*) FROM pgflow.step_tasks")
       migrate_core_v02!()
       migrate_helpers_v05!()
+      migrate_helpers_v06!()
 
       assert core_version() == 2
-      assert helpers_version() == 5
+      assert helpers_version() == 6
       assert scalar!("SELECT count(*) FROM pgflow.step_tasks") == task_count
       assert catalog_contract!()
     end)
   end
 
-  test "core V02 without helpers replays the full helper chain to V05" do
+  test "core V02 without helpers replays the full helper chain to V06" do
     fixture = fresh_fixture!()
 
     in_fixture(fixture, fn ->
@@ -56,7 +57,7 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
         log: false
       )
 
-      assert helpers_version() == 5
+      assert helpers_version() == 6
       assert start_tasks_signatures() == [[true, true]]
       assert catalog_contract!()
     end)
@@ -76,6 +77,7 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
       in_fixture(baseline, fn ->
         migrate_core_v02!()
         migrate_helpers_v05!()
+        migrate_helpers_v06!()
         catalog_snapshot!()
       end)
 
@@ -232,6 +234,15 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
       PgFlow.TestRepo,
       9_000_000_105,
       PgFlow.Upstream.HelpersUpgradeMigration,
+      log: false
+    )
+  end
+
+  defp migrate_helpers_v06! do
+    Ecto.Migrator.up(
+      PgFlow.TestRepo,
+      9_000_000_106,
+      PgFlow.Upstream.HelpersV06Migration,
       log: false
     )
   end

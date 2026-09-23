@@ -131,6 +131,14 @@ defmodule PgflowDemo.UpstreamUpgradeFixture do
     end)
   end
 
+  @spec migrate_helpers_v06!(t()) :: :ok
+  @doc false
+  def migrate_helpers_v06!(fixture) do
+    with_fixture_repo(fixture, fn ->
+      Ecto.Migrator.run(PgflowDemo.Repo, @migrations_path, :up, all: true)
+    end)
+  end
+
   defp run_migrations!(fixture, target) do
     with_fixture_repo(fixture, fn ->
       Ecto.Migrator.up(
@@ -185,6 +193,8 @@ defmodule PgflowDemo.UpstreamUpgradeFixture do
           upgrade_migration_module(),
           log: false
         )
+
+        Ecto.Migrator.run(PgflowDemo.Repo, @migrations_path, :up, all: true)
       end
     end)
   end

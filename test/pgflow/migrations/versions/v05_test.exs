@@ -8,8 +8,8 @@ defmodule PgFlow.Migrations.Versions.V05Test do
   @down_path "priv/pgflow_helpers/sql/versions/v05/v05_down.sql"
 
   describe "registration" do
-    test "v05 is the current helpers version" do
-      assert PgFlow.HelpersMigration.current_version() == 5
+    test "v05 remains in the helpers migration chain" do
+      assert PgFlow.HelpersMigration.current_version() >= 5
     end
   end
 

@@ -41,7 +41,7 @@ defmodule PgflowDemo.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
-      pgflow_dependency(),
+      {:pgflow, path: ".."},
       {:livefilter, "~> 0.2.0"},
 
       # Tz - required by PgFlowDashboard for time_zone support
@@ -96,16 +96,6 @@ defmodule PgflowDemo.MixProject do
       {:doctor, "~> 0.23.0", only: [:dev, :test], runtime: false},
       {:ex_dna, "~> 1.5.4", only: [:dev, :test], runtime: false}
     ]
-  end
-
-  # Local development exercises the parent checkout directly. The production
-  # Docker context contains only this demo app, so it uses the published release.
-  defp pgflow_dependency do
-    if Mix.env() != :prod or System.get_env("PGFLOW_DEMO_LOCAL") == "1" do
-      {:pgflow, path: ".."}
-    else
-      {:pgflow, "~> 0.4.0"}
-    end
   end
 
   defp dialyzer do
