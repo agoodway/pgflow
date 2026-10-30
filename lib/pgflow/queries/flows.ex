@@ -378,7 +378,8 @@ defmodule PgFlow.Queries.Flows do
         ) :: {:ok, list(list())} | {:error, term()}
   def start_tasks(repo, flow_slug, msg_ids, worker_id, queue_name)
       when is_binary(queue_name) and queue_name != "" do
-    sql = "SELECT * FROM pgflow.start_tasks($1::text, $2::bigint[], $3::uuid, $4::text)"
+    sql =
+      "SELECT * FROM pgflow.start_tasks($1::text, $2::bigint[], $3::uuid, $4::text, NULL::text)"
 
     case SQL.query(repo, sql, [flow_slug, msg_ids, parse_uuid(worker_id), queue_name]) do
       {:ok, %{rows: rows}} -> {:ok, rows}
@@ -469,20 +470,35 @@ defmodule PgFlow.Queries.Flows do
   Ensures a flow definition matches the upstream JSON shape at worker startup.
 
   Returns `{:ok, %{status:, differences:}}` for `compiled`, `verified`, or
-  `recompiled`. Production shape mismatches return
-  `{:error, {:flow_shape_mismatch, differences}}` without deleting run history.
+  `recompiled`. Production mismatches return
+  `{:error, {:flow_shape_mismatch, differences}}` or
+  `{:error, {:flow_routing_mismatch, differences}}` without deleting run
+  history. Elixir serves flow mode, so the call always sends queue mode
+  `'flow'` and a null route map. Routing diffs are the upstream messages.
   """
   @spec ensure_flow_compiled(Ecto.Repo.t(), String.t(), map()) ::
           {:ok, %{status: String.t(), differences: [String.t()]}}
-          | {:error, {:flow_shape_mismatch, [String.t()]} | term()}
+          | {:error,
+             {:flow_shape_mismatch, [String.t()]}
+             | {:flow_routing_mismatch, [String.t()]}
+             | term()}
   def ensure_flow_compiled(repo, flow_slug, shape) when is_map(shape) do
-    sql = "SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb) AS result"
+    sql =
+      "SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb, 'flow', NULL::jsonb) AS result"
 
     case SQL.query(repo, sql, [flow_slug, shape]) do
       {:ok, %{rows: [[result]]}} -> parse_ensure_flow_compiled_result(result)
       {:ok, %{rows: []}} -> {:error, :no_result}
       {:error, error} -> {:error, error}
     end
+  end
+
+  defp parse_ensure_flow_compiled_result(%{
+         "status" => "mismatch",
+         "differences" => differences,
+         "mismatchKind" => "routing"
+       }) do
+    {:error, {:flow_routing_mismatch, normalize_differences(differences)}}
   end
 
   defp parse_ensure_flow_compiled_result(%{"status" => "mismatch", "differences" => differences}) do

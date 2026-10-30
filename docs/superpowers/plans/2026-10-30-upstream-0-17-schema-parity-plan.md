@@ -904,7 +904,7 @@ end
 - Modify: `lib/pgflow/queries/workers.ex` (`register_worker/4` ~L32)
 - Modify: `test/pgflow/queries_test.exs`, `test/pgflow/workers_test.exs`, `test/pgflow/worker/bootstrap_test.exs`
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
 ```elixir
 test "worker_stamp/0 identifies the Elixir runtime" do
@@ -928,9 +928,9 @@ end
 
   Also add a query-text test. Use the existing test that asserts SQL text in `queries_test.exs` if there is one; otherwise call the function against the DB. It must show that `start_tasks/5` sends five arguments with `$5::text` = `NULL`, and that `ensure_flow_compiled/3` sends `'flow'` and `NULL::jsonb`.
 
-- [ ] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/queries_test.exs test/pgflow/workers_test.exs test/pgflow/worker/bootstrap_test.exs`. Expected: `function pgflow.start_tasks(text, bigint[], uuid, text) does not exist` and `PgFlow.Version` undefined.
+- [x] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/queries_test.exs test/pgflow/workers_test.exs test/pgflow/worker/bootstrap_test.exs`. Expected: `function pgflow.start_tasks(text, bigint[], uuid, text) does not exist` and `PgFlow.Version` undefined.
 
-- [ ] **Step 3: Implement.**
+- [x] **Step 3: Implement.**
   - `PgFlow.Version`: `def worker_stamp, do: "elixir-" <> to_string(Application.spec(:pgflow, :vsn))`, with `@spec` and moduledoc. Upstream TS writes its package version, and the `elixir-` prefix lets operators tell runtimes apart in `pgflow.workers`.
   - `Flows.start_tasks/5`: SQL `SELECT * FROM pgflow.start_tasks($1::text, $2::bigint[], $3::uuid, $4::text, NULL::text)`. The Elixir arity is unchanged. Elixir serves flow mode only, so `step_slug` is always `NULL` (upstream's flow-mode selector).
   - `Flows.ensure_flow_compiled/3`: SQL `SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb, 'flow', NULL::jsonb)`. In `parse_ensure_flow_compiled_result/1`, keep `{:ok, %{status: "compiled" | "verified" | "recompiled"}}` and `"mismatch"` → `{:error, {:flow_shape_mismatch, differences}}`. The 0.17.2 result is `{"status", "differences", "mismatchKind"}`, and `mismatchKind` is `"shape"` or `"routing"`. Map `"mismatch"` + `"routing"` to `{:error, {:flow_routing_mismatch, differences}}` and keep `"shape"` → `{:flow_shape_mismatch, differences}`. A routing mismatch means the database copy differs only in queue mode or routes, for example a TS deployment compiled it as step mode. Add `:flow_routing_mismatch` to the `@spec` and to `FlowStarter.classify_worker_start_error/1` (~L405) as `:permanent`.
@@ -942,8 +942,8 @@ end
     - `lib/pgflow/flow/shape.ex`
     - `lib/mix/tasks/pgflow.check_schema.ex`
 
-- [ ] **Step 4: Run.** Same, then `PGFLOW_REQUIRE_DB=1 mix test`. Expected: `0 failures`, except schema-check tests that still expect the old signatures (fixed in Task 11).
-- [ ] **Step 5: Commit.** `feat: Call the pgflow 0.17.2 claim and compile signatures`
+- [x] **Step 4: Run.** Same, then `PGFLOW_REQUIRE_DB=1 mix test`. Expected: `0 failures`, except schema-check tests that still expect the old signatures (fixed in Task 11).
+- [x] **Step 5: Commit.** `feat: Call the pgflow 0.17.2 claim and compile signatures`
 
 ### Task 11: Require core V03 and helpers V07 at boot
 
@@ -1301,7 +1301,7 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 7 | c9fb63d | `PGFLOW_UPSTREAM_CHECKOUT=… mix test test/pgflow/upstream/bundle_test.exs`; `mix test test/pgflow/upstream/bundle_test.exs test/mix/tasks/pgflow.sync_upstream_test.exs`; `MIX_ENV=test mix pgflow.sync_upstream … --version 03 --check` | green | RED: three tests matched `unsupported core delta version "03"; expected 03`. The fourth called `build/4`, which did not exist yet (`UndefinedFunctionError`). GREEN: with the checkout, 13 tests, 0 failures. Without it, 9 tests, 0 failures (4 excluded). `--check` printed `pgflow core V03 output is current`. The checkout describe had been removed in Task 6 and is restored here. `slug_preflight` is `{:append_after, :set_local_lock_timeout, …}` so it runs under the lock budget; a prepend would lose the statement to `set_local`. The telemetry allowlist filters the file before the rules, which lets `replace_desc_runs_index` see `idx_runs_started_at` and keeps `net.http_post` inside `pgflow_telemetry` out of the reject guard. The fragment rewrites only the quoted `"pgflow".` qualifier to `$SCHEMA$.`, matching the V02 fragment header. The always-on V03 test now refuses an unpinned SHA. |
 | 8 | ccdd670 | `MIX_ENV=test mix pgflow.test.reset`; `PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/core_v03_upgrade_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test` | upgrade green; runtime red | RED: `UndefinedFunctionError` `nil.up/1` for version 3. GREEN: the five upgrade tests, 0 failures. Runtime suite: 1067 tests, 157 failures (86 excluded). Helpers V06 still installs the 4-arg claim beside V03's 5-arg claim, so calls are `not unique`, and schema check still requires the 2-arg `ensure_flow_compiled`. `pgflow_tests.read_and_start` passes `NULL::text` so the boot script can be created. `pg_get_function_identity_arguments` includes argument names. Downgrade runs through `Ecto.Migrator` because `Evolver.down/1` needs the migration runner. Seeded step states stay `created`; `started` requires `initial_tasks`. |
 | 9 | 00ee7ef | `MIX_ENV=test mix pgflow.test.reset`; `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/migrations/versions/v07_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/helpers_v07_upgrade_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/migrations` | green | RED: `UndefinedFunctionError` `Claim.verify_v03!/0`, `File.Error` for `v07_up.sql`/`v07_down.sql`, and `nil.up/1` for helpers version 7. GREEN: `test/pgflow/migrations` 22 tests, 0 failures (4 excluded). Upgrade file 4 tests, 0 failures. The claim test registers the worker first because `step_tasks.last_worker_id` is a foreign key; `attempts_count` stays `1`. `v06` now asserts `current_version() >= 6` and `v07` asserts `== 7`. Helper migrator versions in this file are `205`/`206` so they sort after core `203`. |
-| 10 | | | | |
+| 10 | | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/version_test.exs test/pgflow/queries_test.exs test/pgflow/workers_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/worker/bootstrap_test.exs --include destructive_schema`; `PGFLOW_REQUIRE_DB=1 mix test` | call sites green; schema red | RED: `PgFlow.Version` undefined; `register_worker(unknown, unknown, unknown)` does not exist; compile SQL had no `'flow'` or `NULL::jsonb`; routing diffs were still `{:flow_shape_mismatch, _}`. GREEN: version, queries, and workers, 52 tests, 0 failures (21 excluded). `_compare_flow_shapes` ignores `maxAttempts`, so the mismatch test changes `whenUnmet`. `:auto` sandbox ends each statement, so production mode is `set_config` inside `TestRepo.transaction/1`. Bootstrap with the destructive tag: 21 tests, 15 failures, all `{:schema_incompatible, :start_tasks}` until Task 11. Full suite: 1077 tests, 91 failures (90 excluded): 90 `{:schema_incompatible, :ensure_flow_compiled}` and the pre-existing `idx_steps_normalized_slug` seed in `slug_audit_test`. |
 | 11 | | | | |
 | 12 | | | | |
 | 13 | | | | |

@@ -2,7 +2,7 @@ defmodule PgFlow.Worker.Bootstrap do
   @moduledoc """
   Compiles and verifies flow definitions before an Elixir worker registers.
 
-  Worker startup always calls upstream `pgflow.ensure_flow_compiled/2`, preserves
+  Worker startup always calls upstream `pgflow.ensure_flow_compiled/4`, preserves
   Elixir-specific metadata such as `flow_type`, and only then registers the worker
   function with `pgflow.track_worker_function/2` using the `process` start mode.
   """

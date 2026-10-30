@@ -1,12 +1,26 @@
 defmodule PgFlow.WorkersTest do
   use PgFlow.IntegrationCase
 
+  alias PgFlow.Queries.Workers, as: WorkerQueries
   alias PgFlow.Schema.StepTask
   alias PgFlow.{Workers, WorkerSummary}
 
   defmodule UnavailableRepo do
     def exists?(_query) do
       raise DBConnection.ConnectionError, message: "database unavailable"
+    end
+  end
+
+  describe "register_worker/4" do
+    test "register_worker stamps pgflow_version" do
+      id = Ecto.UUID.generate()
+      {:ok, nil} = WorkerQueries.register_worker(TestRepo, id, "q", "elixir:M")
+
+      assert %{rows: [["elixir-" <> _]]} =
+               TestRepo.query!(
+                 "SELECT pgflow_version FROM pgflow.workers WHERE worker_id = $1",
+                 [Ecto.UUID.dump!(id)]
+               )
     end
   end
 

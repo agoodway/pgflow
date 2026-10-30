@@ -22,8 +22,8 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
 
     1. The `pgflow` schema and required tables exist
     2. Installed core and helpers versions meet the bundled minimums
-    3. Required function signatures: four-argument `start_tasks/4`,
-       `ensure_flow_compiled/2`, and no obsolete three-argument claim
+    3. Required function signatures: five-argument `start_tasks/5`,
+       `ensure_flow_compiled/4`, and no obsolete three-argument claim
     4. Queue identity constraints on `step_tasks` and `steps`
     5. Eight-field `step_task_record` layout including `attempts_count`
     6. Task status enum includes `skipped` and `cancelled`

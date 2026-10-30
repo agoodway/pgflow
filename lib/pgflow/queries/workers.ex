@@ -30,7 +30,10 @@ defmodule PgFlow.Queries.Workers do
   @spec register_worker(Ecto.Repo.t(), String.t(), String.t(), String.t()) ::
           {:ok, nil} | {:error, term()}
   def register_worker(repo, worker_id, queue_name, function_name) do
-    execute_rpc(repo, "register_worker", [parse_uuid(worker_id), queue_name, function_name],
+    execute_rpc(
+      repo,
+      "register_worker",
+      [parse_uuid(worker_id), queue_name, function_name, PgFlow.Version.worker_stamp()],
       schema: @pgflow_schema,
       mode: :void
     )

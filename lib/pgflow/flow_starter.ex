@@ -403,6 +403,7 @@ defmodule PgFlow.FlowStarter do
   end
 
   defp classify_worker_start_error({:flow_shape_mismatch, _}), do: :permanent
+  defp classify_worker_start_error({:flow_routing_mismatch, _}), do: :permanent
   defp classify_worker_start_error({:schema_incompatible, _}), do: :permanent
   defp classify_worker_start_error(reason), do: classify_db_error(reason)
 
