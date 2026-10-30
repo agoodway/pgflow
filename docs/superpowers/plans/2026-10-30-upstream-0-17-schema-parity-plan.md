@@ -1022,17 +1022,17 @@ Helpers `recover_stalled_tasks` (V04/V05) and `prune_data_older_than` (V05) must
 - Modify: `lib/mix/tasks/pgflow.setup.ex` (~L96–102 file/module naming; ~L192–228 template)
 - Modify: `test/mix/tasks/pgflow.setup_test.exs`
 
-- [ ] **Step 1: Write the failing test.** With `--upgrade` in a tmp project:
+- [x] **Step 1: Write the failing test.** With `--upgrade` in a tmp project:
   - the generated file matches `~r/\d{14}_upgrade_pgflow_core_v03_helpers_v07\.exs$/`
   - the module is `<Repo>.Migrations.UpgradePgflowCoreV03HelpersV07`
   - the body calls `PgFlow.Migration.up()` then `PgFlow.HelpersMigration.up()`
   - the moduledoc contains `mix pgflow.audit_slugs` and `stop every worker`
 
   A second test: when an `*_upgrade_pgflow.exs` (the 0.4/0.5 name) already exists, generation still succeeds and does not touch the old file.
-- [ ] **Step 2: Run.** `mix test test/mix/tasks/pgflow.setup_test.exs`. Expected: the name assertion fails.
-- [ ] **Step 3: Implement.** Derive the suffix from `PgFlow.Migration.current_version()` and `PgFlow.HelpersMigration.current_version()`, formatted `v%02d`. Keep `--dashboard` behaviour. Add the stop-and-drain checklist (spec §6, steps 1–6, one line each) to the template moduledoc.
-- [ ] **Step 4: Run.** Same. Expected: `0 failures`.
-- [ ] **Step 5: Commit.** `feat: Version the generated pgflow upgrade wrapper`
+- [x] **Step 2: Run.** `mix test test/mix/tasks/pgflow.setup_test.exs`. Expected: the name assertion fails.
+- [x] **Step 3: Implement.** Derive the suffix from `PgFlow.Migration.current_version()` and `PgFlow.HelpersMigration.current_version()`, formatted `v%02d`. Keep `--dashboard` behaviour. Add the stop-and-drain checklist (spec §6, steps 1–6, one line each) to the template moduledoc.
+- [x] **Step 4: Run.** Same. Expected: `0 failures`.
+- [x] **Step 5: Commit.** `feat: Version the generated pgflow upgrade wrapper`
 
 ### Task 15: Test-support fixtures target V03/V07
 
@@ -1304,8 +1304,8 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 10 | b60866f | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/version_test.exs test/pgflow/queries_test.exs test/pgflow/workers_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/worker/bootstrap_test.exs --include destructive_schema`; `PGFLOW_REQUIRE_DB=1 mix test` | call sites green; schema red | RED: `PgFlow.Version` undefined; `register_worker(unknown, unknown, unknown)` does not exist; compile SQL had no `'flow'` or `NULL::jsonb`; routing diffs were still `{:flow_shape_mismatch, _}`. GREEN: version, queries, and workers, 52 tests, 0 failures (21 excluded). `_compare_flow_shapes` ignores `maxAttempts`, so the mismatch test changes `whenUnmet`. `:auto` sandbox ends each statement, so production mode is `set_config` inside `TestRepo.transaction/1`. Bootstrap with the destructive tag: 21 tests, 15 failures, all `{:schema_incompatible, :start_tasks}` until Task 11. Full suite: 1077 tests, 91 failures (90 excluded): 90 `{:schema_incompatible, :ensure_flow_compiled}` and the pre-existing `idx_steps_normalized_slug` seed in `slug_audit_test`. |
 | 11 | 8147ef5 | `PGFLOW_REQUIRE_DB=1 mix test`; `PGFLOW_REQUIRE_DB=1 mix test --only migration` | green | Runtime checks require the 5-arg claim, 4-arg compile, and 4-arg `register_worker`, and reject the legacy overloads. Helpers floor is `HelpersMigration.current_version()`. Ecto schemas record `flows.queue_mode` and `workers.pgflow_version`. Bootstrap stops reinstalling the 2-arg compiler. Slug audit drops `idx_steps_normalized_slug` inside the test transaction so `Fetch`/`fetch` can still be seeded. Latest-install assertions are core 3 / helpers 7; the V02→V06 path stays pinned. Default suite: 1077 tests, 0 failures (91 excluded). Migration suite: 51 tests, 0 failures. |
 | 12 | ca566b1 | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/worker/bootstrap_test.exs test/pgflow/flow_starter_test.exs --include destructive_schema`; `PGFLOW_REQUIRE_DB=1 mix test` | green | RED: `Flows.queue_mode/2` undefined; local `prepare/2` recompiled the step-mode flow (`compilation_status: "recompiled"`); FlowStarter reached `:succeeded`. GREEN: bootstrap and starter files 44 tests, 0 failures. The pre-check runs before `ensure_flow_compiled`, with `is_local()` true, and `queue_mode` stays `step`. No `worker_functions` row is written. FlowStarter classifies `{:unsupported_queue_mode, _, _}` as permanent, schedules no retry, and logs the slug plus `docs/UPGRADING_UPSTREAM_2026_10.md`. Default suite: 1078 tests, 0 failures (93 excluded). The two new bootstrap tests are `:destructive_schema`, so the default run excludes them; `--include destructive_schema` is required for that file. |
-| 13 | | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/operational_routes_test.exs` | green | No V07 overlay. Helpers V05 already resets visibility and deletes archives from `step_tasks.queue_name` / `steps.queue_name`. A compiled step-mode flow has no default `pgmq.q_<flow>` queue. Recovery of one stalled `process` task returned `[[1, 1]]`, left the message visible on `step_mode_recovery__process`, and did not create the flow queue. Prune of an old completed run deleted that run and the archived messages on both `step_mode_prune__process` and `step_mode_prune__deliver`. File: 11 tests, 0 failures. |
-| 14 | | | | |
+| 13 | 91fc26a | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/operational_routes_test.exs` | green | No V07 overlay. Helpers V05 already resets visibility and deletes archives from `step_tasks.queue_name` / `steps.queue_name`. A compiled step-mode flow has no default `pgmq.q_<flow>` queue. Recovery of one stalled `process` task returned `[[1, 1]]`, left the message visible on `step_mode_recovery__process`, and did not create the flow queue. Prune of an old completed run deleted that run and the archived messages on both `step_mode_prune__process` and `step_mode_prune__deliver`. File: 11 tests, 0 failures. |
+| 14 | | `mix test test/mix/tasks/pgflow.setup_test.exs` | green | RED: generated `20261030234408_upgrade_pgflow.exs`. GREEN: 6 tests, 0 failures. The filename and module come from `Migration.current_version()` and `HelpersMigration.current_version()` as `v%02d`. `--dashboard` still appends `PgFlowDashboard.Migration.up()`. An existing `*_upgrade_pgflow.exs` is left unchanged. The moduledoc lists stop-and-drain steps 1–6, including `mix pgflow.audit_slugs` and `stop every worker`. |
 | 15 | | | | |
 | 16 | | | | |
 | 17 | | | | |
