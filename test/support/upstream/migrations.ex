@@ -38,6 +38,16 @@ defmodule PgFlow.Upstream.HelpersV06Migration do
   def down, do: PgFlow.HelpersMigration.down(version: 5)
 end
 
+defmodule PgFlow.Upstream.HelpersV07Migration do
+  @moduledoc false
+  use Ecto.Migration
+
+  @doc "Installs the 0.17.2 claim and worker-version helper."
+  def up, do: PgFlow.HelpersMigration.up(version: 7)
+  @doc "Exercises the helpers V07 forward-only rollback guard."
+  def down, do: PgFlow.HelpersMigration.down(version: 6)
+end
+
 defmodule PgFlow.Upstream.HelpersFullChainMigration do
   @moduledoc false
   use Ecto.Migration

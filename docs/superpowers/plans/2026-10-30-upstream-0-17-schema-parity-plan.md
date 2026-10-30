@@ -862,7 +862,7 @@ end
 - Modify: `test/support/upstream/migrations.ex` (add `PgFlow.Upstream.HelpersV07Migration`: `up(version: 7)` / `down(version: 6)`)
 - Create: `test/pgflow/migrations/versions/v07_test.exs`, `test/pgflow/upstream/helpers_v07_upgrade_test.exs`
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
   - `v07_test.exs` (mirror `v05_test.exs`):
     - `PgFlow.Upstream.Claim.verify_v03!()` returns `:ok`
     - `v07_up.sql` contains the expanded fragment exactly once (with `$SCHEMA$` intact)
@@ -877,9 +877,9 @@ end
     3. Calling `pgflow.register_worker(gen_random_uuid(), 'q', 'elixir:Mod', 'elixir-0.6.0')` writes `pgflow_version = 'elixir-0.6.0'`. A second call with the same id only bumps `last_heartbeat_at` and keeps `started_at`.
     4. Calling `pgflow.start_tasks(flow, ids, worker, queue, NULL)` on a seeded flow-mode task returns `attempts_count = 1`.
 
-- [ ] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/migrations/versions/v07_test.exs` and `PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/helpers_v07_upgrade_test.exs`. Expected: missing files/functions.
+- [x] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/migrations/versions/v07_test.exs` and `PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/helpers_v07_upgrade_test.exs`. Expected: missing files/functions.
 
-- [ ] **Step 3: Implement.**
+- [x] **Step 3: Implement.**
   - `PgFlow.Upstream.Claim`: add `@fragment_v03_path "priv/pgflow_helpers/sql/fragments/start_tasks_eight_column_v03.sql"` and `@checksum_v03` (set it to `sha256sum` of the file generated in Task 7). Add `eight_column_start_tasks_v03_sql/0`, `checksum_v03/0` and `verify_v03!/0`. Keep the V02 functions; V05 still uses them.
   - `v07_up.sql`, as `--SPLIT--` separated statements:
     1. A DO-block prerequisite in the V05 style. If no `pgflow.flows.queue_mode` column exists or `to_regprocedure('pgflow.ensure_flow_compiled(text,jsonb,text,jsonb)') IS NULL`, it raises `PgFlow helpers V07 requires core V03. Run PgFlow.Migration.up/0 first.`.
@@ -893,8 +893,8 @@ end
   - `PgFlow.HelpersMigration`: append `PgFlow.Migrations.Versions.V07`.
   - Update `lib/mix/tasks/pgflow.gen.helpers_migration.ex` moduledoc L27 to `register_worker(uuid, text, text, text)`.
 
-- [ ] **Step 4: Reset and run.** `MIX_ENV=test mix pgflow.test.reset`, then both commands from Step 2, then `mix test test/pgflow/migrations`. Expected: `0 failures`.
-- [ ] **Step 5: Commit.** `feat: Add helpers V07 claim and worker version overlays`
+- [x] **Step 4: Reset and run.** `MIX_ENV=test mix pgflow.test.reset`, then both commands from Step 2, then `mix test test/pgflow/migrations`. Expected: `0 failures`.
+- [x] **Step 5: Commit.** `feat: Add helpers V07 claim and worker version overlays`
 
 ### Task 10: Runtime calls use the 0.17.2 signatures
 
@@ -1300,7 +1300,7 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 6 | d3c3e6c | `mix test test/pgflow/upstream/bundle_test.exs test/mix/tasks/pgflow.sync_upstream_test.exs`; `mix test test/pgflow/upstream` | green | RED: `Bundle.build/3` undefined. `--version 02` still said `refusing unpinned upstream SHA`; `--version 09` said `expected 02`. GREEN: `test/pgflow/upstream` 57 tests, 0 failures (20 excluded). No change under `priv/pgflow_core/sql/versions/v02/`. The old-pin rebuild tests needed checkout `94490709` and were removed; the frozen checksum and the published-version refusal replace them. `build/3` with `"03"` stays `unsupported ... expected 03` until `Spec.V03` exists. |
 | 7 | c9fb63d | `PGFLOW_UPSTREAM_CHECKOUT=… mix test test/pgflow/upstream/bundle_test.exs`; `mix test test/pgflow/upstream/bundle_test.exs test/mix/tasks/pgflow.sync_upstream_test.exs`; `MIX_ENV=test mix pgflow.sync_upstream … --version 03 --check` | green | RED: three tests matched `unsupported core delta version "03"; expected 03`. The fourth called `build/4`, which did not exist yet (`UndefinedFunctionError`). GREEN: with the checkout, 13 tests, 0 failures. Without it, 9 tests, 0 failures (4 excluded). `--check` printed `pgflow core V03 output is current`. The checkout describe had been removed in Task 6 and is restored here. `slug_preflight` is `{:append_after, :set_local_lock_timeout, …}` so it runs under the lock budget; a prepend would lose the statement to `set_local`. The telemetry allowlist filters the file before the rules, which lets `replace_desc_runs_index` see `idx_runs_started_at` and keeps `net.http_post` inside `pgflow_telemetry` out of the reject guard. The fragment rewrites only the quoted `"pgflow".` qualifier to `$SCHEMA$.`, matching the V02 fragment header. The always-on V03 test now refuses an unpinned SHA. |
 | 8 | ccdd670 | `MIX_ENV=test mix pgflow.test.reset`; `PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/core_v03_upgrade_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test` | upgrade green; runtime red | RED: `UndefinedFunctionError` `nil.up/1` for version 3. GREEN: the five upgrade tests, 0 failures. Runtime suite: 1067 tests, 157 failures (86 excluded). Helpers V06 still installs the 4-arg claim beside V03's 5-arg claim, so calls are `not unique`, and schema check still requires the 2-arg `ensure_flow_compiled`. `pgflow_tests.read_and_start` passes `NULL::text` so the boot script can be created. `pg_get_function_identity_arguments` includes argument names. Downgrade runs through `Ecto.Migrator` because `Evolver.down/1` needs the migration runner. Seeded step states stay `created`; `started` requires `initial_tasks`. |
-| 9 | | | | |
+| 9 | | `MIX_ENV=test mix pgflow.test.reset`; `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/migrations/versions/v07_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/helpers_v07_upgrade_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/migrations` | green | RED: `UndefinedFunctionError` `Claim.verify_v03!/0`, `File.Error` for `v07_up.sql`/`v07_down.sql`, and `nil.up/1` for helpers version 7. GREEN: `test/pgflow/migrations` 22 tests, 0 failures (4 excluded). Upgrade file 4 tests, 0 failures. The claim test registers the worker first because `step_tasks.last_worker_id` is a foreign key; `attempts_count` stays `1`. `v06` now asserts `current_version() >= 6` and `v07` asserts `== 7`. Helper migrator versions in this file are `205`/`206` so they sort after core `203`. |
 | 10 | | | | |
 | 11 | | | | |
 | 12 | | | | |
