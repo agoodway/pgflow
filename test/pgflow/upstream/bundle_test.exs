@@ -43,9 +43,10 @@ defmodule PgFlow.Upstream.BundleTest do
              Bundle.build("/nonexistent", "deadbeef", "02")
   end
 
-  test "build/3 reports V03 until its spec module is loaded" do
-    assert {:error, "unsupported core delta version \"03\"; expected 03"} =
-             Bundle.build("/nonexistent", "deadbeef", "03")
+  test "build/3 refuses an unpinned SHA for V03" do
+    assert {:error, message} = Bundle.build("/nonexistent", "deadbeef", "03")
+    assert message =~ "refusing unpinned upstream SHA"
+    assert message =~ "baa9e43f5f9122133deacbc3e8ffc80e284b4f50"
   end
 
   describe "committed artifacts" do
@@ -108,4 +109,50 @@ defmodule PgFlow.Upstream.BundleTest do
   end
 
   defp sha256(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+
+  describe "with PGFLOW_UPSTREAM_CHECKOUT" do
+    @describetag :upstream_checkout
+    @sha "baa9e43f5f9122133deacbc3e8ffc80e284b4f50"
+
+    setup do
+      %{checkout: System.fetch_env!("PGFLOW_UPSTREAM_CHECKOUT")}
+    end
+
+    test "V03 build is deterministic and matches committed output", %{checkout: checkout} do
+      {:ok, a} = Bundle.build(checkout, @sha, "03")
+      {:ok, b} = Bundle.build(checkout, @sha, "03")
+      assert a.sql == b.sql
+      assert a.sql == File.read!("priv/pgflow_core/sql/versions/v03/v03_up.sql")
+    end
+
+    test "V03 records every rule with its exact count", %{checkout: checkout} do
+      {:ok, %{manifest: manifest}} = Bundle.build(checkout, @sha, "03")
+      counts = Map.new(manifest["transformations"], &{&1["rule"], &1["matched"]})
+
+      assert counts == %{
+               "slug_preflight" => 1,
+               "set_local_lock_timeout" => 1,
+               "omit_applied_in_v02" => 11,
+               "drop_if_exists" => 1,
+               "replace_desc_runs_index" => 1,
+               "step_task_record_dispatch" => 1,
+               "telemetry_pgflow_ddl_allowlist" => 4,
+               "reject_net_http_post" => 0
+             }
+    end
+
+    test "V03 output never references pgflow_telemetry, cron or net", %{checkout: checkout} do
+      {:ok, %{sql: sql}} = Bundle.build(checkout, @sha, "03")
+      refute sql =~ "pgflow_telemetry"
+      refute sql =~ ~r/\bcron\./
+      refute sql =~ "net.http_post"
+      assert sql =~ "SET LOCAL lock_timeout = '10s'"
+      refute sql =~ ~r/^SET lock_timeout/m
+    end
+
+    test "omit_applied_in_v02 fails when a V02 counterpart is missing", %{checkout: checkout} do
+      assert {:error, message} = Bundle.build(checkout, @sha, "03", v02_sql: "SELECT 1")
+      assert message =~ "omit_applied_in_v02: V02 counterpart missing for"
+    end
+  end
 end

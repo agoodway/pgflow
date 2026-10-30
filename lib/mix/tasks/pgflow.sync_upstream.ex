@@ -64,13 +64,33 @@ defmodule Mix.Tasks.Pgflow.SyncUpstream do
   defp output_files(version, bundle) do
     directory = Path.join(File.cwd!(), "priv/pgflow_core/sql/versions/v#{version}")
 
-    %{
+    files = %{
       Path.join(directory, "v#{version}_up.sql") => bundle.sql,
       Path.join(directory, "v#{version}_down.sql") => down_sql(version),
       Path.join(directory, "v#{version}_manifest.json") =>
         Jason.encode!(bundle.manifest, pretty: true) <> "\n"
     }
+
+    maybe_fragment(version, files, bundle)
   end
+
+  defp maybe_fragment("03", files, bundle) do
+    fragment = Map.get(bundle, :fragment)
+
+    if is_binary(fragment) do
+      path =
+        Path.join(
+          File.cwd!(),
+          "priv/pgflow_helpers/sql/fragments/start_tasks_eight_column_v03.sql"
+        )
+
+      Map.put(files, path, fragment)
+    else
+      Mix.raise("core V03 bundle is missing the eight-column start_tasks fragment")
+    end
+  end
+
+  defp maybe_fragment(_version, files, _bundle), do: files
 
   defp down_sql(version) do
     """

@@ -19,24 +19,33 @@ defmodule PgFlow.Upstream.Bundle do
   @spec published_versions() :: [String.t()]
   def published_versions, do: @published
 
+  @type bundle :: %{
+          required(:sql) => String.t(),
+          required(:manifest) => map(),
+          optional(:fragment) => String.t()
+        }
+
   @doc """
   Builds SQL and a provenance manifest for one core delta version.
 
   Published versions and unknown versions return `{:error, message}` without
   reading the checkout.
+
+  `opts` accepts `:v02_sql`, the core V02 script used to prove omission pairs
+  still describe the published SQL. The default is the committed `v02_up.sql`.
   """
-  @spec build(Path.t(), String.t(), String.t()) ::
-          {:ok, %{sql: String.t(), manifest: map()}} | {:error, String.t()}
-  def build(checkout, sha, version)
-      when is_binary(checkout) and is_binary(sha) and is_binary(version) do
+  @spec build(Path.t(), String.t(), String.t(), keyword()) ::
+          {:ok, bundle()} | {:error, String.t()}
+  def build(checkout, sha, version, opts \\ [])
+      when is_binary(checkout) and is_binary(sha) and is_binary(version) and is_list(opts) do
     with :ok <- validate_version(version),
          spec = Map.fetch!(@specs, version),
          :ok <- verify_sha(sha, spec.pinned_sha()),
          :ok <- verify_checkout_head(checkout, sha),
          {:ok, sources} <- read_verified_sources(checkout, spec),
-         {:ok, statements, counts} <- transform_sources(sources, spec.rules()) do
+         {:ok, statements, counts, fragment} <- transform_sources(sources, spec, opts) do
       sql = Splitter.join(statements) <> "\n"
-      {:ok, %{sql: sql, manifest: manifest(spec, sources, statements, counts, sql)}}
+      {:ok, bundle_result(spec, sources, statements, counts, sql, fragment)}
     end
   end
 
@@ -70,45 +79,68 @@ defmodule PgFlow.Upstream.Bundle do
   """
   @spec shape_dispatch(String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def shape_dispatch(seven_column_sql) do
-    with {:ok, eight_column_sql} <- add_attempts_count(seven_column_sql) do
-      {:ok,
-       """
-       DO $pgflow_shape_dispatch$
-       DECLARE
-         attribute_names text[];
-         attribute_types text[];
-       BEGIN
-         SELECT
-           array_agg(attribute.attname ORDER BY attribute.attnum),
-           array_agg(format_type(attribute.atttypid, attribute.atttypmod) ORDER BY attribute.attnum)
-         INTO attribute_names, attribute_types
-         FROM pg_type AS composite
-         JOIN pg_class AS relation ON relation.oid = composite.typrelid
-         JOIN pg_attribute AS attribute ON attribute.attrelid = relation.oid
-         WHERE composite.oid = 'pgflow.step_task_record'::regtype
-           AND attribute.attnum > 0
-           AND NOT attribute.attisdropped;
-
-         IF attribute_names = #{sql_array(@seven_names)}
-            AND attribute_types = #{sql_array(@seven_types)} THEN
-           EXECUTE $pgflow_seven$
-       #{seven_column_sql}
-       $pgflow_seven$;
-         ELSIF attribute_names = #{sql_array(@eight_names)}
-               AND attribute_types = #{sql_array(@eight_types)} THEN
-           EXECUTE $pgflow_eight$
-       #{eight_column_sql}
-       $pgflow_eight$;
-         ELSE
-           RAISE EXCEPTION 'unsupported pgflow.step_task_record layout: names=%, types=%',
-             attribute_names, attribute_types
-             USING HINT = 'Expected the seven-column upstream layout or its eight-column Elixir attempts_count extension.';
-         END IF;
-       END
-       $pgflow_shape_dispatch$
-       """
-       |> String.trim()}
+    with {:ok, wrapped, _meta} <- shape_dispatch_parts(seven_column_sql) do
+      {:ok, wrapped}
     end
+  end
+
+  @doc """
+  Same dispatch as `shape_dispatch/1`, plus the eight-column function body.
+
+  The fragment is that body with the quoted `"pgflow".` qualifier rewritten to
+  `$SCHEMA$.`, which is the helpers placeholder used by the V02 fragment.
+  """
+  @spec shape_dispatch_parts(String.t()) ::
+          {:ok, String.t(), %{fragment: String.t()}} | {:error, String.t()}
+  def shape_dispatch_parts(seven_column_sql) do
+    with {:ok, eight_column_sql} <- add_attempts_count(seven_column_sql) do
+      {:ok, wrap_dispatch(seven_column_sql, eight_column_sql),
+       %{fragment: eight_column_fragment(eight_column_sql)}}
+    end
+  end
+
+  defp wrap_dispatch(seven_column_sql, eight_column_sql) do
+    """
+    DO $pgflow_shape_dispatch$
+    DECLARE
+      attribute_names text[];
+      attribute_types text[];
+    BEGIN
+      SELECT
+        array_agg(attribute.attname ORDER BY attribute.attnum),
+        array_agg(format_type(attribute.atttypid, attribute.atttypmod) ORDER BY attribute.attnum)
+      INTO attribute_names, attribute_types
+      FROM pg_type AS composite
+      JOIN pg_class AS relation ON relation.oid = composite.typrelid
+      JOIN pg_attribute AS attribute ON attribute.attrelid = relation.oid
+      WHERE composite.oid = 'pgflow.step_task_record'::regtype
+        AND attribute.attnum > 0
+        AND NOT attribute.attisdropped;
+
+      IF attribute_names = #{sql_array(@seven_names)}
+         AND attribute_types = #{sql_array(@seven_types)} THEN
+        EXECUTE $pgflow_seven$
+    #{seven_column_sql}
+    $pgflow_seven$;
+      ELSIF attribute_names = #{sql_array(@eight_names)}
+            AND attribute_types = #{sql_array(@eight_types)} THEN
+        EXECUTE $pgflow_eight$
+    #{eight_column_sql}
+    $pgflow_eight$;
+      ELSE
+        RAISE EXCEPTION 'unsupported pgflow.step_task_record layout: names=%, types=%',
+          attribute_names, attribute_types
+          USING HINT = 'Expected the seven-column upstream layout or its eight-column Elixir attempts_count extension.';
+      END IF;
+    END
+    $pgflow_shape_dispatch$
+    """
+    |> String.trim()
+  end
+
+  defp eight_column_fragment(sql) do
+    fragment = String.replace(sql, ~s("pgflow".), "$SCHEMA$.")
+    if String.ends_with?(fragment, "\n"), do: fragment, else: fragment <> "\n"
   end
 
   defp unsupported_version(version) do
@@ -170,50 +202,102 @@ defmodule PgFlow.Upstream.Bundle do
     end
   end
 
-  defp transform_sources(sources, rules) do
-    statements = Enum.flat_map(sources, fn {_file, source} -> Splitter.split(source) end)
-    apply_rules(statements, rules)
+  defp transform_sources(sources, spec, opts) do
+    rules = spec.rules()
+    {statements, seeded} = prepare_statements(sources, spec)
+
+    with :ok <- verify_omissions(spec, statements, opts) do
+      apply_rules(statements, rules, seeded)
+    end
   end
 
-  defp apply_rules(statements, rules) do
-    counts = Map.new(rules, &{&1.id, 0})
+  defp prepare_statements(sources, spec) do
+    modes = file_modes(spec)
+
+    Enum.flat_map_reduce(sources, %{}, fn {file, source}, counts ->
+      filter_source(Splitter.split(source), Map.get(modes, file), counts)
+    end)
+  end
+
+  defp filter_source(statements, nil, counts), do: {statements, counts}
+
+  defp filter_source(statements, %{rule: rule, keep: keep}, counts) do
+    kept = Enum.filter(statements, keep)
+    {kept, Map.put(counts, rule, length(kept))}
+  end
+
+  defp file_modes(spec) do
+    if function_exported?(spec, :file_modes, 0), do: spec.file_modes(), else: %{}
+  end
+
+  defp verify_omissions(spec, statements, opts) do
+    if function_exported?(spec, :verify_omissions, 2) do
+      spec.verify_omissions(statements, opts)
+    else
+      :ok
+    end
+  end
+
+  defp apply_rules(statements, rules, seeded) do
+    counts = Map.new(rules, &initial_count(&1, seeded))
 
     statements
-    |> Enum.reduce_while({:ok, [], counts}, fn statement, {:ok, acc, counts} ->
-      reduce_statement(statement, rules, acc, counts)
+    |> Enum.reduce_while({:ok, [], counts, nil}, fn statement, {:ok, acc, counts, fragment} ->
+      reduce_statement(statement, rules, acc, counts, fragment)
     end)
     |> validate_rule_counts(rules)
   end
 
-  defp reduce_statement(statement, rules, acc, counts) do
+  defp initial_count(rule, seeded), do: {rule.id, Map.get(seeded, rule.id, 0)}
+
+  defp reduce_statement(statement, rules, acc, counts, fragment) do
     case Enum.find(rules, & &1.match.(statement)) do
       nil ->
-        {:cont, {:ok, acc ++ [statement], counts}}
+        {:cont, {:ok, acc ++ [statement], counts, fragment}}
 
       rule ->
         counts = Map.update!(counts, rule.id, &(&1 + 1))
-
-        case apply_action(rule, statement) do
-          :omit ->
-            {:cont, {:ok, acc, counts}}
-
-          {:ok, replacement} when is_binary(replacement) ->
-            {:cont, {:ok, acc ++ [replacement], counts}}
-
-          {:ok, replacements} when is_list(replacements) ->
-            {:cont, {:ok, acc ++ replacements, counts}}
-
-          {:error, _message} = error ->
-            {:halt, error}
-        end
+        dispatch_action(rule, rules, statement, acc, counts, fragment)
     end
+  end
+
+  defp dispatch_action(rule, rules, statement, acc, counts, fragment) do
+    case apply_action(rule, statement) do
+      :omit ->
+        {:cont, {:ok, acc, counts, fragment}}
+
+      {:ok, replacement, %{fragment: next_fragment}} when is_binary(replacement) ->
+        {extra, counts} = appended_sql(rules, rule.id, counts)
+        {:cont, {:ok, acc ++ [replacement | extra], counts, next_fragment}}
+
+      {:ok, replacement} when is_binary(replacement) ->
+        {extra, counts} = appended_sql(rules, rule.id, counts)
+        {:cont, {:ok, acc ++ [replacement | extra], counts, fragment}}
+
+      {:ok, replacements} when is_list(replacements) ->
+        {extra, counts} = appended_sql(rules, rule.id, counts)
+        {:cont, {:ok, acc ++ replacements ++ extra, counts, fragment}}
+
+      {:error, _message} = error ->
+        {:halt, error}
+    end
+  end
+
+  defp appended_sql(rules, rule_id, counts) do
+    Enum.flat_map_reduce(rules, counts, fn
+      %{id: id, action: {:append_after, ^rule_id, sql}}, counts ->
+        {[sql], Map.update!(counts, id, &(&1 + 1))}
+
+      _rule, counts ->
+        {[], counts}
+    end)
   end
 
   defp validate_rule_counts({:error, _} = error, _rules), do: error
 
-  defp validate_rule_counts({:ok, statements, counts}, rules) do
+  defp validate_rule_counts({:ok, statements, counts, fragment}, rules) do
     case count_error(rules, counts) do
-      nil -> {:ok, statements, counts}
+      nil -> {:ok, statements, counts, fragment}
       message -> {:error, message}
     end
   end
@@ -240,6 +324,15 @@ defmodule PgFlow.Upstream.Bundle do
     {:ok, [sql, statement]}
   end
 
+  defp apply_action(%{action: {:append_after, _id, _sql}}, _statement) do
+    {:error, "append_after rules are attached to another rule and must not match statements"}
+  end
+
+  defp bundle_result(spec, sources, statements, counts, sql, fragment) do
+    result = %{sql: sql, manifest: manifest(spec, sources, statements, counts, sql)}
+    if is_binary(fragment), do: Map.put(result, :fragment, fragment), else: result
+  end
+
   defp manifest(spec, sources, statements, counts, sql) do
     transformations =
       Enum.map(spec.rules(), fn rule ->
@@ -252,13 +345,32 @@ defmodule PgFlow.Upstream.Bundle do
 
     spec.manifest_notes()
     |> Map.merge(%{
-      "files" => spec.files(),
+      "files" => manifest_files(spec),
       "output_sha256" => sha256(sql),
       "source_sha256" => Map.new(sources, fn {file, source} -> {file, sha256(source)} end),
       "statement_count" => length(statements),
       "transformations" => transformations,
       "upstream_sha" => spec.pinned_sha()
     })
+  end
+
+  defp manifest_files(spec) do
+    if function_exported?(spec, :file_modes, 0) do
+      modes = spec.file_modes()
+      Enum.map(spec.files(), &manifest_file(&1, modes))
+    else
+      spec.files()
+    end
+  end
+
+  defp manifest_file(file, modes) do
+    mode =
+      case Map.get(modes, file) do
+        %{mode: mode} -> Atom.to_string(mode)
+        nil -> "whole"
+      end
+
+    %{"mode" => mode, "name" => file}
   end
 
   defp add_attempts_count(sql) do
