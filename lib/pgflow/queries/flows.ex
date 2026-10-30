@@ -467,6 +467,23 @@ defmodule PgFlow.Queries.Flows do
   end
 
   @doc """
+  Returns the stored queue mode for a compiled flow.
+
+  Unknown slugs return `{:ok, nil}`. Elixir serves flow mode only, so startup
+  refuses any other stored mode before it calls `ensure_flow_compiled/3`.
+  """
+  @spec queue_mode(Ecto.Repo.t(), String.t()) :: {:ok, String.t() | nil} | {:error, term()}
+  def queue_mode(repo, flow_slug) do
+    sql = "SELECT queue_mode FROM pgflow.flows WHERE flow_slug = $1"
+
+    case SQL.query(repo, sql, [flow_slug]) do
+      {:ok, %{rows: [[mode]]}} -> {:ok, mode}
+      {:ok, %{rows: []}} -> {:ok, nil}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  @doc """
   Ensures a flow definition matches the upstream JSON shape at worker startup.
 
   Returns `{:ok, %{status:, differences:}}` for `compiled`, `verified`, or

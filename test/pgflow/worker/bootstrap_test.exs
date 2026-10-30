@@ -330,6 +330,43 @@ defmodule PgFlow.Worker.BootstrapTest do
     end
   end
 
+  describe "Flows.queue_mode/2" do
+    test "returns the stored mode after compile and nil for an unknown slug" do
+      definition = BootstrapCompileFlow.__pgflow_definition__()
+      shape = Shape.from_definition(definition)
+
+      assert {:ok, %{status: "compiled"}} =
+               Flows.ensure_flow_compiled(TestRepo, "bootstrap_compile_flow", shape)
+
+      assert {:ok, "flow"} = Flows.queue_mode(TestRepo, "bootstrap_compile_flow")
+      assert {:ok, nil} = Flows.queue_mode(TestRepo, "missing_queue_mode_flow")
+    end
+  end
+
+  describe "step-mode refusal" do
+    test "refuses a step-mode flow before compilation and leaves the mode unchanged" do
+      definition = BootstrapCompileFlow.__pgflow_definition__()
+      slug = "bootstrap_compile_flow"
+      shape = Shape.from_definition(definition)
+
+      TestRepo.query!(
+        "SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb, 'step', $3::jsonb)",
+        [slug, shape, step_route_map(slug, shape)]
+      )
+
+      set_local_mode!()
+      assert %{rows: [[true]]} = TestRepo.query!("SELECT pgflow.is_local()")
+
+      assert {:error, {:unsupported_queue_mode, ^slug, "step"}} =
+               Bootstrap.prepare(TestRepo, definition)
+
+      assert %{rows: [["step"]]} =
+               TestRepo.query!("SELECT queue_mode FROM pgflow.flows WHERE flow_slug = $1", [slug])
+
+      assert worker_function_count("elixir:PgFlow.Worker.BootstrapTest.BootstrapCompileFlow") == 0
+    end
+  end
+
   describe "Flows.ensure_flow_compiled/3" do
     test "returns compiled status for a missing flow" do
       shape = BootstrapCompileFlow.__pgflow_definition__() |> Shape.from_definition()
@@ -534,6 +571,12 @@ defmodule PgFlow.Worker.BootstrapTest do
       ])
 
     status
+  end
+
+  defp step_route_map(flow_slug, shape) do
+    Enum.map(shape["steps"], fn step ->
+      %{"stepSlug" => step["slug"], "queueName" => "#{flow_slug}__#{step["slug"]}"}
+    end)
   end
 
   defp worker_function_count(function_name) do

@@ -983,22 +983,22 @@ Elixir supports flow mode only (out of scope: an Elixir step-mode worker). A TS 
 - Modify: `lib/pgflow/flow_starter.ex` (permanent-error classification)
 - Modify: `test/pgflow/worker/bootstrap_test.exs`, `test/pgflow/flow_starter_test.exs`
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
   - `Flows.queue_mode(repo, "simple_flow")` returns `{:ok, "flow"}` after compile, and `{:ok, nil}` for an unknown slug.
   - Bootstrap: compile `SimpleFlow`, `UPDATE pgflow.flows SET queue_mode = 'step'` (with the route rows the 0.17.2 constraints require; if `_assert_step_queue_available` blocks a plain update, compile it as step mode through `pgflow.ensure_flow_compiled(slug, shape, 'step', route_map)` using the route map from upstream's `queue_mode/route_map_verification.test.sql`). Then `Bootstrap.prepare/2` returns `{:error, {:unsupported_queue_mode, "simple_flow", "step"}}` and no worker row is registered.
   - FlowStarter treats `{:unsupported_queue_mode, _, _}` as permanent: no retry loop, and a `Logger.error` that names the flow and points at `docs/UPGRADING_UPSTREAM_2026_10.md`.
 
-- [ ] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/worker/bootstrap_test.exs test/pgflow/flow_starter_test.exs`. Expected: `queue_mode/2` undefined.
+- [x] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/worker/bootstrap_test.exs test/pgflow/flow_starter_test.exs`. Expected: `queue_mode/2` undefined.
 
-- [ ] **Step 3: Implement.**
+- [x] **Step 3: Implement.**
   - `Flows.queue_mode/2`: `SELECT queue_mode FROM pgflow.flows WHERE flow_slug = $1`.
   - In `Bootstrap.prepare/2`, **before** `ensure_flow_compiled`, do `{:ok, mode} <- Flows.queue_mode(repo, slug)` and `:ok <- require_flow_mode(slug, mode)`. `require_flow_mode(_slug, mode) when mode in [nil, "flow"] -> :ok`; otherwise it returns `{:error, {:unsupported_queue_mode, slug, mode}}`.
   - The order matters. With `pgflow.is_local()` true, upstream's mismatch branch **deletes and recompiles**. Calling `ensure_flow_compiled(slug, shape, 'flow', NULL)` against a TS step-mode flow on a local database would silently convert it to flow mode. This is the 2026-09-14 Decision 5 `is_local()` caution applied to queue mode. In production the same call returns `mismatchKind = "routing"` (Task 10). The pre-check gives one clear error in both environments.
   - Add a test that `pgflow.flows.queue_mode` is still `'step'` after the refused `prepare/2` with `is_local()` forced true. Use the existing test hook that stubs `is_local()` in `bootstrap_test.exs`; if there is none, `CREATE OR REPLACE FUNCTION pgflow.is_local()` inside the sandbox transaction.
   - In `FlowStarter`, add the tuple to the permanent-failure clause next to `:flow_shape_mismatch`.
 
-- [ ] **Step 4: Run.** Same, then `PGFLOW_REQUIRE_DB=1 mix test`. Expected: `0 failures`.
-- [ ] **Step 5: Commit.** `feat: Refuse to serve step-mode flows`
+- [x] **Step 4: Run.** Same, then `PGFLOW_REQUIRE_DB=1 mix test`. Expected: `0 failures`.
+- [x] **Step 5: Commit.** `feat: Refuse to serve step-mode flows`
 
 ### Task 13: Recovery and pruning with step-mode tasks present
 
@@ -1303,7 +1303,7 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 9 | 00ee7ef | `MIX_ENV=test mix pgflow.test.reset`; `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/migrations/versions/v07_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/helpers_v07_upgrade_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/migrations` | green | RED: `UndefinedFunctionError` `Claim.verify_v03!/0`, `File.Error` for `v07_up.sql`/`v07_down.sql`, and `nil.up/1` for helpers version 7. GREEN: `test/pgflow/migrations` 22 tests, 0 failures (4 excluded). Upgrade file 4 tests, 0 failures. The claim test registers the worker first because `step_tasks.last_worker_id` is a foreign key; `attempts_count` stays `1`. `v06` now asserts `current_version() >= 6` and `v07` asserts `== 7`. Helper migrator versions in this file are `205`/`206` so they sort after core `203`. |
 | 10 | b60866f | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/version_test.exs test/pgflow/queries_test.exs test/pgflow/workers_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/worker/bootstrap_test.exs --include destructive_schema`; `PGFLOW_REQUIRE_DB=1 mix test` | call sites green; schema red | RED: `PgFlow.Version` undefined; `register_worker(unknown, unknown, unknown)` does not exist; compile SQL had no `'flow'` or `NULL::jsonb`; routing diffs were still `{:flow_shape_mismatch, _}`. GREEN: version, queries, and workers, 52 tests, 0 failures (21 excluded). `_compare_flow_shapes` ignores `maxAttempts`, so the mismatch test changes `whenUnmet`. `:auto` sandbox ends each statement, so production mode is `set_config` inside `TestRepo.transaction/1`. Bootstrap with the destructive tag: 21 tests, 15 failures, all `{:schema_incompatible, :start_tasks}` until Task 11. Full suite: 1077 tests, 91 failures (90 excluded): 90 `{:schema_incompatible, :ensure_flow_compiled}` and the pre-existing `idx_steps_normalized_slug` seed in `slug_audit_test`. |
 | 11 | 8147ef5 | `PGFLOW_REQUIRE_DB=1 mix test`; `PGFLOW_REQUIRE_DB=1 mix test --only migration` | green | Runtime checks require the 5-arg claim, 4-arg compile, and 4-arg `register_worker`, and reject the legacy overloads. Helpers floor is `HelpersMigration.current_version()`. Ecto schemas record `flows.queue_mode` and `workers.pgflow_version`. Bootstrap stops reinstalling the 2-arg compiler. Slug audit drops `idx_steps_normalized_slug` inside the test transaction so `Fetch`/`fetch` can still be seeded. Latest-install assertions are core 3 / helpers 7; the V02→V06 path stays pinned. Default suite: 1077 tests, 0 failures (91 excluded). Migration suite: 51 tests, 0 failures. |
-| 12 | | | | |
+| 12 | | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/worker/bootstrap_test.exs test/pgflow/flow_starter_test.exs --include destructive_schema`; `PGFLOW_REQUIRE_DB=1 mix test` | green | RED: `Flows.queue_mode/2` undefined; local `prepare/2` recompiled the step-mode flow (`compilation_status: "recompiled"`); FlowStarter reached `:succeeded`. GREEN: bootstrap and starter files 44 tests, 0 failures. The pre-check runs before `ensure_flow_compiled`, with `is_local()` true, and `queue_mode` stays `step`. No `worker_functions` row is written. FlowStarter classifies `{:unsupported_queue_mode, _, _}` as permanent, schedules no retry, and logs the slug plus `docs/UPGRADING_UPSTREAM_2026_10.md`. Default suite: 1078 tests, 0 failures (93 excluded). The two new bootstrap tests are `:destructive_schema`, so the default run excludes them; `--include destructive_schema` is required for that file. |
 | 13 | | | | |
 | 14 | | | | |
 | 15 | | | | |

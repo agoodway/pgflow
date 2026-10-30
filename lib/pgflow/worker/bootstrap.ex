@@ -19,8 +19,11 @@ defmodule PgFlow.Worker.Bootstrap do
 
   Returns `{:ok, %{queue_name: queue_name, compilation_status: status}}` when
   compilation, verification, or local recompilation succeeds. Shape mismatches
-  in production return `{:error, {:flow_shape_mismatch, differences}}`. Missing
-  or incompatible schema objects return `{:error, {:schema_incompatible, key}}`.
+  in production return `{:error, {:flow_shape_mismatch, differences}}`. A flow
+  already compiled in step mode returns
+  `{:error, {:unsupported_queue_mode, slug, mode}}` before compilation, so a
+  local database cannot convert it to flow mode. Missing or incompatible
+  schema objects return `{:error, {:schema_incompatible, key}}`.
   """
   @spec prepare(Ecto.Repo.t(), Definition.t()) ::
           {:ok, %{queue_name: String.t(), compilation_status: String.t()}}
@@ -39,7 +42,9 @@ defmodule PgFlow.Worker.Bootstrap do
 
     tx_result =
       repo.transaction(fn ->
-        with {:ok, %{status: status}} <- Flows.ensure_flow_compiled(repo, slug, shape),
+        with {:ok, mode} <- Flows.queue_mode(repo, slug),
+             :ok <- require_flow_mode(slug, mode),
+             {:ok, %{status: status}} <- Flows.ensure_flow_compiled(repo, slug, shape),
              :ok <- update_flow_type(repo, slug, flow_type),
              {:ok, _} <- Workers.track_worker_function(repo, function_name, "process") do
           %{queue_name: canonical_queue_name(slug), compilation_status: status}
@@ -57,6 +62,10 @@ defmodule PgFlow.Worker.Bootstrap do
         {:error, reason}
     end
   end
+
+  defp require_flow_mode(_slug, mode) when mode in [nil, "flow"], do: :ok
+
+  defp require_flow_mode(slug, mode), do: {:error, {:unsupported_queue_mode, slug, mode}}
 
   defp warn_compilation(_repo, definition, "recompiled") do
     Logger.warning(

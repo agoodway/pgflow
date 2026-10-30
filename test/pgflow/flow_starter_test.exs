@@ -132,6 +132,84 @@ defmodule PgFlow.FlowStarterTest do
     end
   end
 
+  describe "permanent failure (step-mode flow)" do
+    @describetag :integration
+
+    defmodule StepModeFlow do
+      use PgFlow.Flow
+
+      @flow slug: :flow_starter_step_mode, max_attempts: 3, timeout: 60
+
+      step :process do
+        fn input, _ctx -> %{value: input["value"]} end
+      end
+    end
+
+    setup do
+      :ok = Sandbox.checkout(TestRepo)
+      :ok = Sandbox.mode(TestRepo, {:shared, self()})
+      TestRepo.query!("SELECT pgflow_tests.reset_db()")
+      :persistent_term.put({PgFlow, :repo}, TestRepo)
+
+      definition = StepModeFlow.__pgflow_definition__()
+      shape = PgFlow.Flow.Shape.from_definition(definition)
+      slug = "flow_starter_step_mode"
+
+      TestRepo.query!(
+        "SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb, 'step', $3::jsonb)",
+        [slug, shape, [%{"stepSlug" => "process", "queueName" => "#{slug}__process"}]]
+      )
+
+      worker_config = [
+        repo: TestRepo,
+        max_concurrency: 2,
+        batch_size: 2,
+        signal_strategy: :polling,
+        min_poll_interval: 50,
+        max_poll_interval: 50,
+        notify_fallback_interval: 30_000,
+        heartbeat_interval: 10_000
+      ]
+
+      start_supervised!({Task.Supervisor, name: PgFlow.TaskSupervisor})
+      start_supervised!({WorkerSupervisor, worker_config})
+
+      on_exit(fn ->
+        :persistent_term.erase({PgFlow, :repo})
+        Sandbox.mode(TestRepo, :manual)
+      end)
+
+      :ok
+    end
+
+    test "refuses step mode permanently and does not retry" do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          starter_pid =
+            start_supervised!({FlowStarter, repo: TestRepo, flows: [StepModeFlow], jobs: []})
+
+          Sandbox.allow(TestRepo, self(), starter_pid)
+          wait_for_failed_permanent(StepModeFlow)
+        end)
+
+      ms = FlowStarter.module_status(StepModeFlow)
+      assert ms.status == :failed_permanent
+      assert ms.last_error.class == :permanent
+      assert ms.last_error.phase == :worker
+
+      assert {:unsupported_queue_mode, "flow_starter_step_mode", "step"} = ms.last_error.reason
+
+      refute Map.has_key?(:sys.get_state(FlowStarter).timers, StepModeFlow)
+      assert log =~ "flow_starter_step_mode"
+      assert log =~ "docs/UPGRADING_UPSTREAM_2026_10.md"
+
+      assert %{rows: [["step"]]} =
+               TestRepo.query!(
+                 "SELECT queue_mode FROM pgflow.flows WHERE flow_slug = 'flow_starter_step_mode'"
+               )
+    end
+  end
+
   describe "permanent failure (non-flow module)" do
     setup %{repo: repo} do
       start_supervised!({FlowStarter, repo: repo, flows: [NotAFlow], jobs: []})

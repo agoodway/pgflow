@@ -316,10 +316,7 @@ defmodule PgFlow.FlowStarter do
 
         emit(:failed_permanent, module, updated_ms)
 
-        Logger.error(
-          "FlowStarter: permanent failure for #{inspect(module)} at #{phase}: #{inspect(reason)}; " <>
-            "run `mix pgflow.check_schema`"
-        )
+        Logger.error(permanent_failure_message(module, phase, reason))
 
         state = put_module(state, updated_ms) |> maybe_mark_ready()
         {:noreply, state}
@@ -404,8 +401,20 @@ defmodule PgFlow.FlowStarter do
 
   defp classify_worker_start_error({:flow_shape_mismatch, _}), do: :permanent
   defp classify_worker_start_error({:flow_routing_mismatch, _}), do: :permanent
+  defp classify_worker_start_error({:unsupported_queue_mode, _, _}), do: :permanent
   defp classify_worker_start_error({:schema_incompatible, _}), do: :permanent
   defp classify_worker_start_error(reason), do: classify_db_error(reason)
+
+  defp permanent_failure_message(module, phase, {:unsupported_queue_mode, slug, mode}) do
+    "FlowStarter: permanent failure for #{inspect(module)} at #{phase}: " <>
+      "flow #{slug} uses queue mode #{inspect(mode)}, which this worker does not serve. " <>
+      "See docs/UPGRADING_UPSTREAM_2026_10.md"
+  end
+
+  defp permanent_failure_message(module, phase, reason) do
+    "FlowStarter: permanent failure for #{inspect(module)} at #{phase}: #{inspect(reason)}; " <>
+      "run `mix pgflow.check_schema`"
+  end
 
   defp maybe_run_notify_phases(ms, %State{signal_strategy: :notify} = state, worker_pid) do
     slug = flow_slug(ms.module)
