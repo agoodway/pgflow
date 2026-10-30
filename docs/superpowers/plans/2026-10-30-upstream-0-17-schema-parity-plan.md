@@ -1278,10 +1278,21 @@ The work branch is done when every box is true, each one shown by a command reco
 
 Copy this table into the final report of the run. Fill it in as you go; do not reconstruct it at the end.
 
+Operator decisions recorded for Chase (defaults from the run brief; override if wrong):
+
+- Target stays `pgflow@0.17.2` (`baa9e43f`). Upstream #708 / 0.17.3 falsy-output fix is a follow-up, not this branch.
+- Adopt upstream's ascending `idx_runs_started_at` (`replace_desc_runs_index`).
+- `register_worker` is 4 arguments. Elixir stamps `elixir-<vsn>`.
+- Package version is 0.6.0.
+- Cap flow slugs at 47 characters at compile time. `@job` uses the same slug rules.
+- Freeze V02 with a checksum test. Do not rewrite published SQL.
+- An upstream pgTAP file may be excluded only when it fails solely because a Supabase-only feature is missing. Each exclusion is listed and justified.
+- Pass upstream mismatch messages through unchanged on `:flow_routing_mismatch`.
+
 | Task | Commit SHA | Gate command(s) run | Result | Notes / deviations |
 |---|---|---|---|---|
-| E1–E6 baseline | — | E3 suite, E4 harness, E5 demo | | |
-| 1 | | | | |
+| E1–E6 baseline | — | `PGFLOW_REQUIRE_DB=1 mix test`; `--only migration`; `mix quality`; harness `--suite catalog` before the pin change; demo `mix test`, `verify_scenarios`, assets, prod compile | green | Elixir 1.19.1 / OTP 28 from hex.pm builds. Docker 27.5.1 static + compose v2.32.4. Image `jumski/atlas-postgres-pgflow:17.6.1.054` reports PostgreSQL 17.7. pgTAP 1.3.4 installed in the container after fixing egress: iptables-legacy `FORWARD` was `DROP` while dockerd programmed nft, so `iptables-legacy -P FORWARD ACCEPT` plus a 172.18.0.0/16 MASQUERADE, and container DNS `8.8.8.8`. Upstream checkout is `/home/ubuntu/pgflow-upstream-0.17.2` (`pgflow@0.17.2`); `$PWD/../` was not writable. Suite: 1023 tests, 0 failures (82 excluded). Migration: 42 tests, 0 failures. `mix quality` exit 0. Pre-Task-1 harness: `refusing unpinned upstream SHA "baa9e43f…" expected 94490709…`. Demo: 90 tests, 0 failures; 29 scenarios passed; prod compile clean. |
+| 1 | | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/harness_reporting_test.exs`; harness `--suite catalog` | unit green; catalog red | RED: `UndefinedFunctionError pgflow_ddl_only_sql/1` and manifest sha still `94490709`. GREEN: 6 tests, 0 failures. Catalog replay of 0.17.2 succeeded, then compare failed before `validate_target_catalog!/1` with `catalog missing core functions` including `start_tasks(text,bigint[],uuid,text,text)` and `ensure_flow_compiled(text,jsonb,text,jsonb)`. That is the red baseline; the plan's exact `missing pgflow.start_tasks…` string is the later validation check, which does not run once the diff fails. `pgflow_ddl_only_sql/1` ignores leading `--` comments so the telemetry migration's four `pgflow` statements are kept. `baseline_test` sha expectation moved with the manifest. `bootstrap_test` still asserts the installed V02 signatures so the suite stays green until V03/V07; Task 11 points it back at the manifest. |
 | 2 | | | | |
 | 3 | | | | |
 | 4 | | | | |

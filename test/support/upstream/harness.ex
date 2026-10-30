@@ -3,7 +3,8 @@ defmodule PgFlow.Test.UpstreamHarness do
 
   alias PgFlow.Test.{UpstreamFixture, UpstreamInterop}
 
-  @pinned_sha "94490709f79ebf366141dd925b047f0c1013e759"
+  @pinned_sha "baa9e43f5f9122133deacbc3e8ffc80e284b4f50"
+  @pgflow_ddl_statement ~r/^\s*(CREATE (UNIQUE )?INDEX|ALTER TABLE)\s.*"pgflow"\./s
   @manifest_path Path.expand("manifest.json", __DIR__)
   @support_dir __DIR__
 
@@ -73,6 +74,21 @@ defmodule PgFlow.Test.UpstreamHarness do
         Regex.match?(~r/(?:^\s*Bail out!|# Looks like you failed)/m, output)
 
     %{tests: tests, failures: max(failed, if(invalid?, do: 1, else: 0))}
+  end
+
+  @doc """
+  Keeps only top-level index and table DDL aimed at the `"pgflow"` schema.
+
+  Telemetry migrations also create `pgflow_telemetry` objects and schedule
+  `cron` / `pg_net` jobs. Those statements are dropped so a plain Postgres
+  replay can still apply the `pgflow` indexes and columns.
+  """
+  @spec pgflow_ddl_only_sql(String.t()) :: String.t()
+  def pgflow_ddl_only_sql(sql) when is_binary(sql) do
+    sql
+    |> PgFlow.Sql.Splitter.split()
+    |> Enum.filter(&pgflow_ddl_statement?/1)
+    |> Enum.map_join("", &(&1 <> ";\n"))
   end
 
   @doc "Rejects upstream revisions other than the recorded pin."
@@ -655,6 +671,21 @@ defmodule PgFlow.Test.UpstreamHarness do
     end)
   end
 
+  defp apply_migration_file(database_url, path, file, "pgflow_ddl_only") do
+    sql = path |> File.read!() |> pgflow_ddl_only_sql()
+    temp = Path.join(System.tmp_dir!(), "pgflow_ddl_only_#{:erlang.phash2({path, sql})}.sql")
+    File.write!(temp, sql)
+
+    result =
+      case run_psql_file!(database_url, temp) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, "failed applying #{file}: #{reason}"}}
+      end
+
+    File.rm(temp)
+    result
+  end
+
   defp apply_migration_file(database_url, path, file, mode) do
     opts =
       if mode == "adapt_without_cron",
@@ -667,58 +698,70 @@ defmodule PgFlow.Test.UpstreamHarness do
     end
   end
 
+  defp pgflow_ddl_statement?(statement) do
+    statement
+    |> strip_leading_sql_comments()
+    |> then(&Regex.match?(@pgflow_ddl_statement, &1))
+  end
+
+  # Upstream migrations prefix each statement with a `-- Create ...` comment.
+  # The keep-rule is about the DDL verb, so those comments are ignored for matching
+  # and kept in the replayed text.
+  defp strip_leading_sql_comments(statement) do
+    statement
+    |> String.replace(~r/\A(?:[ \t]*--[^\n]*\n|[ \t]*\/\*.*?\*\/\s*)+/s, "")
+    |> String.trim_leading()
+  end
+
   defp validate_target_catalog!(database_url) do
     target = manifest()["target"]
 
     with {:ok, conn} <- connect(database_url) do
-      checks = [
-        fn ->
-          if query_scalar!(
-               conn,
-               "SELECT to_regprocedure('pgflow.start_tasks(text,bigint[],uuid,text)') IS NOT NULL"
-             ) do
-            :ok
-          else
-            {:error, "missing four-argument start_tasks"}
-          end
-        end,
-        fn ->
-          if query_scalar!(
-               conn,
-               "SELECT to_regprocedure('pgflow.start_tasks(text,bigint[],uuid)') IS NULL"
-             ) do
-            :ok
-          else
-            {:error, "obsolete three-argument start_tasks still present"}
-          end
-        end,
-        fn ->
-          if query_scalar!(
-               conn,
-               "SELECT to_regprocedure('pgflow.ensure_flow_compiled(text,jsonb)') IS NOT NULL"
-             ) do
-            :ok
-          else
-            {:error, "missing ensure_flow_compiled(text,jsonb)"}
-          end
-        end,
-        fn ->
-          fields =
-            query_rows!(conn, """
-            SELECT attname
-            FROM pg_attribute
-            WHERE attrelid = (SELECT typrelid FROM pg_type WHERE oid = 'pgflow.step_task_record'::regtype)
-              AND attnum > 0 AND NOT attisdropped
-            ORDER BY attnum
-            """)
+      required = [target["claim_signature"], target["compile_signature"]]
 
-          if List.flatten(fields) == target["record_fields"] do
-            :ok
-          else
-            {:error, "unexpected step_task_record fields: #{inspect(fields)}"}
-          end
-        end
+      absent = [
+        "pgflow.start_tasks(text,bigint[],uuid,text)",
+        "pgflow.start_tasks(text,bigint[],uuid)",
+        "pgflow.ensure_flow_compiled(text,jsonb)"
       ]
+
+      checks =
+        Enum.map(required, fn signature ->
+          fn ->
+            if query_scalar!(conn, "SELECT to_regprocedure($1) IS NOT NULL", [signature]) do
+              :ok
+            else
+              {:error, "missing #{signature}"}
+            end
+          end
+        end) ++
+          Enum.map(absent, fn signature ->
+            fn ->
+              if query_scalar!(conn, "SELECT to_regprocedure($1) IS NULL", [signature]) do
+                :ok
+              else
+                {:error, "obsolete #{signature} still present"}
+              end
+            end
+          end) ++
+          [
+            fn ->
+              fields =
+                query_rows!(conn, """
+                SELECT attname
+                FROM pg_attribute
+                WHERE attrelid = (SELECT typrelid FROM pg_type WHERE oid = 'pgflow.step_task_record'::regtype)
+                  AND attnum > 0 AND NOT attisdropped
+                ORDER BY attnum
+                """)
+
+              if List.flatten(fields) == target["record_fields"] do
+                :ok
+              else
+                {:error, "unexpected step_task_record fields: #{inspect(fields)}"}
+              end
+            end
+          ]
 
       result =
         Enum.reduce_while(checks, :ok, &run_catalog_check/2)

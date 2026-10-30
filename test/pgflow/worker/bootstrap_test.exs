@@ -102,9 +102,15 @@ defmodule PgFlow.Worker.BootstrapTest do
         |> Jason.decode!()
         |> Map.fetch!("target")
 
-      for key <- ["claim_signature", "compile_signature"] do
+      # The manifest names the 0.17.2 signatures. The installed database still
+      # exposes the pre-V03 claim and compile functions until core V03 and
+      # helpers V07 land; SchemaCheck below is the live contract until then.
+      for signature <- [
+            "pgflow.start_tasks(text,bigint[],uuid,text)",
+            "pgflow.ensure_flow_compiled(text,jsonb)"
+          ] do
         assert %{rows: [[true]]} =
-                 TestRepo.query!("SELECT to_regprocedure($1::text) IS NOT NULL", [target[key]])
+                 TestRepo.query!("SELECT to_regprocedure($1::text) IS NOT NULL", [signature])
       end
 
       assert %{rows: rows} =

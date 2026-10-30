@@ -122,7 +122,7 @@ defmodule PgFlow.Upstream.BaselineTest do
                )
 
       assert UpstreamFixture.manifest()["target"]["upstream_sha"] ==
-               "94490709f79ebf366141dd925b047f0c1013e759"
+               "baa9e43f5f9122133deacbc3e8ffc80e284b4f50"
 
       assert %{
                queued: queued_run,

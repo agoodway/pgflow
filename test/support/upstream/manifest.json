@@ -7,9 +7,10 @@
     "helpers_version": 4
   },
   "target": {
-    "core_version": 2,
-    "helpers_version": 5,
-    "upstream_sha": "94490709f79ebf366141dd925b047f0c1013e759",
+    "core_version": 3,
+    "helpers_version": 7,
+    "upstream_sha": "baa9e43f5f9122133deacbc3e8ffc80e284b4f50",
+    "upstream_release": "0.17.2",
     "task_statuses": [
       "cancelled",
       "completed",
@@ -18,8 +19,9 @@
       "skipped",
       "started"
     ],
-    "claim_signature": "pgflow.start_tasks(text,bigint[],uuid,text)",
-    "compile_signature": "pgflow.ensure_flow_compiled(text,jsonb)",
+    "claim_signature": "pgflow.start_tasks(text,bigint[],uuid,text,text)",
+    "compile_signature": "pgflow.ensure_flow_compiled(text,jsonb,text,jsonb)",
+    "register_worker_signature": "pgflow.register_worker(uuid,text,text,text)",
     "record_fields": [
       "flow_slug",
       "run_id",
@@ -60,6 +62,16 @@
           "file": "20260607175525_pgflow_worker_start_mode.sql",
           "mode": "adapt_without_cron",
           "reason": "strip ensure_workers body while keeping worker_functions schema changes on plain Postgres"
+        },
+        {
+          "file": "20260920093533_pgflow_telemetry.sql",
+          "mode": "pgflow_ddl_only",
+          "reason": "keep pgflow indexes and workers.pgflow_version; skip pgflow_telemetry, pg_cron, and pg_net"
+        },
+        {
+          "file": "20261001194538_pgflow_telemetry_endpoint_fix.sql",
+          "mode": "skip",
+          "reason": "pgflow_telemetry-only migration; Elixir does not install that schema"
         }
       ],
       "extra_columns": [
