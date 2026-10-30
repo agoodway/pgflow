@@ -470,4 +470,67 @@ defmodule PgFlow.FlowTest do
       end
     end
   end
+
+  describe "slug rules (pgflow 0.17.2)" do
+    test "rejects a flow slug with a double underscore" do
+      assert_raise CompileError, ~r/invalid flow slug :order__flow: must not contain "__"/, fn ->
+        Code.compile_string("""
+        defmodule SlugDoubleUnderscoreFlow do
+          use PgFlow.Flow
+          @flow queue: :order__flow
+          step :a do
+            fn _input, _ctx -> %{} end
+          end
+        end
+        """)
+      end
+    end
+
+    test "rejects a step slug that ends with an underscore" do
+      assert_raise CompileError, ~r/invalid step slug :a_: must end with a letter or digit/, fn ->
+        Code.compile_string("""
+        defmodule SlugBadStepFlow do
+          use PgFlow.Flow
+          @flow queue: :ok_flow
+          step :a_ do
+            fn _input, _ctx -> %{} end
+          end
+        end
+        """)
+      end
+    end
+
+    test "rejects case-insensitive duplicate step slugs" do
+      assert_raise CompileError, ~r/step slugs :fetch and :Fetch collide/, fn ->
+        Code.compile_string("""
+        defmodule SlugCaseDupFlow do
+          use PgFlow.Flow
+          @flow queue: :dup_flow
+          step :fetch do
+            fn _input, _ctx -> %{} end
+          end
+          step :Fetch, depends_on: [:fetch] do
+            fn _input, _ctx -> %{} end
+          end
+        end
+        """)
+      end
+    end
+
+    test "rejects a flow slug whose queue name exceeds 47 characters" do
+      long = String.duplicate("a", 48)
+
+      assert_raise CompileError, ~r/at most 47 characters/, fn ->
+        Code.compile_string("""
+        defmodule SlugLongFlow do
+          use PgFlow.Flow
+          @flow queue: :#{long}
+          step :a do
+            fn _input, _ctx -> %{} end
+          end
+        end
+        """)
+      end
+    end
+  end
 end

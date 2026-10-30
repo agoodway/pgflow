@@ -247,6 +247,48 @@ defmodule PgFlow.DSL.Validation do
     end
   end
 
+  @doc false
+  @spec validate_slug!(atom() | String.t(), :flow | :job | :step, Macro.Env.t()) :: :ok
+  def validate_slug!(slug, kind, env) do
+    with :ok <- PgFlow.Slug.validate(slug),
+         :ok <- validate_owner_queue(slug, kind) do
+      :ok
+    else
+      {:error, reason} ->
+        compile_error!(
+          env,
+          "invalid #{kind} slug #{inspect(slug)}: #{PgFlow.Slug.describe(reason)} " <>
+            "(pgflow 0.17.2 is_valid_slug; see docs/UPGRADING_UPSTREAM_2026_10.md)"
+        )
+    end
+  end
+
+  defp validate_owner_queue(slug, kind) when kind in [:flow, :job],
+    do: slug |> PgFlow.Slug.queue_name() |> PgFlow.Slug.validate_queue_name()
+
+  defp validate_owner_queue(_slug, :step), do: :ok
+
+  @doc false
+  @spec validate_step_slugs!([atom()], atom(), Macro.Env.t()) :: :ok
+  def validate_step_slugs!(step_slugs, flow_slug, env) do
+    Enum.each(step_slugs, &validate_slug!(&1, :step, env))
+
+    step_slugs
+    |> Enum.group_by(&PgFlow.Slug.queue_name/1)
+    |> Enum.find(fn {_lower, slugs} -> length(slugs) > 1 end)
+    |> case do
+      nil ->
+        :ok
+
+      {_lower, [first, second | _]} ->
+        compile_error!(
+          env,
+          "step slugs #{inspect(first)} and #{inspect(second)} collide case-insensitively in flow " <>
+            "#{inspect(flow_slug)} (pgflow 0.17.2 idx_steps_normalized_slug)"
+        )
+    end
+  end
+
   defp validate_cron_schedule!(schedule, env) do
     case CronParser.parse(schedule) do
       {:ok, _} ->
