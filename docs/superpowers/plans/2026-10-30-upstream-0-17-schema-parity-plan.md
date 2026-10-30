@@ -630,7 +630,7 @@ end
 
 The live database is still core V02 here. The audit applies the **0.17.2** rule to the existing rows. `PgFlow.Slug` is the reference implementation, and the SQL must agree with it. One SQL text serves three uses: the mix task, the V03 preflight block (Task 7) and the tests.
 
-- [ ] **Step 1: Write the failing tests.** `slug_audit_test.exs` uses `PgFlow.DataCase` (`test/support/data_case.ex`) against the V02/V06 test database. Inside the sandbox transaction:
+- [x] **Step 1: Write the failing tests.** `slug_audit_test.exs` uses `PgFlow.DataCase` (`test/support/data_case.ex`) against the V02/V06 test database. Inside the sandbox transaction:
   - Drop the V02 `slug_is_valid` and `steps_step_slug_check` constraints. At this point they encode the *old* rule, which accepts `a__b`, `a_` and `_a`, so most inserts would pass anyway; dropping both keeps every reason testable.
   - Insert flows `ok_flow`, `bad__flow`, a 48-character slug, and steps `fetch` and `Fetch` under `ok_flow`.
 
@@ -666,9 +666,9 @@ end
 
   `audit_slugs_test.exs`: run `Mix.Tasks.Pgflow.AuditSlugs.run(["--repo", "PgFlow.TestRepo"])` against clean data and assert the `ExUnit.CaptureIO` output contains `no slug findings`. Then seed one offender and assert `Mix.raise` (`Mix.Error`) with `1 slug finding(s)`.
 
-- [ ] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upgrade test/mix/tasks/pgflow.audit_slugs_test.exs`. Expected: `UndefinedFunctionError`/module not found.
+- [x] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upgrade test/mix/tasks/pgflow.audit_slugs_test.exs`. Expected: `UndefinedFunctionError`/module not found.
 
-- [ ] **Step 3: Implement `PgFlow.Upgrade.SlugAudit`.**
+- [x] **Step 3: Implement `PgFlow.Upgrade.SlugAudit`.**
   - `rule_sql(expr)` returns a boolean SQL expression that mirrors the 0.17.2 `is_valid_slug` body: `expr IS NOT NULL AND expr <> '' AND length(expr) <= 128 AND expr ~ '^[a-zA-Z_][a-zA-Z0-9_]*$' AND expr NOT IN ('run') AND left(expr,1) ~ '[a-zA-Z]' AND right(expr,1) ~ '[a-zA-Z0-9]' AND position('__' in expr) = 0`. Don't call `pgflow.is_valid_slug`, because on V02 that is still the old function.
   - `reason_sql(expr)` is a `CASE` that returns the same reason atoms as text, in `PgFlow.Slug.validate/1` order.
   - `findings_sql(prefix)` is one `SELECT kind, flow_slug, step_slug, reason` with a `UNION ALL` of:
@@ -687,8 +687,8 @@ end
   - It prints one line per finding, then `Mix.raise("#{n} slug finding(s); fix them before upgrading")` when non-empty, else `no slug findings`.
   - The moduledoc states read-only, the no-rename policy, and the link to the upgrade doc.
 
-- [ ] **Step 4: Run.** Same command. Expected: `0 failures`.
-- [ ] **Step 5: Commit.** `feat: Add the pgflow.audit_slugs pre-flight task`
+- [x] **Step 4: Run.** Same command. Expected: `0 failures`.
+- [x] **Step 5: Commit.** `feat: Add the pgflow.audit_slugs pre-flight task`
 
 ---
 
@@ -1292,11 +1292,11 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | Task | Commit SHA | Gate command(s) run | Result | Notes / deviations |
 |---|---|---|---|---|
 | E1–E6 baseline | — | `PGFLOW_REQUIRE_DB=1 mix test`; `--only migration`; `mix quality`; harness `--suite catalog` before the pin change; demo `mix test`, `verify_scenarios`, assets, prod compile | green | Elixir 1.19.1 / OTP 28 from hex.pm builds. Docker 27.5.1 static + compose v2.32.4. Image `jumski/atlas-postgres-pgflow:17.6.1.054` reports PostgreSQL 17.7. pgTAP 1.3.4 installed in the container after fixing egress: iptables-legacy `FORWARD` was `DROP` while dockerd programmed nft, so `iptables-legacy -P FORWARD ACCEPT` plus a 172.18.0.0/16 MASQUERADE, and container DNS `8.8.8.8`. Upstream checkout is `/home/ubuntu/pgflow-upstream-0.17.2` (`pgflow@0.17.2`); `$PWD/../` was not writable. Suite: 1023 tests, 0 failures (82 excluded). Migration: 42 tests, 0 failures. `mix quality` exit 0. Pre-Task-1 harness: `refusing unpinned upstream SHA "baa9e43f…" expected 94490709…`. Demo: 90 tests, 0 failures; 29 scenarios passed; prod compile clean. |
-| 1 | | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/harness_reporting_test.exs`; harness `--suite catalog` | unit green; catalog red | RED: `UndefinedFunctionError pgflow_ddl_only_sql/1` and manifest sha still `94490709`. GREEN: 6 tests, 0 failures. Catalog replay of 0.17.2 succeeded, then compare failed before `validate_target_catalog!/1` with `catalog missing core functions` including `start_tasks(text,bigint[],uuid,text,text)` and `ensure_flow_compiled(text,jsonb,text,jsonb)`. That is the red baseline; the plan's exact `missing pgflow.start_tasks…` string is the later validation check, which does not run once the diff fails. `pgflow_ddl_only_sql/1` ignores leading `--` comments so the telemetry migration's four `pgflow` statements are kept. `baseline_test` sha expectation moved with the manifest. `bootstrap_test` still asserts the installed V02 signatures so the suite stays green until V03/V07; Task 11 points it back at the manifest. |
-| 2 | | | | |
-| 3 | | | | |
-| 4 | | | | |
-| 5 | | | | |
+| 1 | 2ec5708 | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/harness_reporting_test.exs`; harness `--suite catalog` | unit green; catalog red | RED: `UndefinedFunctionError pgflow_ddl_only_sql/1` and manifest sha still `94490709`. GREEN: 6 tests, 0 failures. Catalog replay of 0.17.2 succeeded, then compare failed before `validate_target_catalog!/1` with `catalog missing core functions` including `start_tasks(text,bigint[],uuid,text,text)` and `ensure_flow_compiled(text,jsonb,text,jsonb)`. That is the red baseline; the plan's exact `missing pgflow.start_tasks…` string is the later validation check, which does not run once the diff fails. `pgflow_ddl_only_sql/1` ignores leading `--` comments so the telemetry migration's four `pgflow` statements are kept. `baseline_test` sha expectation moved with the manifest. `bootstrap_test` still asserts the installed V02 signatures so the suite stays green until V03/V07; Task 11 points it back at the manifest. |
+| 2 | 520d200 | `mix test test/pgflow/slug_test.exs` | green | RED: 15 failures, `PgFlow.Slug` was not defined. GREEN: 15 tests, 0 failures. |
+| 3 | a5e0f93 | `mix test test/pgflow/dsl/validation_test.exs test/pgflow/flow_test.exs test/pgflow/job_test.exs`; `mix test` | green | RED: 15 failures (`UndefinedFunctionError` on the unit tests; the DSL fixtures compiled without raising). GREEN: those three files 138 tests, 0 failures. Full suite 1055 tests, 0 failures (82 excluded). No existing fixture slug was invalid. |
+| 4 | 3370d19 | `mix test test/pgflow/config_test.exs`; `mix test` | green | RED: `validate!/1` did not raise for `:orders` / `:Orders`. The first fix also failed three older tests that passed unloaded placeholder modules to `Code.ensure_loaded!`. Those fixtures now use real flow and job modules. GREEN: `config_test` 77 tests, 0 failures. Full suite 1056 tests, 0 failures (82 excluded). |
+| 5 | | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upgrade test/mix/tasks/pgflow.audit_slugs_test.exs` | green | RED: 6 failures, `UndefinedFunctionError` for `PgFlow.Upgrade.SlugAudit` and `Mix.Tasks.Pgflow.AuditSlugs`. GREEN: 6 tests, 0 failures. Full suite 1062 tests, 0 failures (82 excluded). The matrix binds `$1::text` because a bare `$1` is PostgreSQL `42P08 ambiguous_parameter`. `string_agg` orders with `COLLATE "C"` so the reported pair is `Fetch,fetch`; this database's `en_US.utf8` collation would emit `fetch,Fetch`. `run/2` still issues `SET TRANSACTION READ ONLY`. Inside the Ecto sandbox that command is `25001` after earlier statements, the savepoint rolls back, and the `SELECT` runs in the caller's transaction. A fresh transaction (`Sandbox.unboxed_run`) stays read only and rejects writes. Flow findings omit a nil `step_slug` so the three-key maps match with `in`. |
 | 6 | | | | |
 | 7 | | | | |
 | 8 | | | | |
