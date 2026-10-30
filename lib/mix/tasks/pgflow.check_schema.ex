@@ -35,6 +35,7 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
 
   use Mix.Task
 
+  alias Mix.Tasks.Pgflow.Helpers
   alias PgFlow.SchemaCheck
 
   @impl Mix.Task
@@ -43,12 +44,12 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
 
     Mix.Task.run("app.config")
 
-    repo = get_repo(opts)
+    repo = Helpers.configured_repo(opts)
 
     Mix.shell().info("Checking pgflow schema in #{inspect(repo)}...")
 
     {:ok, _} = Application.ensure_all_started(:ecto_sql)
-    start_repo(repo)
+    Helpers.start_repo(repo)
 
     case SchemaCheck.run(repo) do
       :ok ->
@@ -62,27 +63,6 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
         end)
 
         Mix.raise("pgflow schema is not compatible")
-    end
-  end
-
-  defp get_repo(opts) do
-    case Keyword.get(opts, :repo) do
-      nil ->
-        case Application.get_env(:pgflow, :ecto_repos, []) do
-          [repo | _] -> repo
-          [] -> Mix.raise("No repo configured. Use --repo or configure :pgflow, :ecto_repos")
-        end
-
-      repo_string ->
-        Module.concat([repo_string])
-    end
-  end
-
-  defp start_repo(repo) do
-    case repo.start_link() do
-      {:ok, _} -> :ok
-      {:error, {:already_started, _}} -> :ok
-      {:error, error} -> raise "Failed to start repo: #{inspect(error)}"
     end
   end
 end

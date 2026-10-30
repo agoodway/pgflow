@@ -1,6 +1,7 @@
 defmodule PgFlow.Test.UpstreamHarness do
   @moduledoc false
 
+  alias PgFlow.Sql.Splitter
   alias PgFlow.Test.{UpstreamFixture, UpstreamInterop}
 
   @pinned_sha "baa9e43f5f9122133deacbc3e8ffc80e284b4f50"
@@ -86,7 +87,7 @@ defmodule PgFlow.Test.UpstreamHarness do
   @spec pgflow_ddl_only_sql(String.t()) :: String.t()
   def pgflow_ddl_only_sql(sql) when is_binary(sql) do
     sql
-    |> PgFlow.Sql.Splitter.split()
+    |> Splitter.split()
     |> Enum.filter(&pgflow_ddl_statement?/1)
     |> Enum.map_join("", &(&1 <> ";\n"))
   end
@@ -714,60 +715,64 @@ defmodule PgFlow.Test.UpstreamHarness do
   end
 
   defp validate_target_catalog!(database_url) do
-    target = manifest()["target"]
-
     with {:ok, conn} <- connect(database_url) do
-      required = [target["claim_signature"], target["compile_signature"]]
-
-      absent = [
-        "pgflow.start_tasks(text,bigint[],uuid,text)",
-        "pgflow.start_tasks(text,bigint[],uuid)",
-        "pgflow.ensure_flow_compiled(text,jsonb)"
-      ]
-
-      checks =
-        Enum.map(required, fn signature ->
-          fn ->
-            if query_scalar!(conn, "SELECT to_regprocedure($1) IS NOT NULL", [signature]) do
-              :ok
-            else
-              {:error, "missing #{signature}"}
-            end
-          end
-        end) ++
-          Enum.map(absent, fn signature ->
-            fn ->
-              if query_scalar!(conn, "SELECT to_regprocedure($1) IS NULL", [signature]) do
-                :ok
-              else
-                {:error, "obsolete #{signature} still present"}
-              end
-            end
-          end) ++
-          [
-            fn ->
-              fields =
-                query_rows!(conn, """
-                SELECT attname
-                FROM pg_attribute
-                WHERE attrelid = (SELECT typrelid FROM pg_type WHERE oid = 'pgflow.step_task_record'::regtype)
-                  AND attnum > 0 AND NOT attisdropped
-                ORDER BY attnum
-                """)
-
-              if List.flatten(fields) == target["record_fields"] do
-                :ok
-              else
-                {:error, "unexpected step_task_record fields: #{inspect(fields)}"}
-              end
-            end
-          ]
-
-      result =
-        Enum.reduce_while(checks, :ok, &run_catalog_check/2)
-
+      result = Enum.reduce_while(catalog_checks(conn), :ok, &run_catalog_check/2)
       GenServer.stop(conn)
       result
+    end
+  end
+
+  defp catalog_checks(conn) do
+    target = manifest()["target"]
+
+    signature_checks(conn, [target["claim_signature"], target["compile_signature"]], :present) ++
+      signature_checks(
+        conn,
+        [
+          "pgflow.start_tasks(text,bigint[],uuid,text)",
+          "pgflow.start_tasks(text,bigint[],uuid)",
+          "pgflow.ensure_flow_compiled(text,jsonb)"
+        ],
+        :absent
+      ) ++ [fn -> record_layout_check(conn, target["record_fields"]) end]
+  end
+
+  defp signature_checks(conn, signatures, expectation) do
+    Enum.map(signatures, fn signature ->
+      fn -> signature_check(conn, signature, expectation) end
+    end)
+  end
+
+  defp signature_check(conn, signature, :present) do
+    if query_scalar!(conn, "SELECT to_regprocedure($1) IS NOT NULL", [signature]) do
+      :ok
+    else
+      {:error, "missing #{signature}"}
+    end
+  end
+
+  defp signature_check(conn, signature, :absent) do
+    if query_scalar!(conn, "SELECT to_regprocedure($1) IS NULL", [signature]) do
+      :ok
+    else
+      {:error, "obsolete #{signature} still present"}
+    end
+  end
+
+  defp record_layout_check(conn, expected_fields) do
+    fields =
+      query_rows!(conn, """
+      SELECT attname
+      FROM pg_attribute
+      WHERE attrelid = (SELECT typrelid FROM pg_type WHERE oid = 'pgflow.step_task_record'::regtype)
+        AND attnum > 0 AND NOT attisdropped
+      ORDER BY attnum
+      """)
+
+    if List.flatten(fields) == expected_fields do
+      :ok
+    else
+      {:error, "unexpected step_task_record fields: #{inspect(fields)}"}
     end
   end
 

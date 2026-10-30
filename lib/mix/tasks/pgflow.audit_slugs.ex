@@ -25,6 +25,7 @@ defmodule Mix.Tasks.Pgflow.AuditSlugs do
 
   use Mix.Task
 
+  alias Mix.Tasks.Pgflow.Helpers
   alias PgFlow.Upgrade.SlugAudit
 
   @impl Mix.Task
@@ -34,11 +35,11 @@ defmodule Mix.Tasks.Pgflow.AuditSlugs do
 
     Mix.Task.run("app.config")
 
-    repo = get_repo(opts)
+    repo = Helpers.configured_repo(opts)
     prefix = Keyword.get(opts, :prefix, "pgflow")
 
     {:ok, _} = Application.ensure_all_started(:ecto_sql)
-    start_repo(repo)
+    Helpers.start_repo(repo)
 
     case SlugAudit.run(repo, prefix: prefix) do
       [] ->
@@ -58,26 +59,5 @@ defmodule Mix.Tasks.Pgflow.AuditSlugs do
       end
 
     "#{kind} #{flow_slug}#{step}: #{reason}"
-  end
-
-  defp get_repo(opts) do
-    case Keyword.get(opts, :repo) do
-      nil ->
-        case Application.get_env(:pgflow, :ecto_repos, []) do
-          [repo | _] -> repo
-          [] -> Mix.raise("No repo configured. Use --repo or configure :pgflow, :ecto_repos")
-        end
-
-      repo_string ->
-        Module.concat([repo_string])
-    end
-  end
-
-  defp start_repo(repo) do
-    case repo.start_link() do
-      {:ok, _} -> :ok
-      {:error, {:already_started, _}} -> :ok
-      {:error, error} -> raise "Failed to start repo: #{inspect(error)}"
-    end
   end
 end

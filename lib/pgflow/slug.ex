@@ -11,15 +11,19 @@ defmodule PgFlow.Slug do
   @type reason ::
           :empty | :too_long | :bad_chars | :reserved | :bad_start | :bad_end | :double_underscore
 
+  @doc "Maximum flow or step slug length accepted by pgflow 0.17.2."
   @spec max_slug_length() :: pos_integer()
   def max_slug_length, do: @max_slug_length
 
+  @doc "Maximum PGMQ queue name length. Flow slugs are lowercased into this budget."
   @spec max_queue_name_length() :: pos_integer()
   def max_queue_name_length, do: @max_queue_name_length
 
+  @doc "Returns true when `slug` satisfies every upstream slug rule."
   @spec valid?(String.t() | atom()) :: boolean()
   def valid?(slug), do: validate(slug) == :ok
 
+  @doc "Validates a flow or step slug and returns the first broken rule."
   @spec validate(String.t() | atom()) :: :ok | {:error, reason()}
   def validate(slug) when is_atom(slug), do: validate(Atom.to_string(slug))
   def validate(""), do: {:error, :empty}
@@ -36,14 +40,17 @@ defmodule PgFlow.Slug do
     end
   end
 
+  @doc "Returns the flow-mode queue name, which is the lowercased slug."
   @spec queue_name(String.t() | atom()) :: String.t()
   def queue_name(slug) when is_atom(slug), do: queue_name(Atom.to_string(slug))
   def queue_name(slug) when is_binary(slug), do: String.downcase(slug)
 
+  @doc "Rejects a queue name longer than the PGMQ limit."
   @spec validate_queue_name(String.t()) :: :ok | {:error, :queue_name_too_long}
   def validate_queue_name(name) when byte_size(name) <= @max_queue_name_length, do: :ok
   def validate_queue_name(_name), do: {:error, :queue_name_too_long}
 
+  @doc "Turns a validation reason into the message shown by the DSL and slug audit."
   @spec describe(reason() | :queue_name_too_long) :: String.t()
   def describe(:empty), do: "must not be empty"
   def describe(:too_long), do: "must be at most #{@max_slug_length} characters"

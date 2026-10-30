@@ -2,6 +2,7 @@ defmodule PgFlow.FlowStarterTest do
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias PgFlow.Flow.Shape
   alias PgFlow.{FlowStarter, WorkerSupervisor}
   alias PgFlow.TestRepo
 
@@ -152,7 +153,7 @@ defmodule PgFlow.FlowStarterTest do
       :persistent_term.put({PgFlow, :repo}, TestRepo)
 
       definition = StepModeFlow.__pgflow_definition__()
-      shape = PgFlow.Flow.Shape.from_definition(definition)
+      shape = Shape.from_definition(definition)
       slug = "flow_starter_step_mode"
 
       TestRepo.query!(

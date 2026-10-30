@@ -1039,12 +1039,12 @@ Helpers `recover_stalled_tasks` (V04/V05) and `prune_data_older_than` (V05) must
 **Files:**
 - Modify: `test/support/upstream/migrations.ex`, `test/support/upstream/fixture.ex`, `test/pgflow/upstream/core_upgrade_test.exs`, `test/pgflow/upstream/helpers_upgrade_test.exs`
 
-- [ ] **Step 1:** Tests that called "latest" through `PgFlow.Migration.up()` without a version now land on V03. Pin them so their intent stays intact:
+- [x] **Step 1:** Tests that called "latest" through `PgFlow.Migration.up()` without a version now land on V03. Pin them so their intent stays intact:
   - `core_upgrade_test.exs` keeps proving V01→V02 with `up(version: 2)`.
   - `helpers_upgrade_test.exs` keeps V04→V05/V06.
   - `rg -n "Migration.up\(\)|HelpersMigration.up\(\)" test` lists the candidates.
-- [ ] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test --only migration`, then `PGFLOW_REQUIRE_DB=1 mix test`. Expected: `0 failures`. Also run `mix quality` and fix credo/format/dialyzer findings in touched files only.
-- [ ] **Step 3: Commit.** `test: Pin historical upgrade tests to their versions`
+- [x] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test --only migration`, then `PGFLOW_REQUIRE_DB=1 mix test`. Expected: `0 failures`. Also run `mix quality` and fix credo/format/dialyzer findings in touched files only.
+- [x] **Step 3: Commit.** `test: Pin historical upgrade tests to their versions`
 
 
 ---
@@ -1306,7 +1306,7 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 12 | ca566b1 | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/worker/bootstrap_test.exs test/pgflow/flow_starter_test.exs --include destructive_schema`; `PGFLOW_REQUIRE_DB=1 mix test` | green | RED: `Flows.queue_mode/2` undefined; local `prepare/2` recompiled the step-mode flow (`compilation_status: "recompiled"`); FlowStarter reached `:succeeded`. GREEN: bootstrap and starter files 44 tests, 0 failures. The pre-check runs before `ensure_flow_compiled`, with `is_local()` true, and `queue_mode` stays `step`. No `worker_functions` row is written. FlowStarter classifies `{:unsupported_queue_mode, _, _}` as permanent, schedules no retry, and logs the slug plus `docs/UPGRADING_UPSTREAM_2026_10.md`. Default suite: 1078 tests, 0 failures (93 excluded). The two new bootstrap tests are `:destructive_schema`, so the default run excludes them; `--include destructive_schema` is required for that file. |
 | 13 | 91fc26a | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/operational_routes_test.exs` | green | No V07 overlay. Helpers V05 already resets visibility and deletes archives from `step_tasks.queue_name` / `steps.queue_name`. A compiled step-mode flow has no default `pgmq.q_<flow>` queue. Recovery of one stalled `process` task returned `[[1, 1]]`, left the message visible on `step_mode_recovery__process`, and did not create the flow queue. Prune of an old completed run deleted that run and the archived messages on both `step_mode_prune__process` and `step_mode_prune__deliver`. File: 11 tests, 0 failures. |
 | 14 | 95d9a23 | `mix test test/mix/tasks/pgflow.setup_test.exs` | green | RED: generated `20261030234408_upgrade_pgflow.exs`. GREEN: 6 tests, 0 failures. The filename and module come from `Migration.current_version()` and `HelpersMigration.current_version()` as `v%02d`. `--dashboard` still appends `PgFlowDashboard.Migration.up()`. An existing `*_upgrade_pgflow.exs` is left unchanged. The moduledoc lists stop-and-drain steps 1–6, including `mix pgflow.audit_slugs` and `stop every worker`. |
-| 15 | | | | |
+| 15 | | `PGFLOW_REQUIRE_DB=1 mix test --only migration`; `PGFLOW_REQUIRE_DB=1 mix test`; `mix quality` | green | Historical upgrades were already pinned: core V01→V02 uses `up(version: 2)`, helpers V04→V06 use versions 5 and 6, and the fixture baseline is core 1 / helpers 4. `CoreOnlyMigration` and `HelpersFullChainMigration` stay unversioned because they mean the current install. `mix quality` was red on an ExDNA clone of repo startup, Credo nesting in the catalog check, and `PgFlow.Slug` docs at 0%. Those are fixed. Migration suite: 51 tests, 0 failures. Default suite: 1082 tests, 0 failures (93 excluded). `mix quality` exit 0. |
 | 16 | | | | |
 | 17 | | | | |
 | 18 | | | | |
