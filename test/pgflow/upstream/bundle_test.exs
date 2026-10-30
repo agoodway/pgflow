@@ -1,12 +1,10 @@
 defmodule PgFlow.Upstream.BundleTest do
   use ExUnit.Case, async: false
 
-  alias Mix.Tasks.Pgflow.SyncUpstream
   alias PgFlow.Upstream.Bundle
+  alias PgFlow.Upstream.Spec.V02
 
   @sha "94490709f79ebf366141dd925b047f0c1013e759"
-  @upstream_path "pkgs/core/supabase/migrations"
-  @fixture_sources Path.expand("../../support/upstream/sources", __DIR__)
   @files [
     "20260607175525_pgflow_worker_start_mode.sql",
     "20260904095427_pgflow_task_lifecycle_hardening.sql",
@@ -24,23 +22,30 @@ defmodule PgFlow.Upstream.BundleTest do
       "156de3b8a73812cdba59ee19af1ec8524834f74209c9cb914a2d575c33fe505a"
   }
 
-  describe "portable rejection checks" do
-    test "rejects checkout when HEAD differs from requested SHA even if source bytes match" do
-      checkout = create_checkout!()
+  test "V02 output is frozen to its manifest checksum" do
+    sql = File.read!("priv/pgflow_core/sql/versions/v02/v02_up.sql")
 
-      assert {:error, message} = Bundle.build(checkout, @sha)
-      assert message =~ "checkout HEAD"
-      assert message =~ "does not match requested SHA #{@sha}"
-      refute message =~ "does not match pinned #{@sha} bytes"
-    end
+    manifest =
+      "priv/pgflow_core/sql/versions/v02/v02_manifest.json"
+      |> File.read!()
+      |> Jason.decode!()
 
-    test "rejects every SHA except the authoritative pin" do
-      checkout = create_checkout!()
+    assert :crypto.hash(:sha256, sql) |> Base.encode16(case: :lower) == manifest["output_sha256"]
+  end
 
-      assert {:error, message} = Bundle.build(checkout, String.duplicate("0", 40))
-      assert message =~ "refusing unpinned upstream SHA"
-      assert message =~ @sha
-    end
+  test "build/3 rejects unknown versions" do
+    assert {:error, "unsupported core delta version \"09\"; expected 03"} =
+             Bundle.build("/nonexistent", "deadbeef", "09")
+  end
+
+  test "build/3 with 02 refuses because V02 is published" do
+    assert {:error, "refusing to rewrite published core version V02"} =
+             Bundle.build("/nonexistent", "deadbeef", "02")
+  end
+
+  test "build/3 reports V03 until its spec module is loaded" do
+    assert {:error, "unsupported core delta version \"03\"; expected 03"} =
+             Bundle.build("/nonexistent", "deadbeef", "03")
   end
 
   describe "committed artifacts" do
@@ -57,6 +62,9 @@ defmodule PgFlow.Upstream.BundleTest do
       assert manifest["upstream_sha"] == @sha
       assert manifest["files"] == @files
       assert manifest["source_sha256"] == @source_hashes
+      assert V02.pinned_sha() == @sha
+      assert V02.files() == @files
+      assert V02.source_hashes() == @source_hashes
       assert manifest["output_sha256"] == sha256(sql)
       assert manifest["statement_count"] == 41
 
@@ -96,127 +104,6 @@ defmodule PgFlow.Upstream.BundleTest do
 
       assert sha256(File.read!("priv/pgflow_core/sql/versions/v01/v01_manifest.json")) ==
                "0a639d5309dcf9b59f5759b0d175b3b72366ce0fcf3e9e9864590b8d0ad5b23f"
-    end
-  end
-
-  describe "with PGFLOW_UPSTREAM_CHECKOUT" do
-    @describetag :upstream_checkout
-    setup do
-      [checkout: System.fetch_env!("PGFLOW_UPSTREAM_CHECKOUT")]
-    end
-
-    test "rejects dirty source bytes even when checkout HEAD matches the pin", %{
-      checkout: checkout
-    } do
-      path = Path.join([checkout, @upstream_path, List.first(@files)])
-      original = File.read!(path)
-      File.write!(path, original <> "\n-- dirty\n")
-
-      on_exit(fn -> File.write!(path, original) end)
-
-      assert {:error, message} = Bundle.build(checkout, @sha)
-      assert message =~ "does not match pinned #{@sha} bytes"
-      assert message =~ Map.fetch!(@source_hashes, List.first(@files))
-    end
-
-    test "builds the pinned delta deterministically with complete provenance", %{
-      checkout: checkout
-    } do
-      assert {:ok, first} = Bundle.build(checkout, @sha)
-      assert {:ok, second} = Bundle.build(checkout, @sha)
-      assert first == second
-
-      assert first.manifest["upstream_sha"] == @sha
-      assert first.manifest["files"] == @files
-      assert first.manifest["source_sha256"] == @source_hashes
-      assert first.manifest["output_sha256"] == sha256(first.sql)
-
-      assert first.manifest["statement_count"] ==
-               length(String.split(first.sql, "\n\n--SPLIT--\n\n"))
-
-      refute first.sql =~ "net.http_post"
-      refute first.sql =~ ~r/^SET lock_timeout\b/m
-      assert first.sql =~ "SET LOCAL lock_timeout = '10s'"
-    end
-
-    test "committed V02 output matches the deterministic builder", %{checkout: checkout} do
-      assert {:ok, bundle} = Bundle.build(checkout, @sha)
-      version_dir = Path.join(File.cwd!(), "priv/pgflow_core/sql/versions/v02")
-
-      assert File.read!(Path.join(version_dir, "v02_up.sql")) == bundle.sql
-
-      assert Path.join(version_dir, "v02_manifest.json")
-             |> File.read!()
-             |> Jason.decode!() == bundle.manifest
-    end
-
-    test "sync task checks committed output without rewriting it", %{checkout: checkout} do
-      up_path = "priv/pgflow_core/sql/versions/v02/v02_up.sql"
-      before = File.stat!(up_path).mtime
-      Mix.Task.reenable("pgflow.sync_upstream")
-
-      SyncUpstream.run([
-        "--checkout",
-        checkout,
-        "--sha",
-        @sha,
-        "--version",
-        "02",
-        "--check"
-      ])
-
-      assert File.stat!(up_path).mtime == before
-    end
-
-    test "sync task refuses to rewrite published V01", %{checkout: checkout} do
-      Mix.Task.reenable("pgflow.sync_upstream")
-
-      assert_raise Mix.Error, ~r/refusing to rewrite published core version V01/, fn ->
-        SyncUpstream.run([
-          "--checkout",
-          checkout,
-          "--sha",
-          @sha,
-          "--version",
-          "01"
-        ])
-      end
-    end
-  end
-
-  defp create_checkout! do
-    checkout =
-      Path.join(System.tmp_dir!(), "pgflow-upstream-#{System.unique_integer([:positive])}")
-
-    migrations = Path.join(checkout, @upstream_path)
-    File.mkdir_p!(migrations)
-
-    Enum.each(@files, fn file ->
-      File.cp!(Path.join(@fixture_sources, file), Path.join(migrations, file))
-    end)
-
-    git!(checkout, ["init", "--quiet"])
-    git!(checkout, ["add", "."])
-
-    git!(checkout, [
-      "-c",
-      "user.name=PgFlow Test",
-      "-c",
-      "user.email=pgflow@example.invalid",
-      "commit",
-      "--quiet",
-      "-m",
-      "Pinned #{@sha} source fixture"
-    ])
-
-    on_exit(fn -> File.rm_rf!(checkout) end)
-    checkout
-  end
-
-  defp git!(checkout, args) do
-    case System.cmd("git", ["-C", checkout | args], stderr_to_stdout: true) do
-      {_output, 0} -> :ok
-      {output, status} -> flunk("git exited #{status}: #{output}")
     end
   end
 

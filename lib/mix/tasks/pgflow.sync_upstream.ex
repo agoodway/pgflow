@@ -3,10 +3,10 @@ defmodule Mix.Tasks.Pgflow.SyncUpstream do
   @moduledoc """
   Builds a deterministic core SQL delta from a reviewed upstream checkout.
 
-      mix pgflow.sync_upstream --checkout PATH --sha SHA --version 02
-      mix pgflow.sync_upstream --checkout PATH --sha SHA --version 02 --check
+      mix pgflow.sync_upstream --checkout PATH --sha SHA --version 03
+      mix pgflow.sync_upstream --checkout PATH --sha SHA --version 03 --check
 
-  V01 is published and can never be rewritten by this task.
+  V01 and V02 are published and can never be rewritten by this task.
   """
 
   use Mix.Task
@@ -14,14 +14,7 @@ defmodule Mix.Tasks.Pgflow.SyncUpstream do
   alias PgFlow.Upstream.Bundle
 
   @switches [checkout: :string, sha: :string, version: :string, check: :boolean]
-  @published_versions ["01"]
-  @down_sql """
-  DO $pgflow_forward_only$
-  BEGIN
-    RAISE EXCEPTION 'PgFlow core V02 is forward-only: new statuses and queue identities cannot safely be discarded automatically. Restore from a pre-upgrade backup or roll forward with a corrective migration.';
-  END
-  $pgflow_forward_only$
-  """
+  @published_versions Bundle.published_versions()
 
   @impl Mix.Task
   def run(args) do
@@ -33,13 +26,13 @@ defmodule Mix.Tasks.Pgflow.SyncUpstream do
 
     with {:ok, opts} <- parse(args),
          :ok <- validate_version(opts[:version]),
-         {:ok, bundle} <- Bundle.build(opts[:checkout], opts[:sha]) do
+         {:ok, bundle} <- Bundle.build(opts[:checkout], opts[:sha], opts[:version]) do
       files = output_files(opts[:version], bundle)
 
       if opts[:check] do
-        check!(files)
+        check!(opts[:version], files)
       else
-        write!(files)
+        write!(opts[:version], files)
       end
     else
       {:error, message} -> Mix.raise(message)
@@ -64,27 +57,32 @@ defmodule Mix.Tasks.Pgflow.SyncUpstream do
     end
   end
 
-  defp validate_version(version) when version in @published_versions do
-    {:error, "refusing to rewrite published core version V#{version}"}
+  defp validate_version(version) do
+    Bundle.validate_version(version, @published_versions)
   end
-
-  defp validate_version("02"), do: :ok
-
-  defp validate_version(version),
-    do: {:error, "unsupported core delta version #{inspect(version)}; expected 02"}
 
   defp output_files(version, bundle) do
     directory = Path.join(File.cwd!(), "priv/pgflow_core/sql/versions/v#{version}")
 
     %{
       Path.join(directory, "v#{version}_up.sql") => bundle.sql,
-      Path.join(directory, "v#{version}_down.sql") => @down_sql,
+      Path.join(directory, "v#{version}_down.sql") => down_sql(version),
       Path.join(directory, "v#{version}_manifest.json") =>
         Jason.encode!(bundle.manifest, pretty: true) <> "\n"
     }
   end
 
-  defp check!(files) do
+  defp down_sql(version) do
+    """
+    DO $pgflow_forward_only$
+    BEGIN
+      RAISE EXCEPTION 'PgFlow core V#{version} is forward-only: new statuses and queue identities cannot safely be discarded automatically. Restore from a pre-upgrade backup or roll forward with a corrective migration.';
+    END
+    $pgflow_forward_only$
+    """
+  end
+
+  defp check!(version, files) do
     mismatches =
       Enum.reject(files, fn {path, expected} ->
         File.read(path) == {:ok, expected}
@@ -92,19 +90,19 @@ defmodule Mix.Tasks.Pgflow.SyncUpstream do
 
     case mismatches do
       [] ->
-        Mix.shell().info("pgflow core V02 output is current")
+        Mix.shell().info("pgflow core V#{version} output is current")
 
       entries ->
         Mix.raise("generated output differs: #{Enum.map_join(entries, ", ", &elem(&1, 0))}")
     end
   end
 
-  defp write!(files) do
+  defp write!(version, files) do
     Enum.each(files, fn {path, content} ->
       File.mkdir_p!(Path.dirname(path))
       File.write!(path, content)
     end)
 
-    Mix.shell().info("generated pgflow core V02")
+    Mix.shell().info("generated pgflow core V#{version}")
   end
 end

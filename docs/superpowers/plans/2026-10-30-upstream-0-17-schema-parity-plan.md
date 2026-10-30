@@ -701,7 +701,7 @@ end
 - Modify: `lib/pgflow/upstream/bundle.ex`, `lib/mix/tasks/pgflow.sync_upstream.ex`
 - Modify: `test/pgflow/upstream/bundle_test.exs`, `test/mix/tasks/pgflow.sync_upstream_test.exs`
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
 ```elixir
 test "V02 output is frozen to its manifest checksum" do
@@ -723,9 +723,9 @@ end
 
   In `sync_upstream_test.exs`, change the expectations: `--version 02` now raises `refusing to rewrite published core version V02`, and the unsupported-version message expects `03`.
 
-- [ ] **Step 2: Run.** `mix test test/pgflow/upstream/bundle_test.exs test/mix/tasks/pgflow.sync_upstream_test.exs`. Expected: `build/3 undefined`; message mismatches.
+- [x] **Step 2: Run.** `mix test test/pgflow/upstream/bundle_test.exs test/mix/tasks/pgflow.sync_upstream_test.exs`. Expected: `build/3 undefined`; message mismatches.
 
-- [ ] **Step 3: Implement.**
+- [x] **Step 3: Implement.**
   - Move the V02 constants (`@pinned_sha`, `@files`, `@source_hashes`, manifest `removals`/`transformations`, `transform_statement/1` rules) into `PgFlow.Upstream.Spec.V02`, a plain module exposing `pinned_sha/0`, `files/0`, `source_hashes/0`, `rules/0` and `manifest_notes/0`. It stays the record of how V02 was built.
   - `Bundle.build(checkout, sha, version)` uses `@specs %{"03" => PgFlow.Upstream.Spec.V03}` and `@published ~w(01 02)`. Until Task 7, `"03"` returns `{:error, "unsupported core delta version \"03\"; expected 03"}` (`Spec.V03` does not exist yet; guard with `Code.ensure_loaded?/1`). That message keeps the test honest without a fake spec.
   - Generic steps stay in `Bundle`: `verify_sha/2`, `verify_checkout_head/2`, `read_verified_sources/2`, `shape_dispatch/1`, `add_attempts_count/1`, `replace_once/4`, `sha256/1`.
@@ -738,8 +738,8 @@ end
     - Update the moduledoc examples to `--version 03`.
   - Delete the old-pin rebuild tests in `bundle_test.exs` (~L108–171). They need a `94490709` checkout and are replaced by the frozen-checksum test. Keep the provenance assertions on the committed V02 manifest (~L47).
 
-- [ ] **Step 4: Run.** Same, then `mix test test/pgflow/upstream`. Expected: `0 failures`. `git status` must show no change under `priv/pgflow_core/sql/versions/v02/`.
-- [ ] **Step 5: Commit.** `refactor: Generalize the upstream bundle to versioned specs`
+- [x] **Step 4: Run.** Same, then `mix test test/pgflow/upstream`. Expected: `0 failures`. `git status` must show no change under `priv/pgflow_core/sql/versions/v02/`.
+- [x] **Step 5: Commit.** `refactor: Generalize the upstream bundle to versioned specs`
 
 ### Task 7: Import pgflow 0.17.2 as core V03
 
@@ -1297,7 +1297,7 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 3 | a5e0f93 | `mix test test/pgflow/dsl/validation_test.exs test/pgflow/flow_test.exs test/pgflow/job_test.exs`; `mix test` | green | RED: 15 failures (`UndefinedFunctionError` on the unit tests; the DSL fixtures compiled without raising). GREEN: those three files 138 tests, 0 failures. Full suite 1055 tests, 0 failures (82 excluded). No existing fixture slug was invalid. |
 | 4 | 3370d19 | `mix test test/pgflow/config_test.exs`; `mix test` | green | RED: `validate!/1` did not raise for `:orders` / `:Orders`. The first fix also failed three older tests that passed unloaded placeholder modules to `Code.ensure_loaded!`. Those fixtures now use real flow and job modules. GREEN: `config_test` 77 tests, 0 failures. Full suite 1056 tests, 0 failures (82 excluded). |
 | 5 | 7523f98 | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upgrade test/mix/tasks/pgflow.audit_slugs_test.exs` | green | RED: 6 failures, `UndefinedFunctionError` for `PgFlow.Upgrade.SlugAudit` and `Mix.Tasks.Pgflow.AuditSlugs`. GREEN: 6 tests, 0 failures. Full suite 1062 tests, 0 failures (82 excluded). The matrix binds `$1::text` because a bare `$1` is PostgreSQL `42P08 ambiguous_parameter`. `string_agg` orders with `COLLATE "C"` so the reported pair is `Fetch,fetch`; this database's `en_US.utf8` collation would emit `fetch,Fetch`. `run/2` still issues `SET TRANSACTION READ ONLY`. Inside the Ecto sandbox that command is `25001` after earlier statements, the savepoint rolls back, and the `SELECT` runs in the caller's transaction. A fresh transaction (`Sandbox.unboxed_run`) stays read only and rejects writes. Flow findings omit a nil `step_slug` so the three-key maps match with `in`. |
-| 6 | | | | |
+| 6 | | `mix test test/pgflow/upstream/bundle_test.exs test/mix/tasks/pgflow.sync_upstream_test.exs`; `mix test test/pgflow/upstream` | green | RED: `Bundle.build/3` undefined. `--version 02` still said `refusing unpinned upstream SHA`; `--version 09` said `expected 02`. GREEN: `test/pgflow/upstream` 57 tests, 0 failures (20 excluded). No change under `priv/pgflow_core/sql/versions/v02/`. The old-pin rebuild tests needed checkout `94490709` and were removed; the frozen checksum and the published-version refusal replace them. `build/3` with `"03"` stays `unsupported ... expected 03` until `Spec.V03` exists. |
 | 7 | | | | |
 | 8 | | | | |
 | 9 | | | | |
