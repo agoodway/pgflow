@@ -8,6 +8,16 @@ defmodule PgFlow.Upstream.CoreUpgradeMigration do
   def down, do: PgFlow.Migration.down(version: 1)
 end
 
+defmodule PgFlow.Upstream.CoreV03Migration do
+  @moduledoc false
+  use Ecto.Migration
+
+  @doc "Upgrades the fixture through core V03."
+  def up, do: PgFlow.Migration.up(version: 3)
+  @doc "Exercises the core V03 forward-only rollback guard."
+  def down, do: PgFlow.Migration.down(version: 2)
+end
+
 defmodule PgFlow.Upstream.HelpersUpgradeMigration do
   @moduledoc false
   use Ecto.Migration

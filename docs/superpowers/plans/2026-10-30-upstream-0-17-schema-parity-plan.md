@@ -825,7 +825,7 @@ end
 - Modify: `test/support/upstream/migrations.ex` (add `PgFlow.Upstream.CoreV03Migration`: `up` → `PgFlow.Migration.up(version: 3)`, `down` → `PgFlow.Migration.down(version: 2)`)
 - Create: `test/pgflow/upstream/core_v03_upgrade_test.exs`
 
-- [ ] **Step 1: Write the failing tests.** Copy the module header and the private helpers (`fixture!/0`, `in_fixture/2`, `scalar!/1`, `core_version/0`, `record_fields/0`) from `core_upgrade_test.exs`. Use `@moduletag :integration` and `@moduletag :migration`.
+- [x] **Step 1: Write the failing tests.** Copy the module header and the private helpers (`fixture!/0`, `in_fixture/2`, `scalar!/1`, `core_version/0`, `record_fields/0`) from `core_upgrade_test.exs`. Use `@moduletag :integration` and `@moduletag :migration`.
   1. **Fresh core-only install of V01→V03.** Assert:
      - `core_version() == 3`
      - `pgflow.flows.queue_mode` exists with default `'flow'`
@@ -843,14 +843,14 @@ end
   4. **Case-insensitive step collision.** Steps `fetch` and `Fetch` in one flow make V03 fail. The pre-flight lists them as `step_collision`.
   5. **Forward-only.** `PgFlow.Migration.down(version: 2)` raises the V03 forward-only message.
 
-- [ ] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/core_v03_upgrade_test.exs`. Expected: `version 3 not defined`/`UndefinedFunctionError PgFlow.Migrations.Core.V03`.
+- [x] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/core_v03_upgrade_test.exs`. Expected: `version 3 not defined`/`UndefinedFunctionError PgFlow.Migrations.Core.V03`.
 
-- [ ] **Step 3: Implement.** `PgFlow.Migrations.Core.V03` copies `core/v02.ex` with `version: "03"` and a moduledoc listing the 0.17.2 changes. Append `Core.V03` to the list in `PgFlow.Migration`.
+- [x] **Step 3: Implement.** `PgFlow.Migrations.Core.V03` copies `core/v02.ex` with `version: "03"` and a moduledoc listing the 0.17.2 changes. Append `Core.V03` to the list in `PgFlow.Migration`.
 
-- [ ] **Step 4: Rebuild the test DB and run.** `test_helper.exs` refuses a DB whose core version differs from `PgFlow.Migration.current_version()`. Run:
+- [x] **Step 4: Rebuild the test DB and run.** `test_helper.exs` refuses a DB whose core version differs from `PgFlow.Migration.current_version()`. Run:
   `MIX_ENV=test mix pgflow.test.reset && PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/core_v03_upgrade_test.exs`
   Expected: `0 failures`. Then run `PGFLOW_REQUIRE_DB=1 mix test`. Many runtime tests **fail** here (the 4-arg claim is gone, and helpers V06 is still installed on top). Record the count in the ledger; Tasks 9–11 bring it back to green. Do not commit a red `mix test` without noting it in the commit body.
-- [ ] **Step 5: Commit.** `feat: Register core V03 and cover its upgrade paths`. Body bullet: `- Runtime suite is red until helpers V07 and the new call signatures land`.
+- [x] **Step 5: Commit.** `feat: Register core V03 and cover its upgrade paths`. Body bullet: `- Runtime suite is red until helpers V07 and the new call signatures land`.
 
 ### Task 9: Helpers V07: claim and worker-version overlays
 
@@ -1299,7 +1299,7 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 5 | 7523f98 | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upgrade test/mix/tasks/pgflow.audit_slugs_test.exs` | green | RED: 6 failures, `UndefinedFunctionError` for `PgFlow.Upgrade.SlugAudit` and `Mix.Tasks.Pgflow.AuditSlugs`. GREEN: 6 tests, 0 failures. Full suite 1062 tests, 0 failures (82 excluded). The matrix binds `$1::text` because a bare `$1` is PostgreSQL `42P08 ambiguous_parameter`. `string_agg` orders with `COLLATE "C"` so the reported pair is `Fetch,fetch`; this database's `en_US.utf8` collation would emit `fetch,Fetch`. `run/2` still issues `SET TRANSACTION READ ONLY`. Inside the Ecto sandbox that command is `25001` after earlier statements, the savepoint rolls back, and the `SELECT` runs in the caller's transaction. A fresh transaction (`Sandbox.unboxed_run`) stays read only and rejects writes. Flow findings omit a nil `step_slug` so the three-key maps match with `in`. |
 | 6 | d3c3e6c | `mix test test/pgflow/upstream/bundle_test.exs test/mix/tasks/pgflow.sync_upstream_test.exs`; `mix test test/pgflow/upstream` | green | RED: `Bundle.build/3` undefined. `--version 02` still said `refusing unpinned upstream SHA`; `--version 09` said `expected 02`. GREEN: `test/pgflow/upstream` 57 tests, 0 failures (20 excluded). No change under `priv/pgflow_core/sql/versions/v02/`. The old-pin rebuild tests needed checkout `94490709` and were removed; the frozen checksum and the published-version refusal replace them. `build/3` with `"03"` stays `unsupported ... expected 03` until `Spec.V03` exists. |
 | 7 | c9fb63d | `PGFLOW_UPSTREAM_CHECKOUT=… mix test test/pgflow/upstream/bundle_test.exs`; `mix test test/pgflow/upstream/bundle_test.exs test/mix/tasks/pgflow.sync_upstream_test.exs`; `MIX_ENV=test mix pgflow.sync_upstream … --version 03 --check` | green | RED: three tests matched `unsupported core delta version "03"; expected 03`. The fourth called `build/4`, which did not exist yet (`UndefinedFunctionError`). GREEN: with the checkout, 13 tests, 0 failures. Without it, 9 tests, 0 failures (4 excluded). `--check` printed `pgflow core V03 output is current`. The checkout describe had been removed in Task 6 and is restored here. `slug_preflight` is `{:append_after, :set_local_lock_timeout, …}` so it runs under the lock budget; a prepend would lose the statement to `set_local`. The telemetry allowlist filters the file before the rules, which lets `replace_desc_runs_index` see `idx_runs_started_at` and keeps `net.http_post` inside `pgflow_telemetry` out of the reject guard. The fragment rewrites only the quoted `"pgflow".` qualifier to `$SCHEMA$.`, matching the V02 fragment header. The always-on V03 test now refuses an unpinned SHA. |
-| 8 | | | | |
+| 8 | | `MIX_ENV=test mix pgflow.test.reset`; `PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/core_v03_upgrade_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test` | upgrade green; runtime red | RED: `UndefinedFunctionError` `nil.up/1` for version 3. GREEN: the five upgrade tests, 0 failures. Runtime suite: 1067 tests, 157 failures (86 excluded). Helpers V06 still installs the 4-arg claim beside V03's 5-arg claim, so calls are `not unique`, and schema check still requires the 2-arg `ensure_flow_compiled`. `pgflow_tests.read_and_start` passes `NULL::text` so the boot script can be created. `pg_get_function_identity_arguments` includes argument names. Downgrade runs through `Ecto.Migrator` because `Evolver.down/1` needs the migration runner. Seeded step states stay `created`; `started` requires `initial_tasks`. |
 | 9 | | | | |
 | 10 | | | | |
 | 11 | | | | |
