@@ -72,6 +72,7 @@ defmodule PgFlow.Upgrade.SlugAuditTest do
   defp seed_offenders! do
     TestRepo.query!("ALTER TABLE pgflow.flows DROP CONSTRAINT slug_is_valid")
     TestRepo.query!("ALTER TABLE pgflow.steps DROP CONSTRAINT steps_step_slug_check")
+    TestRepo.query!("DROP INDEX IF EXISTS pgflow.idx_steps_normalized_slug")
     TestRepo.query!("INSERT INTO pgflow.flows (flow_slug) VALUES ('ok_flow')")
     TestRepo.query!("INSERT INTO pgflow.flows (flow_slug) VALUES ('bad__flow')")
 

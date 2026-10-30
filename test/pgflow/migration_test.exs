@@ -120,7 +120,10 @@ defmodule PgFlow.MigrationTest do
         SELECT obj_description(('pgflow.pgflow_version')::regclass, 'pg_class')
         """)
 
-      assert comment =~ ~r/version=2/, "expected version=2 comment, got #{inspect(comment)}"
+      version = PgFlow.Migration.current_version()
+
+      assert comment =~ ~r/version=#{version}\b/,
+             "expected version=#{version} comment, got #{inspect(comment)}"
     end
 
     test "creates pgflow functions" do

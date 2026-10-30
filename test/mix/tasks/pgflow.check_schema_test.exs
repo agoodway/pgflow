@@ -23,17 +23,41 @@ defmodule Mix.Tasks.Pgflow.CheckSchemaTest do
 
   describe "SchemaCheck.run/1" do
     test "passes on the fully upgraded test database" do
+      assert PgFlow.Migration.current_version() == 3
+      assert PgFlow.HelpersMigration.current_version() == 7
       assert :ok = SchemaCheck.run(TestRepo)
+      assert :ok = SchemaCheck.runtime_checks(TestRepo)
     end
 
     @tag :destructive_schema
-    test "rejects databases with the obsolete three-argument claim" do
-      assert {:error, errors} =
-               with_schema_change(
-                 "DROP FUNCTION IF EXISTS pgflow.start_tasks(text, bigint[], uuid, text)"
-               )
+    test "rejects a recreated four-argument claim" do
+      assert {:error, {:schema_incompatible, :start_tasks_legacy}} =
+               with_runtime_change("""
+               CREATE FUNCTION pgflow.start_tasks(text, bigint[], uuid, text)
+               RETURNS SETOF pgflow.step_task_record
+               LANGUAGE sql AS $$
+                 SELECT * FROM pgflow.start_tasks($1, $2, $3, $4, NULL::text)
+               $$
+               """)
 
-      assert Enum.any?(errors, &String.contains?(&1, "four-argument claim"))
+      assert {:error, errors} =
+               with_schema_change("""
+               CREATE FUNCTION pgflow.start_tasks(text, bigint[], uuid, text)
+               RETURNS SETOF pgflow.step_task_record
+               LANGUAGE sql AS $$
+                 SELECT * FROM pgflow.start_tasks($1, $2, $3, $4, NULL::text)
+               $$
+               """)
+
+      assert Enum.any?(errors, &String.contains?(&1, "obsolete four-argument claim"))
+    end
+
+    @tag :destructive_schema
+    test "rejects helpers older than the bundled version" do
+      assert {:error, {:schema_incompatible, :helpers_version}} =
+               with_runtime_change(
+                 "COMMENT ON VIEW pgflow.extensions_version IS 'PgFlow helpers version=6'"
+               )
     end
 
     @tag :destructive_schema
@@ -75,7 +99,9 @@ defmodule Mix.Tasks.Pgflow.CheckSchemaTest do
       Sandbox.checkout(TestRepo)
       Sandbox.mode(TestRepo, {:shared, self()})
 
-      TestRepo.query!("DROP FUNCTION IF EXISTS pgflow.ensure_flow_compiled(text, jsonb)")
+      TestRepo.query!(
+        "DROP FUNCTION IF EXISTS pgflow.ensure_flow_compiled(text, jsonb, text, jsonb)"
+      )
 
       try do
         assert_raise Mix.Error, ~r/not compatible/, fn ->
@@ -99,16 +125,24 @@ defmodule Mix.Tasks.Pgflow.CheckSchemaTest do
     result
   end
 
+  defp with_runtime_change(sql) do
+    {:error, result} =
+      TestRepo.transaction(fn ->
+        TestRepo.query!(sql)
+        TestRepo.rollback(SchemaCheck.runtime_checks(TestRepo))
+      end)
+
+    result
+  end
+
   defp restore_compile_signature! do
-    sql_path = Path.join(:code.priv_dir(:pgflow), "pgflow_core/sql/versions/v02/v02_up.sql")
+    sql_path = Path.join(:code.priv_dir(:pgflow), "pgflow_core/sql/versions/v03/v03_up.sql")
 
     statement =
       sql_path
       |> File.read!()
       |> String.split("--SPLIT--")
-      |> Enum.find(
-        &String.contains?(&1, ~s(CREATE OR REPLACE FUNCTION "pgflow"."ensure_flow_compiled"))
-      )
+      |> Enum.find(&String.contains?(&1, ~s(CREATE FUNCTION "pgflow"."ensure_flow_compiled")))
 
     TestRepo.query!(String.trim(statement))
   end

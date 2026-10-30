@@ -102,14 +102,22 @@ defmodule PgFlow.Worker.BootstrapTest do
         |> Jason.decode!()
         |> Map.fetch!("target")
 
-      # The manifest names the 0.17.2 signatures. The installed database still
-      # exposes the pre-V03 claim and compile functions until core V03 and
-      # helpers V07 land; SchemaCheck below is the live contract until then.
       for signature <- [
-            "pgflow.start_tasks(text,bigint[],uuid,text)",
-            "pgflow.ensure_flow_compiled(text,jsonb)"
+            target["claim_signature"],
+            target["compile_signature"],
+            target["register_worker_signature"]
           ] do
         assert %{rows: [[true]]} =
+                 TestRepo.query!("SELECT to_regprocedure($1::text) IS NOT NULL", [signature])
+      end
+
+      for signature <- [
+            "pgflow.start_tasks(text,bigint[],uuid,text)",
+            "pgflow.start_tasks(text,bigint[],uuid)",
+            "pgflow.ensure_flow_compiled(text,jsonb)",
+            "pgflow.register_worker(uuid,text,text)"
+          ] do
+        assert %{rows: [[false]]} =
                  TestRepo.query!("SELECT to_regprocedure($1::text) IS NOT NULL", [signature])
       end
 
@@ -150,8 +158,8 @@ defmodule PgFlow.Worker.BootstrapTest do
                Bootstrap.prepare(TestRepo, BootstrapCompileFlow.__pgflow_definition__())
     end
 
-    test "rejects missing four argument claim" do
-      TestRepo.query!("DROP FUNCTION pgflow.start_tasks(text,bigint[],uuid,text)")
+    test "rejects missing five argument claim" do
+      TestRepo.query!("DROP FUNCTION pgflow.start_tasks(text,bigint[],uuid,text,text)")
 
       assert {:error, {:schema_incompatible, :start_tasks}} =
                Bootstrap.prepare(TestRepo, BootstrapCompileFlow.__pgflow_definition__())
@@ -300,7 +308,9 @@ defmodule PgFlow.Worker.BootstrapTest do
     test "returns schema error when ensure_flow_compiled is missing" do
       definition = BootstrapCompileFlow.__pgflow_definition__()
 
-      TestRepo.query!("DROP FUNCTION IF EXISTS pgflow.ensure_flow_compiled(text, jsonb)")
+      TestRepo.query!(
+        "DROP FUNCTION IF EXISTS pgflow.ensure_flow_compiled(text, jsonb, text, jsonb)"
+      )
 
       try do
         assert {:error, {:schema_incompatible, :ensure_flow_compiled}} =
@@ -546,7 +556,7 @@ defmodule PgFlow.Worker.BootstrapTest do
   defp ensure_v02_compilation_schema! do
     {:ok, %{rows: [[exists?]]}} =
       TestRepo.query(
-        "SELECT to_regprocedure('pgflow.ensure_flow_compiled(text,jsonb)') IS NOT NULL"
+        "SELECT to_regprocedure('pgflow.ensure_flow_compiled(text,jsonb,text,jsonb)') IS NOT NULL"
       )
 
     if exists? do
@@ -557,13 +567,13 @@ defmodule PgFlow.Worker.BootstrapTest do
   end
 
   defp apply_core_v02_sql! do
-    sql_path = Path.join(:code.priv_dir(:pgflow), "pgflow_core/sql/versions/v02/v02_up.sql")
+    sql_path = Path.join(:code.priv_dir(:pgflow), "pgflow_core/sql/versions/v03/v03_up.sql")
 
     sql_path
     |> File.read!()
     |> String.split("--SPLIT--")
     |> Enum.filter(fn chunk ->
-      String.contains?(chunk, ~s(CREATE OR REPLACE FUNCTION "pgflow"."ensure_flow_compiled"))
+      String.contains?(chunk, ~s(CREATE FUNCTION "pgflow"."ensure_flow_compiled"))
     end)
     |> List.last()
     |> case do

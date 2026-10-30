@@ -105,7 +105,7 @@ defmodule PgFlow.FlowStarterTest do
 
     @tag :destructive_schema
     test "missing claim protocol is a permanent startup failure" do
-      TestRepo.query!("DROP FUNCTION pgflow.start_tasks(text,bigint[],uuid,text)")
+      TestRepo.query!("DROP FUNCTION pgflow.start_tasks(text,bigint[],uuid,text,text)")
       FlowStarter.retry_now(ShapeMismatchFlow)
 
       assert wait_until(fn ->

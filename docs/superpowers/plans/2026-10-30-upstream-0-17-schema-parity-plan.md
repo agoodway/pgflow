@@ -951,15 +951,15 @@ end
 - Modify: `lib/pgflow/schema_check.ex`
 - Modify: `test/pgflow/schema_alignment_test.exs`, and the schema-check tests under `test/mix/tasks/` (`pgflow.check_schema_test.exs`)
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
   - `runtime_checks/1` on the current DB returns `:ok`.
   - On a DB where `start_tasks(text,bigint[],uuid,text)` is re-created by hand, it returns `{:error, {:schema_incompatible, :start_tasks_legacy}}`.
   - On a DB where `extensions_version` reports 6, it returns `{:error, {:schema_incompatible, :helpers_version}}`.
   - `SchemaCheck.run/1` reports core 3 and helpers 7 as required.
 
-- [ ] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/schema_alignment_test.exs test/mix/tasks/pgflow.check_schema_test.exs`. Expected: failures on the signature names.
+- [x] **Step 2: Run.** `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/schema_alignment_test.exs test/mix/tasks/pgflow.check_schema_test.exs`. Expected: failures on the signature names.
 
-- [ ] **Step 3: Implement.**
+- [x] **Step 3: Implement.**
   - Set the signatures:
     - `@claim_signature "pgflow.start_tasks(text,bigint[],uuid,text,text)"`
     - `@legacy_claim_signatures ["pgflow.start_tasks(text,bigint[],uuid,text)", "pgflow.start_tasks(text,bigint[],uuid)"]`, each must be absent
@@ -970,8 +970,8 @@ end
   - `check_core_version`/`check_helpers_version` already use `current_version()`; keep them.
   - Update the moduledoc.
 
-- [ ] **Step 4: Regression run for kept decisions.** `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/flow_compiler_test.exs test/pgflow/job_compiler_test.exs test/pgflow/runtime_flow_management_test.exs test/pgflow/schema_constraints_test.exs`, then the full `PGFLOW_REQUIRE_DB=1 mix test` and `PGFLOW_REQUIRE_DB=1 mix test --only migration`. Expected: `0 failures`. This is the 2026-09-14 Decision 6 regression gate: `FlowCompiler`, `JobCompiler` and public `upsert_flow` still work on V03.
-- [ ] **Step 5: Commit.** `feat: Require core V03 and helpers V07 at boot`
+- [x] **Step 4: Regression run for kept decisions.** `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/flow_compiler_test.exs test/pgflow/job_compiler_test.exs test/pgflow/runtime_flow_management_test.exs test/pgflow/schema_constraints_test.exs`, then the full `PGFLOW_REQUIRE_DB=1 mix test` and `PGFLOW_REQUIRE_DB=1 mix test --only migration`. Expected: `0 failures`. This is the 2026-09-14 Decision 6 regression gate: `FlowCompiler`, `JobCompiler` and public `upsert_flow` still work on V03.
+- [x] **Step 5: Commit.** `feat: Require core V03 and helpers V07 at boot`
 
 ### Task 12: Refuse to serve step-mode flows
 
@@ -1302,7 +1302,7 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 8 | ccdd670 | `MIX_ENV=test mix pgflow.test.reset`; `PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/core_v03_upgrade_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test` | upgrade green; runtime red | RED: `UndefinedFunctionError` `nil.up/1` for version 3. GREEN: the five upgrade tests, 0 failures. Runtime suite: 1067 tests, 157 failures (86 excluded). Helpers V06 still installs the 4-arg claim beside V03's 5-arg claim, so calls are `not unique`, and schema check still requires the 2-arg `ensure_flow_compiled`. `pgflow_tests.read_and_start` passes `NULL::text` so the boot script can be created. `pg_get_function_identity_arguments` includes argument names. Downgrade runs through `Ecto.Migrator` because `Evolver.down/1` needs the migration runner. Seeded step states stay `created`; `started` requires `initial_tasks`. |
 | 9 | 00ee7ef | `MIX_ENV=test mix pgflow.test.reset`; `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/migrations/versions/v07_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test --only migration test/pgflow/upstream/helpers_v07_upgrade_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/migrations` | green | RED: `UndefinedFunctionError` `Claim.verify_v03!/0`, `File.Error` for `v07_up.sql`/`v07_down.sql`, and `nil.up/1` for helpers version 7. GREEN: `test/pgflow/migrations` 22 tests, 0 failures (4 excluded). Upgrade file 4 tests, 0 failures. The claim test registers the worker first because `step_tasks.last_worker_id` is a foreign key; `attempts_count` stays `1`. `v06` now asserts `current_version() >= 6` and `v07` asserts `== 7`. Helper migrator versions in this file are `205`/`206` so they sort after core `203`. |
 | 10 | b60866f | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/version_test.exs test/pgflow/queries_test.exs test/pgflow/workers_test.exs`; `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/worker/bootstrap_test.exs --include destructive_schema`; `PGFLOW_REQUIRE_DB=1 mix test` | call sites green; schema red | RED: `PgFlow.Version` undefined; `register_worker(unknown, unknown, unknown)` does not exist; compile SQL had no `'flow'` or `NULL::jsonb`; routing diffs were still `{:flow_shape_mismatch, _}`. GREEN: version, queries, and workers, 52 tests, 0 failures (21 excluded). `_compare_flow_shapes` ignores `maxAttempts`, so the mismatch test changes `whenUnmet`. `:auto` sandbox ends each statement, so production mode is `set_config` inside `TestRepo.transaction/1`. Bootstrap with the destructive tag: 21 tests, 15 failures, all `{:schema_incompatible, :start_tasks}` until Task 11. Full suite: 1077 tests, 91 failures (90 excluded): 90 `{:schema_incompatible, :ensure_flow_compiled}` and the pre-existing `idx_steps_normalized_slug` seed in `slug_audit_test`. |
-| 11 | | | | |
+| 11 | | `PGFLOW_REQUIRE_DB=1 mix test`; `PGFLOW_REQUIRE_DB=1 mix test --only migration` | green | Runtime checks require the 5-arg claim, 4-arg compile, and 4-arg `register_worker`, and reject the legacy overloads. Helpers floor is `HelpersMigration.current_version()`. Ecto schemas record `flows.queue_mode` and `workers.pgflow_version`. Bootstrap stops reinstalling the 2-arg compiler. Slug audit drops `idx_steps_normalized_slug` inside the test transaction so `Fetch`/`fetch` can still be seeded. Latest-install assertions are core 3 / helpers 7; the V02→V06 path stays pinned. Default suite: 1077 tests, 0 failures (91 excluded). Migration suite: 51 tests, 0 failures. |
 | 12 | | | | |
 | 13 | | | | |
 | 14 | | | | |

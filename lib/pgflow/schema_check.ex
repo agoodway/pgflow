@@ -5,8 +5,9 @@ defmodule PgFlow.SchemaCheck do
 
   `mix pgflow.check_schema` checks installed core/helpers versions, function
   signatures, queue constraints, and the eight-field `step_task_record` layout.
-  Worker startup uses `runtime_checks/1` for signatures, legacy claim absence,
-  field names and types, and the helpers version floor before reserving messages.
+  Worker startup uses `runtime_checks/1` for the 0.17.2 signatures, absence of
+  the legacy claim and compile overloads, field names and types, and the
+  helpers version floor before reserving messages.
   """
 
   alias Ecto.Adapters.SQL
@@ -15,9 +16,14 @@ defmodule PgFlow.SchemaCheck do
   @required_tables ~w(flows steps deps runs step_states step_tasks workers)
   @required_functions ~w(start_flow complete_task fail_task)
 
-  @claim_signature "pgflow.start_tasks(text,bigint[],uuid,text)"
-  @legacy_claim_signature "pgflow.start_tasks(text,bigint[],uuid)"
-  @compile_signature "pgflow.ensure_flow_compiled(text,jsonb)"
+  @claim_signature "pgflow.start_tasks(text,bigint[],uuid,text,text)"
+  @legacy_claim_signatures [
+    "pgflow.start_tasks(text,bigint[],uuid,text)",
+    "pgflow.start_tasks(text,bigint[],uuid)"
+  ]
+  @compile_signature "pgflow.ensure_flow_compiled(text,jsonb,text,jsonb)"
+  @legacy_compile_signature "pgflow.ensure_flow_compiled(text,jsonb)"
+  @register_worker_signature "pgflow.register_worker(uuid,text,text,text)"
 
   @record_fields ~w(flow_slug run_id step_slug input msg_id task_index flow_input attempts_count)
   @record_types ~w(text uuid text jsonb bigint integer jsonb integer)
@@ -31,9 +37,12 @@ defmodule PgFlow.SchemaCheck do
   def runtime_checks(repo) do
     signatures = [
       ensure_flow_compiled: {@compile_signature, true},
+      ensure_flow_compiled_legacy: {@legacy_compile_signature, false},
       track_worker_function: {"pgflow.track_worker_function(text,text)", true},
+      register_worker: {@register_worker_signature, true},
       start_tasks: {@claim_signature, true},
-      start_tasks_legacy: {@legacy_claim_signature, false}
+      start_tasks_legacy: {"pgflow.start_tasks(text,bigint[],uuid,text)", false},
+      start_tasks_legacy: {"pgflow.start_tasks(text,bigint[],uuid)", false}
     ]
 
     with :ok <- runtime_signatures(repo, signatures),
@@ -65,7 +74,7 @@ defmodule PgFlow.SchemaCheck do
   defp validate_helpers_version(comment) do
     case Regex.run(~r/version=(\d+)/, comment, capture: :all_but_first) do
       [version] ->
-        if String.to_integer(version) >= 6,
+        if String.to_integer(version) >= PgFlow.HelpersMigration.current_version(),
           do: :ok,
           else: {:error, {:schema_incompatible, :helpers_version}}
 
@@ -118,6 +127,8 @@ defmodule PgFlow.SchemaCheck do
       &check_claim_signature/1,
       &check_legacy_claim_absent/1,
       &check_compile_signature/1,
+      &check_legacy_compile_absent/1,
+      &check_register_worker/1,
       &check_record_layout/1,
       &check_task_statuses/1,
       &check_queue_constraints/1
@@ -263,17 +274,17 @@ defmodule PgFlow.SchemaCheck do
     if function_exists?(repo, @claim_signature) do
       :ok
     else
-      {:error, "missing four-argument claim function #{@claim_signature}"}
+      {:error, "missing five-argument claim function #{@claim_signature}"}
     end
   end
 
   defp check_legacy_claim_absent(repo) do
-    if function_exists?(repo, @legacy_claim_signature) do
-      {:error,
-       "obsolete three-argument claim #{@legacy_claim_signature} is still present; " <>
-         "upgrade core and helpers before deploying this library release"}
-    else
-      :ok
+    case Enum.find(@legacy_claim_signatures, &function_exists?(repo, &1)) do
+      nil ->
+        :ok
+
+      signature ->
+        {:error, obsolete_signature_message(signature)}
     end
   end
 
@@ -283,6 +294,37 @@ defmodule PgFlow.SchemaCheck do
     else
       {:error, "missing startup compilation function #{@compile_signature}"}
     end
+  end
+
+  defp check_legacy_compile_absent(repo) do
+    if function_exists?(repo, @legacy_compile_signature) do
+      {:error, obsolete_signature_message(@legacy_compile_signature)}
+    else
+      :ok
+    end
+  end
+
+  defp check_register_worker(repo) do
+    if function_exists?(repo, @register_worker_signature) do
+      :ok
+    else
+      {:error, "missing four-argument register_worker function #{@register_worker_signature}"}
+    end
+  end
+
+  defp obsolete_signature_message("pgflow.start_tasks(text,bigint[],uuid,text)" = signature) do
+    "obsolete four-argument claim #{signature} is still present; " <>
+      "upgrade core and helpers before deploying this library release"
+  end
+
+  defp obsolete_signature_message("pgflow.start_tasks(text,bigint[],uuid)" = signature) do
+    "obsolete three-argument claim #{signature} is still present; " <>
+      "upgrade core and helpers before deploying this library release"
+  end
+
+  defp obsolete_signature_message(signature) do
+    "obsolete signature #{signature} is still present; " <>
+      "upgrade core and helpers before deploying this library release"
   end
 
   defp check_record_layout(repo) do
