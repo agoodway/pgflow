@@ -1089,15 +1089,15 @@ This is the core claim of the plan: TS 0.17.x and Elixir share one database in f
 - Modify: `test/support/upstream/interop.ex` (start a TS worker and an Elixir worker on the same flow and queue)
 - Test: `test/pgflow/upstream/interoperability_test.exs` (new `describe "mixed workers"`, `@tag :upstream_checkout`)
 
-- [ ] **Step 1: Write the failing test.** Compile a three-step flow once from TS (`ensure_flow_compiled(slug, shape, 'flow', NULL)`) and once from Elixir, and assert both return `"verified"` or `"compiled"`, never `"mismatch"`. Start 20 runs with one TS worker and one Elixir worker polling the queue. Assert:
+- [x] **Step 1: Write the failing test.** Compile a three-step flow once from TS (`ensure_flow_compiled(slug, shape, 'flow', NULL)`) and once from Elixir, and assert both return `"verified"` or `"compiled"`, never `"mismatch"`. Start 20 runs with one TS worker and one Elixir worker polling the queue. Assert:
   - all 20 runs reach `completed`
   - both `worker_id`s appear in `pgflow.step_tasks.last_worker_id`
   - `pgflow.workers.pgflow_version` holds the TS package version for one row and `"elixir-" <> Application.spec(:pgflow, :vsn)` for the other
   - no task has `attempts_count > 1`
-- [ ] **Step 2: Run it.** Expected: FAIL until `worker.mjs` passes `queueMode` and logs claims.
-- [ ] **Step 3: Implement** the `worker.mjs` and `interop.ex` changes. Do not add a TS step-mode worker; step mode stays outside the Elixir contract (Task 12).
-- [ ] **Step 4: Run the test,** then `--suite typescript` on a new compat database. Expected: `0 failures`; harness exit 0.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Run it.** Expected: FAIL until `worker.mjs` passes `queueMode` and logs claims.
+- [x] **Step 3: Implement** the `worker.mjs` and `interop.ex` changes. Do not add a TS step-mode worker; step mode stays outside the Elixir contract (Task 12).
+- [x] **Step 4: Run the test,** then `--suite typescript` on a new compat database. Expected: `0 failures`; harness exit 0.
+- [x] **Step 5: Commit.**
 ```sh
 git add test/support/upstream/worker.mjs test/support/upstream/interop.ex test/pgflow/upstream/interoperability_test.exs
 git commit -m "test: Run mixed TypeScript and Elixir workers on one flow"
@@ -1308,7 +1308,7 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 14 | 95d9a23 | `mix test test/mix/tasks/pgflow.setup_test.exs` | green | RED: generated `20261030234408_upgrade_pgflow.exs`. GREEN: 6 tests, 0 failures. The filename and module come from `Migration.current_version()` and `HelpersMigration.current_version()` as `v%02d`. `--dashboard` still appends `PgFlowDashboard.Migration.up()`. An existing `*_upgrade_pgflow.exs` is left unchanged. The moduledoc lists stop-and-drain steps 1–6, including `mix pgflow.audit_slugs` and `stop every worker`. |
 | 15 | c25750e | `PGFLOW_REQUIRE_DB=1 mix test --only migration`; `PGFLOW_REQUIRE_DB=1 mix test`; `mix quality` | green | Historical upgrades were already pinned: core V01→V02 uses `up(version: 2)`, helpers V04→V06 use versions 5 and 6, and the fixture baseline is core 1 / helpers 4. `CoreOnlyMigration` and `HelpersFullChainMigration` stay unversioned because they mean the current install. `mix quality` was red on an ExDNA clone of repo startup, Credo nesting in the catalog check, and `PgFlow.Slug` docs at 0%. Those are fixed. Migration suite: 51 tests, 0 failures. Default suite: 1082 tests, 0 failures (93 excluded). `mix quality` exit 0. |
 | 16 | e235880 | `PGFLOW_UPSTREAM_CHECKOUT=… PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/interoperability_test.exs:73`; harness `--suite catalog` and `--suite pgtap`; `mix quality` | green | RED: `pgtap_parity_files` was nil. GREEN: manifest test 1, 0 failures. Catalog passed, 4 tests, 0 failures. pgTAP passed, 294 tests, 0 failures, which is the lifecycle set plus the 28 parity files plus the prune profile. `known_divergences` stays empty. Compat databases install core 3 and helpers 7. Overlays record `escalate_permanently_stalled` and the Elixir-only `step_progress` view. The parity files run through psql in the tests directory so `\i _shared/prune_data_older_than.sql.raw` resolves; pg_prove's working directory does not. Plain Postgres adaptations, not schema changes: the database jwt secret matches Supabase local so `is_local()` is true; `pgmq.drop_queue` returns false when the queue is already gone because image pgmq 1.5.1 raises `42P01`; the fixture drops the default on `prune_data_older_than(interval, text[])` so the test's one-argument snippet is not ambiguous. `mix quality` exit 0. |
-| 17 | | | | |
+| 17 | dc5b52c | `PGFLOW_UPSTREAM_CHECKOUT=… PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/interoperability_test.exs:116`; harness `--suite typescript` | green | RED: `UndefinedFunctionError` for `run_mixed_workers!/2`. The rest of that file also failed until `pkgs/{dsl,core,edge-worker}/dist/index.js` was rebuilt with `pnpm nx run-many --target=build --projects=dsl,core,edge-worker`. GREEN: the mixed-worker test, 1 test, 0 failures. Both compiles returned `compiled` or `verified`. Twenty runs completed, two `last_worker_id`s, versions `0.17.2` and `elixir-0.5.0` (the package is still 0.5.0 until Task 19), `max_attempts` 1. The TypeScript flow sets `maxAttempts` 1, `baseDelay` 1, and `timeout` 30 so they match Elixir's DSL defaults and startup does not warn. `--suite typescript` on a new compat database passed, 12 tests, 0 failures, 1 unresolved falsy probe, 2 skipped, exit 0. No TypeScript step-mode worker. Claim logs stay on stderr; the harness reads the last JSON object so those lines do not break the result. |
 | 18 | | | | |
 | 19 (two commits) | | | | |
 | 20 | | | | |
