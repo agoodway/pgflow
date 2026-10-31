@@ -317,7 +317,16 @@ defmodule PgFlow.Upstream.InteroperabilityTest do
         stderr_to_stdout: true
       )
 
-    Jason.decode!(output)
+    Jason.decode!(worker_json!(output))
+  end
+
+  # `taskStarted` writes `claimed msg_id=…` to stderr, which is merged into stdout.
+  defp worker_json!(output) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.reverse()
+    |> Enum.find(&String.starts_with?(&1, "{")) ||
+      output
   end
 
   defp start_flow!(conn, slug, input) do

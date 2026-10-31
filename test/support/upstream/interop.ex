@@ -50,7 +50,7 @@ end
 defmodule PgFlow.Test.UpstreamInterop do
   @moduledoc false
 
-  alias PgFlow.Flow.Shape
+  alias PgFlow.Flow.{Definition, Shape, Step}
   alias PgFlow.Test.MixedLangFlow
   alias PgFlow.Test.UpstreamHarness
   alias PgFlow.Test.UpstreamInterop.Repo
@@ -111,7 +111,7 @@ defmodule PgFlow.Test.UpstreamInterop do
   @spec run_mixed_workers!(Path.t(), String.t()) :: {:ok, map()} | {:error, String.t()}
   def run_mixed_workers!(checkout, database_url) do
     slug = Atom.to_string(MixedLangFlow.__pgflow_slug__())
-    shape = Shape.from_definition(MixedLangFlow.__pgflow_definition__())
+    shape = Shape.from_definition(mixed_definition())
 
     with {:ok, ts_compile} <-
            run_worker_scenario!(checkout, database_url, "compile_mixed_flow", %{}),
@@ -138,6 +138,24 @@ defmodule PgFlow.Test.UpstreamInterop do
       GenServer.stop(conn)
       result
     end
+  end
+
+  # Dialyzer widens `[] | [atom()]` to `[any()]` on a flow whose steps mix empty
+  # and non-empty `depends_on`. Rebuilding that field through an atom guard
+  # restores `Definition.t()` for `Shape.from_definition/1`.
+  @spec mixed_definition() :: Definition.t()
+  defp mixed_definition do
+    definition = MixedLangFlow.__pgflow_definition__()
+    %{definition | steps: Enum.map(definition.steps, &typed_step/1)}
+  end
+
+  defp typed_step(%Step{} = step) do
+    %{step | depends_on: atom_dependencies(step.depends_on)}
+  end
+
+  @spec atom_dependencies(list()) :: [atom()]
+  defp atom_dependencies(depends_on) do
+    for slug <- depends_on, is_atom(slug), do: slug
   end
 
   defp run_elixir_start_ts_worker!(checkout, database_url, slug) do
