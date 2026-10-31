@@ -1155,7 +1155,7 @@ git commit -m "chore: Bump package version to 0.6.0"
 - Modify: `docs/UPSTREAM_COMPATIBILITY.md` (pinned SHA, release, the core/helpers version table, the step-mode non-goal)
 - Modify: `README.md` (the compatibility or upgrade pointer only)
 
-- [ ] **Step 1: Write the guide** with these sections, in order. Every command must be one that exists after Tasks 5 and 14:
+- [x] **Step 1: Write the guide** with these sections, in order. Every command must be one that exists after Tasks 5 and 14:
   1. **Who needs this:** anyone on core V02 / helpers ≤V06 who wants to share the database with TS 0.17.x workers.
   2. **Before you start:** `mix pgflow.audit_slugs` must print no findings. Each finding kind and its fix: rename the flow/step in code and redeploy; the migration never renames.
   3. **Stop and drain:** stop all Elixir and TS workers; wait until `SELECT count(*) FROM pgflow.step_tasks WHERE status IN ('queued','started')` is 0, or accept that queued tasks resume after the upgrade.
@@ -1164,8 +1164,8 @@ git commit -m "chore: Bump package version to 0.6.0"
   6. **What changed:** private step queues and routing, the 5-arg `start_tasks`, the 4-arg `ensure_flow_compiled`, the `register_worker` stamp `elixir-<vsn>`, `idx_runs_started_at` now ascending, and `:flow_routing_mismatch`.
   7. **Not supported:** step-mode flows (refused at boot); pgflow telemetry and `ensure_workers` (not installed).
   8. **Rollback:** forward-only. Restore from the backup taken before step 3; there is no down migration.
-- [ ] **Step 2:** Update `UPSTREAM_COMPATIBILITY.md` and the README pointer. Run `rg -n '94490709|0\.17\.0' docs README.md AGENTS.md`. Expected: hits only in historical sections (the 2026-09 guide and the 2026-09-14 plans), which stay unchanged.
-- [ ] **Step 3: Commit.**
+- [x] **Step 2:** Update `UPSTREAM_COMPATIBILITY.md` and the README pointer. Run `rg -n '94490709|0\.17\.0' docs README.md AGENTS.md`. Expected: hits only in historical sections (the 2026-09 guide and the 2026-09-14 plans), which stay unchanged.
+- [x] **Step 3: Commit.**
 ```sh
 git add docs/UPGRADING_UPSTREAM_2026_10.md docs/UPSTREAM_COMPATIBILITY.md README.md
 git commit -m "docs: Document the pgflow 0.17.2 stop-and-drain upgrade"
@@ -1311,7 +1311,7 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 17 | dc5b52c | `PGFLOW_UPSTREAM_CHECKOUT=… PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/interoperability_test.exs:116`; harness `--suite typescript` | green | RED: `UndefinedFunctionError` for `run_mixed_workers!/2`. The rest of that file also failed until `pkgs/{dsl,core,edge-worker}/dist/index.js` was rebuilt with `pnpm nx run-many --target=build --projects=dsl,core,edge-worker`. GREEN: the mixed-worker test, 1 test, 0 failures. Both compiles returned `compiled` or `verified`. Twenty runs completed, two `last_worker_id`s, versions `0.17.2` and `elixir-0.5.0` (the package is still 0.5.0 until Task 19), `max_attempts` 1. The TypeScript flow sets `maxAttempts` 1, `baseDelay` 1, and `timeout` 30 so they match Elixir's DSL defaults and startup does not warn. `--suite typescript` on a new compat database passed, 12 tests, 0 failures, 1 unresolved falsy probe, 2 skipped, exit 0. No TypeScript step-mode worker. Claim logs stay on stderr; the harness reads the last JSON object so those lines do not break the result. |
 | 18 | 7081d22 | `MIX_ENV=test mix pgflow.sync_upstream --checkout … --sha baa9e43f… --version 03 --check`; harness `--suite all` | green | Importer printed `pgflow core V03 output is current`. `--suite all` passed, 310 tests, 0 failures: catalog 4, pgTAP 294, TypeScript 12. `AGENTS.md` names `pgflow@0.17.2`. The workflow file triggers on `pull_request` and `workflow_dispatch`, not `push`, so this branch push does not start it. No pull request is opened, and there is no CI run URL to record. |
 | 19 (two commits) | ecdd9f5, 776106c | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow_test.exs`; `mix compile --warnings-as-errors` | green | RED: `upstream_sha/0` was still `94490709…`, and the report map had no `upstream_release` key. GREEN: `test/pgflow_test.exs` 2 tests, 0 failures. `@pgflow_core_version` stays `"0.5.0"`. The install snippet in `README.md` and `mix.exs` `@version` are `0.6.0`. `mix compile --warnings-as-errors` exit 0. |
-| 20 | | | | |
+| 20 | 7891c0c | `rg -n '94490709\|0\\.17\\.0' docs README.md AGENTS.md` | green | New guide `docs/UPGRADING_UPSTREAM_2026_10.md` covers audit, stop-and-drain, `mix pgflow.setup --upgrade`, deploy, the V03 contract, the step-mode refusal, and forward-only restore. `UPSTREAM_COMPATIBILITY.md` and the README pointer name 0.17.2, core 3, and helpers 7. Remaining `94490709` / `0.17.0` hits are the September guide, the 2026-09-14 plans and brief, and this plan's historical notes. |
 | 21 | | | | |
 | 22 | — | full gate, gap review, push | | work-branch URL, CI run URL |
 | 23 | | GoodSkills checks | | GoodSkills branch URL |
