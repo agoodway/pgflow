@@ -1,195 +1,130 @@
 # Brief: Durable External Waits and Upstream Alignment
 
+> Revised 2026-10-31. The 2026-09-14 brief asked which abstraction to adopt.
+> That choice is now made (see the decision record). This revision records the
+> current state of both projects and the next step.
+
 ## Assignment
 
-Investigate and plan a general-purpose durable external-wait capability for
-the Elixir PgFlow implementation. This is not an Inbox feature and must not be
-shaped around one application's photo-classification workflow. The objective is
-to keep the Elixir implementation aligned, where appropriate, with the
-TypeScript/pgflow-dev project while preserving a sound, portable PostgreSQL
-task protocol.
+Plan a general-purpose durable external-wait capability for the Elixir PgFlow
+implementation that stays aligned with the TypeScript/pgflow-dev project and
+keeps a sound, portable PostgreSQL task protocol. This is a PgFlow capability,
+not an Inbox feature, and must not be shaped around one application's workflow.
 
-This assignment is research and planning only. Do not change code, create a
-branch, commit, publish, or merge anything. Inspect source, Git history,
-issues, pull requests, schemas, and tests read-only. Report exact evidence and
-separate confirmed facts from proposed design.
+## Decision record
 
-## Current State Established So Far
+- 2026-08-28: [#660](https://github.com/pgflow-dev/pgflow/issues/660) opened,
+  citing Elixir [PR #6](https://github.com/agoodway/pgflow/pull/6)
+  (`await_signal` with park, requeue and handler replay).
+- 2026-08-28: the maintainer
+  [preferred an explicit manual task](https://github.com/pgflow-dev/pgflow/issues/660#issuecomment-5450794243):
+  a handlerless DAG step that becomes ready, sends no PGMQ message, starts no
+  worker, and is completed or failed by trusted server code. Ordinary
+  downstream progression continues. No handler replay, and the wait stays
+  visible in the DAG. The design is tracked in
+  [#661](https://github.com/pgflow-dev/pgflow/issues/661).
+- 2026-09-14: we agreed to align with the manual-task direction. The
+  maintainer pointed to epic [#653](https://github.com/pgflow-dev/pgflow/issues/653)
+  and #661 and asked for the concrete use case. **That question is still
+  unanswered.**
+
+**Decision:** the Elixir core primitive is the upstream manual task (#661).
+Inline `await_signal` with handler replay (PR #6) is not pursued. Early payload
+buffering, named signals and built-in deadlines are possible later layers on
+top of manual tasks, not part of the first primitive.
+
+## Current state (2026-10-31)
 
 ### Elixir PgFlow
 
-- Local checkout: `/Users/chasepursley/Development/os/pgflow`.
-- Current `main`: `9dbaaafdbf9ef5fcdfb2c10df8edea3577b07846`, released as
-  `v0.3.4`.
-- Current public `v0.3.4` has no durable external-signal or manual-task API.
-  Its `signal_strategy: :notify` wakes queue workers; it is not a mechanism to
-  suspend a task for an external result.
-- PR [#6](https://github.com/agoodway/pgflow/pull/6), branch
-  `feat/await-signals`, is an existing Elixir implementation of durable
-  park-and-requeue waiting. At the last check it was open, conflicted/dirty,
-  based on `v0.3.1`, 17 commits ahead and 3 commits behind current `main`, and
-  its `mix.exs` still declared `0.3.1`. Do not assume it can be merged or
-  released without reconciliation.
-- PR #6 adds helpers schema V05 and
-  `PgFlow.Context.await_signal/2` / `PgFlow.signal/3,4`. With
-  `wait_timeout: 0`, `await_signal` durably parks a task, archives its PGMQ
-  message, marks it waiting, and releases the worker slot. A matching signal
-  requeues it. It provides early payload buffering, duplicate handling and a
-  deadline/recovery path.
-- Its important semantic cost is handler replay: the resumed task runs its
-  handler from the beginning. Effects before the await must be idempotent. V1
-  supports one await point per task. Its signal identity is the task address
-  `(run_id, step_slug, task_index)`; payloads are JSON maps/lists.
+- `main` is `3770b0d`, released as `v0.5.0`. It has no manual-task or
+  external-wait API. `signal_strategy: :notify` only wakes queue workers.
+- [PR #9](https://github.com/agoodway/pgflow/pull/9)
+  (`feat/upstream-0-17-schema-parity`) ships as `0.6.0`: core V03 and helpers
+  V07 give schema parity with upstream `pgflow@0.17.2` (`baa9e43f`), apart from
+  documented Elixir overlays. The compatibility harness proves it (catalog diff,
+  294 upstream pgTAP tests, real TypeScript workers including a mixed
+  TypeScript and Elixir run). V03 adds `flows.queue_mode` (`flow` or `step`),
+  per-step routes, `queue_name` snapshots on tasks, the 5-argument
+  `start_tasks` and the 4-argument `ensure_flow_compiled`. Elixir workers refuse
+  step-mode flows.
+- `feat/worker-controls` ships next as `0.7.0`: per-worker
+  `max_concurrency`/`batch_size` overrides and runtime `scale_worker/2`. No
+  schema change.
+- PR #6 (`feat/await-signals`) is open but untouched since 2026-08-27. It is
+  based on `v0.3.1`, and its helpers "V05" collides with `main`'s V05 (8-column
+  claim), V06 (stall escalation) and PR #9's V07. It is superseded by the
+  decision above and should be closed with a link to #660 and #661.
 
-Read the PR's current code and its full discussion before relying on this
-summary. Key starting points:
+### Upstream pgflow
 
-- `lib/pgflow/context.ex`
-- `lib/pgflow/client.ex`
-- `lib/pgflow/worker/server.ex`
-- `lib/pgflow/worker/waiting_task_recovery.ex`
-- `priv/pgflow_helpers/sql/versions/v05/`
-- PR #6's migration and compatibility notes
+- Released `0.17.1` (private step queues
+  [#683](https://github.com/pgflow-dev/pgflow/pull/683), force-skip fix
+  [#686](https://github.com/pgflow-dev/pgflow/pull/686), telemetry) and
+  `0.17.2` (telemetry endpoint fix). `main` (`f67145b0`) adds
+  [#708](https://github.com/pgflow-dev/pgflow/pull/708), a TypeScript-only
+  falsy-output fix with no schema change.
+- Queue identity and private per-step queues (#650, #651) have shipped. That is
+  the foundation #661 requires, and Elixir has it through PR #9.
+- #661 is still an open, deferred design spike with no comments or PRs since
+  2026-09-12. Its first exit gate is "One real TypeScript use case and caller
+  are documented."
+- #660 is open at P3. [#665](https://github.com/pgflow-dev/pgflow/issues/665)
+  (portable migrations and Node/Bun workers) is open.
+- New work that may touch the task lifecycle: the Dirty Runs epic
+  [#699](https://github.com/pgflow-dev/pgflow/issues/699) (#700 to #706) and
+  the community-threads plan [#710](https://github.com/pgflow-dev/pgflow/issues/710).
+- Neither manual tasks nor durable signals have shipped upstream.
 
-### TypeScript / upstream PgFlow
+## Alignment matrix
 
-- Upstream checkout/repository: `pgflow-dev/pgflow`, current `main` last
-  verified at `94490709f79ebf366141dd925b047f0c1013e759` (September 13, 2026).
-- No equivalent durable external-wait capability has landed upstream. Recent
-  merges include queue identity (#679), worker-startup test synchronization
-  (#680), test lifecycle (#675), and startup-only compilation (#672), but not
-  queue-less manual tasks or durable external signals.
-- Upstream issue [#660](https://github.com/pgflow-dev/pgflow/issues/660) is an
-  open, priority-P3 design spike. It identifies the necessary decisions:
-  durable task identity, worker release, early/duplicate delivery, deadlines,
-  terminal-state races, authorization, payload redaction, and an atomic task
-  lifecycle. It explicitly says not to port Elixir PR #6 wholesale.
-- In [the maintainer response on #660](https://github.com/pgflow-dev/pgflow/issues/660#issuecomment-5450794243), the preferred direction is not inline
-  handler suspension. It is an explicit handlerless/manual DAG task: a task
-  becomes ready, but no PGMQ message is sent and no worker runs. Trusted
-  server-side code later completes or fails that task; ordinary downstream
-  progression then continues. This avoids handler replay and leaves the wait
-  visible in the DAG.
-- Upstream issue [#661](https://github.com/pgflow-dev/pgflow/issues/661) is the
-  detailed manual-task design, not an implementation. It proposes, but does
-  not commit to, `queue: false` and `typeHint<T>()`. The task has a real address
-  `(run_id, step_slug, task_index)`, no handler, no queue message, and durable
-  state until trusted completion/failure or terminalization. It requires
-  idempotent/race-safe completion, worker/recovery exclusion, historical
-  execution-mode semantics, and server-only authorization. It intentionally
-  leaves early payload buffering, a signal store, and built-in deadline
-  recovery out of its first prototype.
-- #661 had no comments or implementation PR at the last check. Its design is
-  upstream intent, not a released contract.
-- Upstream issue [#665](https://github.com/pgflow-dev/pgflow/issues/665) is a
-  separate open portability proposal: a single pgflow-owned portable PostgreSQL
-  migration history and Node/Bun process workers, with Supabase Realtime and
-  Edge Function wakeups isolated as a repeatable Supabase integration. It
-  explicitly excludes a non-Supabase browser client, WebSocket/SSE/LISTEN-NOTIFY
-  gateways, and live browser updates. Treat it as an architectural constraint
-  on any future wait design: durable lifecycle and worker semantics belong in
-  the portable core; browser notification remains a platform/application
-  integration. It is not an implementation of manual tasks or signals.
+| Concern            | Upstream 0.17.2                                   | Upstream direction (#661)                                        | Elixir after PR #9      | Gap                                              |
+| ------------------ | ------------------------------------------------- | ---------------------------------------------------------------- | ----------------------- | ------------------------------------------------ |
+| Task identity      | `(run_id, step_slug, task_index)` + `queue_name`  | Manual task keeps the address, has no queue message              | Same as upstream        | None                                             |
+| Execution mode     | `flows.queue_mode` is `flow` or `step`            | Must distinguish manual from queued work; no fake queue name     | Flow mode only          | Await upstream schema; bootstrap must allow it   |
+| Completion         | Worker-owned `complete_task` / `fail_task`        | Separate trusted-server complete and fail entry points           | Worker-owned only       | Inherit from upstream                            |
+| Claims, recovery   | Queue-based claims and stalled recovery           | Must exclude manual tasks                                        | Same as upstream        | Inherit from upstream                            |
+| Authorization      | No external write boundary                        | Revoke from `PUBLIC`; explicit grants for trusted server roles   | App role                | Match upstream grants                            |
+| Deadlines, buffers | None                                              | Out of scope; application-owned                                  | None                    | Consumers own deadlines and early events         |
 
-The upstream TypeScript client method `waitForStatus` only observes a run from
-the caller; it is not a durable task suspension mechanism.
+## Next steps
 
-## Investigation Questions
-
-Answer these from current source and GitHub history, not this brief alone.
-
-1. What work already exists in either project?
-   - Re-check PR #6's exact base/head, conflict state, commit list, migrations,
-     test coverage, review history, and compatibility gaps relative to current
-     Elixir `main`.
-   - Search Elixir branches, open/closed PRs, issues, commits, TODOs, schemas,
-     and docs for related waiting, signal, manual-completion, PGMQ, task-state,
-     or recovery work.
-   - Read the complete #660/#661 upstream threads and linked work. Search
-     recent upstream merged and open PRs/branches for manual tasks, external
-     completion, signals, waiting states, execution modes, queue-less tasks,
-     worker lifecycle, or task-address changes.
-
-2. What is the actual shared data-model baseline today?
-   - Compare the current Elixir SQL schema/functions/helpers with upstream
-     TypeScript core's current schema/functions, especially task identity,
-     status constraints, queue identity, PGMQ dispatch, ready-step creation,
-     worker claims, completion/failure, stalled recovery, terminal cleanup, and
-     versioned migrations.
-   - Include #665's proposed portable-core/Supabase-integration split in the
-     comparison. Identify whether an external-wait design depends on any
-     Supabase-only facility; it must not if Elixir is to remain generally
-     portable.
-   - Identify existing incompatibilities before adding a feature. Do not assume
-     the implementations are still schema-identical merely because the README
-     says they are compatible.
-   - State whether upstream has a working branch/data model that Elixir can
-     align with now, or only a design direction.
-
-3. Which general abstraction should govern a future Elixir implementation?
-   Compare at least these two choices:
-
-   | Option | Core behavior | Principal tradeoff |
-   |--------|---------------|--------------------|
-   | Inline await/signal | Handler parks, signal requeues, handler restarts | Built-in buffering/deadlines possible; replay requires idempotent earlier effects and introduces waiting/signal lifecycle complexity |
-   | Explicit manual task | Ready DAG task has no queue/handler; trusted code completes/fails it | Visible DAG and no replay; early buffering and deadline/fan-in layers must be designed separately |
-
-   Recommend one as the core primitive and justify it for PgFlow generally,
-   including multi-language workers and portable PostgreSQL—not for a single
-   Inbox feature. It is acceptable to recommend an intentionally small manual
-   task primitive first, with signals/deadlines as future layers, if that is
-   what current upstream direction supports.
-
-4. If the recommendation is adopted, plan a reconciled Elixir implementation.
-   The plan must include:
-
-   - a public API/DSL proposal clearly labeled proposed until approved;
-   - persisted task identity and historical execution-mode behavior;
-   - schema/helper versioning, upgrade/rollback safety, and startup schema
-     compatibility;
-   - atomic completion/failure transitions, idempotency, conflicting payloads,
-     terminal-run races, and downstream progression exactly once;
-   - worker claim, retry, stalled recovery, queue archival/pruning, and terminal
-     cleanup exclusion rules;
-   - authorization/grant model and payload/log redaction boundary;
-   - test matrix covering direct tasks, one supported map/array position if
-     chosen, early/duplicate completion, timeout policy, restart/recovery,
-     concurrency, and cross-language/schema compatibility;
-   - migration and release sequence that keeps Elixir aligned with the current
-     upstream data model without pinning consumers to a stale feature branch.
+1. Answer the maintainer on #660 with the concrete use case. Inbox Report
+   Assist Photos: an Elixir flow fans out workfile photo classification, and a
+   "photos classified" gate should wait without holding a worker slot until
+   server code sees every expected classification run terminal, then complete
+   the gate once. A persisted deadline yields a partial result.
+2. Offer to build the #661 prototype upstream. Most of it is shared SQL
+   (manual task state, trusted complete and fail entry points, claim and
+   recovery exclusion). Once upstream lands it, Elixir imports it through the
+   existing bundle importer as the next core version.
+3. Fallback only if a consumer needs it before upstream: an Elixir helpers
+   overlay that follows #661 semantics exactly, limited to one ordinary step
+   (no map variant, no signal store), designed to be replaced by the upstream
+   version.
+4. Close PR #6 as superseded.
 
 ## Constraints
 
-- This must be a PgFlow capability, not an Inbox-specific API or a dependency
-  upgrade workaround.
-- Do not use a fake queue name or silently weaken non-null queue constraints.
-  If manual tasks need a distinct persisted execution mode, model and migrate it
-  explicitly.
-- Do not keep an Elixir process, Edge Function, database connection, or worker
-  slot alive while an external result is pending.
-- Do not expose arbitrary task completion to browsers or unauthenticated SQL
-  roles. Completion/failure is a trusted-server boundary.
-- Do not treat PostgreSQL notifications as correctness. They may accelerate
-  workers/reconciliation, but durable task state and atomic transitions must
-  remain the source of truth.
-- Do not assume one external event per task: evaluate task-address semantics,
-  repeated waits, map task indices, named/correlated signals, and fan-in before
-  choosing a public contract.
-- Do not merge PR #6, pin to it, or modify either repository under this brief.
+- A PgFlow capability, not an Inbox-specific API or a dependency workaround.
+- No fake queue name and no weakened non-null queue constraints. If manual
+  tasks need a distinct persisted execution mode, model and migrate it
+  explicitly, following upstream.
+- No Elixir process, Edge Function, database connection or worker slot held
+  while an external result is pending.
+- Completion and failure are a trusted-server boundary. Never expose them to
+  browsers or unauthenticated SQL roles.
+- PostgreSQL notifications may accelerate work but are never correctness
+  evidence. Durable task state and atomic transitions are the source of truth.
+- Evaluate task-address semantics, repeated waits, map task indices and fan-in
+  before choosing a public contract.
+- Do not merge PR #6 or pin a consumer to it.
 
-## Deliverable
+## Open decisions
 
-Return a concise design/research report with:
-
-1. Confirmed current state in both repositories and a link/path for each key
-   claim.
-2. An upstream-alignment matrix: present schema/lifecycle, planned/upstream
-   direction, and Elixir gap.
-3. Recommendation: adopt, revise, or stop; identify the smallest core
-   prototype and why.
-4. A sequenced implementation plan for a new, current-main-based Elixir branch
-   (not a merge of stale PR #6), including migrations and verification gates.
-5. Explicit open decisions that require maintainer approval before code starts.
-
-Do not claim that upstream has shipped manual tasks or durable signals unless a
-current merged implementation proves it.
+- Upstream-first prototype or Elixir overlay first, based on consumer timing.
+- Elixir DSL naming, following whatever upstream picks (`queue: false` is a
+  proposal, not a committed API).
+- How consumers own deadlines and completions that arrive before the manual
+  task exists.
+- Map and array manual tasks stay out of the first slice.
