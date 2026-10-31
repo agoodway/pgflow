@@ -1060,7 +1060,7 @@ Phase 1 made the Elixir install match the target contract. Phase 2 proves it aga
 - Modify: `test/support/upstream/harness.ex` (`run_single_suite(:pgtap, …)` ~L345)
 - Test: `test/pgflow/upstream/interoperability_test.exs` (new `describe "pgTAP parity manifest"`, `@tag :upstream_checkout` per test as in the existing file)
 
-- [ ] **Step 1: Write the failing test.** In `interoperability_test.exs`, assert that `manifest()["harness"]["pgtap_parity_files"]` lists exactly these 28 paths (relative to `pkgs/core/supabase/tests/`) and that every path exists in the checkout (`@tag :upstream_checkout`):
+- [x] **Step 1: Write the failing test.** In `interoperability_test.exs`, assert that `manifest()["harness"]["pgtap_parity_files"]` lists exactly these 28 paths (relative to `pkgs/core/supabase/tests/`) and that every path exists in the checkout (`@tag :upstream_checkout`):
   - `is_valid_slug.test.sql`
   - `ensure_flow_compiled/`: `auto_recompiles_when_local`, `compiles_missing_flow`, `concurrent_compilation_race`, `fails_mismatch_when_not_local`, `signature`, `verifies_matching_shape` (each `.test.sql`)
   - `queue_mode/`: `delete_and_prune_routes`, `naming_restrictions`, `owned_route_requires_listed_queue`, `queue_name_resolution`, `route_map_verification`, `start_tasks_step_selector`, `step_mode_provisioning`, `step_worker_batch_safety`, `two_step_slice`, `worker_route_coverage`
@@ -1068,13 +1068,13 @@ Phase 1 made the Elixir install match the target contract. Phase 2 proves it aga
   - `delete_flow_and_data/drops_queues_by_routes.test.sql`
 
   Also assert `manifest()["harness"]["known_divergences"]` is a list. Each entry is `%{"file" => path, "reason" => text}`, and every `reason` names a Supabase-only dependency (`realtime`, `pg_net`, `vault`, `edge function`). Any other reason fails the test.
-- [ ] **Step 2: Run it.** `PGFLOW_UPSTREAM_CHECKOUT=… PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/interoperability_test.exs` (setting the checkout env lifts the `:upstream_checkout` exclude). Expected: FAIL, `pgtap_parity_files` is nil.
-- [ ] **Step 3: Implement.**
+- [x] **Step 2: Run it.** `PGFLOW_UPSTREAM_CHECKOUT=… PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/interoperability_test.exs` (setting the checkout env lifts the `:upstream_checkout` exclude). Expected: FAIL, `pgtap_parity_files` is nil.
+- [x] **Step 3: Implement.**
   - Add `pgtap_parity_files` (the 28 paths) and `known_divergences: []` to the manifest.
   - In `run_single_suite(:pgtap, …)`, run `lifecycle_files ++ (parity_files -- divergent_files)` through `run_pgtap_profile!/4` with the `plain_postgres` profile.
   - Add a divergence entry only when a file fails **solely** because plain Postgres lacks a Supabase feature. The reason must quote the failing assertion. If a file fails for any other reason, it is a schema bug: fix it in V03's rules or the V07 overlay, never by listing it.
-- [ ] **Step 4: Run the harness.** Create a new compat database (E4), then run `--suite catalog` and `--suite pgtap` (E6 Harness row). Expected: exit 0, both results `"passed"`, pgTAP `tests` larger than the Task 1 baseline.
-- [ ] **Step 5: Commit.**
+- [x] **Step 4: Run the harness.** Create a new compat database (E4), then run `--suite catalog` and `--suite pgtap` (E6 Harness row). Expected: exit 0, both results `"passed"`, pgTAP `tests` larger than the Task 1 baseline.
+- [x] **Step 5: Commit.**
 ```sh
 git add test/support/upstream/manifest.json test/support/upstream/harness.ex test/pgflow/upstream/interoperability_test.exs
 git commit -m "test: Prove catalog and pgTAP parity with pgflow 0.17.2"
@@ -1307,7 +1307,7 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 13 | 91fc26a | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/operational_routes_test.exs` | green | No V07 overlay. Helpers V05 already resets visibility and deletes archives from `step_tasks.queue_name` / `steps.queue_name`. A compiled step-mode flow has no default `pgmq.q_<flow>` queue. Recovery of one stalled `process` task returned `[[1, 1]]`, left the message visible on `step_mode_recovery__process`, and did not create the flow queue. Prune of an old completed run deleted that run and the archived messages on both `step_mode_prune__process` and `step_mode_prune__deliver`. File: 11 tests, 0 failures. |
 | 14 | 95d9a23 | `mix test test/mix/tasks/pgflow.setup_test.exs` | green | RED: generated `20261030234408_upgrade_pgflow.exs`. GREEN: 6 tests, 0 failures. The filename and module come from `Migration.current_version()` and `HelpersMigration.current_version()` as `v%02d`. `--dashboard` still appends `PgFlowDashboard.Migration.up()`. An existing `*_upgrade_pgflow.exs` is left unchanged. The moduledoc lists stop-and-drain steps 1–6, including `mix pgflow.audit_slugs` and `stop every worker`. |
 | 15 | c25750e | `PGFLOW_REQUIRE_DB=1 mix test --only migration`; `PGFLOW_REQUIRE_DB=1 mix test`; `mix quality` | green | Historical upgrades were already pinned: core V01→V02 uses `up(version: 2)`, helpers V04→V06 use versions 5 and 6, and the fixture baseline is core 1 / helpers 4. `CoreOnlyMigration` and `HelpersFullChainMigration` stay unversioned because they mean the current install. `mix quality` was red on an ExDNA clone of repo startup, Credo nesting in the catalog check, and `PgFlow.Slug` docs at 0%. Those are fixed. Migration suite: 51 tests, 0 failures. Default suite: 1082 tests, 0 failures (93 excluded). `mix quality` exit 0. |
-| 16 | | | | |
+| 16 | e235880 | `PGFLOW_UPSTREAM_CHECKOUT=… PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/interoperability_test.exs:73`; harness `--suite catalog` and `--suite pgtap`; `mix quality` | green | RED: `pgtap_parity_files` was nil. GREEN: manifest test 1, 0 failures. Catalog passed, 4 tests, 0 failures. pgTAP passed, 294 tests, 0 failures, which is the lifecycle set plus the 28 parity files plus the prune profile. `known_divergences` stays empty. Compat databases install core 3 and helpers 7. Overlays record `escalate_permanently_stalled` and the Elixir-only `step_progress` view. The parity files run through psql in the tests directory so `\i _shared/prune_data_older_than.sql.raw` resolves; pg_prove's working directory does not. Plain Postgres adaptations, not schema changes: the database jwt secret matches Supabase local so `is_local()` is true; `pgmq.drop_queue` returns false when the queue is already gone because image pgmq 1.5.1 raises `42P01`; the fixture drops the default on `prune_data_older_than(interval, text[])` so the test's one-argument snippet is not ambiguous. `mix quality` exit 0. |
 | 17 | | | | |
 | 18 | | | | |
 | 19 (two commits) | | | | |
