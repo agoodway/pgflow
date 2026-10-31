@@ -1220,7 +1220,7 @@ git commit -m "feat: Upgrade the demo to core V03 and helpers V07"
 
 ### Task 22: Final verification gate and gap-filling review
 
-- [ ] **Step 1: Full gate.** From a clean `_build`, run in order, on new compat databases where needed. Record each command and result in the Execution ledger.
+- [x] **Step 1: Full gate.** From a clean `_build`, run in order, on new compat databases where needed. Record each command and result in the Execution ledger.
   1. `MIX_ENV=test mix pgflow.test.reset`
   2. `PGFLOW_REQUIRE_DB=1 mix test`
   3. `PGFLOW_REQUIRE_DB=1 mix test --only migration`
@@ -1229,21 +1229,21 @@ git commit -m "feat: Upgrade the demo to core V03 and helpers V07"
   6. the harness `--suite all` (E6)
   7. `mix quality`
   8. the Task 21 Step 4 demo gates
-- [ ] **Step 2: Gap review.** Check each item and fix anything missed in a commit of the matching type:
+- [x] **Step 2: Gap review.** Check each item and fix anything missed in a commit of the matching type:
   - Every row of the spec's gap table maps to a merged task. Run `rg -n "start_tasks\(|ensure_flow_compiled\(|register_worker\(" lib priv/pgflow_helpers`; no call uses an old signature.
   - `rg -n "94490709" --glob '!docs/superpowers/**' --glob '!docs/UPGRADING_UPSTREAM_2026_09.md' --glob '!priv/pgflow/sql/versions/v02/**'` returns nothing.
   - `rg -n "Core V02|helpers V06" lib docs/UPSTREAM_COMPATIBILITY.md README.md` shows only historical mentions.
   - The 2026-09-14 plans still hold. Re-read their decision tables against part "Relationship to earlier plans" and confirm no decision is reversed without being listed there.
   - Step mode is refused (Task 12) and no Elixir step-mode code path exists: `rg -n "queue_mode.*step" lib` shows only the guard.
   - There is no new dependency in `mix.exs` or `demo/mix.exs`.
-- [ ] **Step 3: Push the work branch.** Do not open a PR. Run `git push -u origin <work-branch>`, then confirm the `upstream-compatibility` workflow run is green (`gh run list --branch <work-branch> --limit 1`). If it is red, fix it with a new commit; never force-push.
+- [x] **Step 3: Push the work branch.** Do not open a PR. Run `git push -u origin <work-branch>`, then confirm the `upstream-compatibility` workflow run is green (`gh run list --branch <work-branch> --limit 1`). If it is red, fix it with a new commit; never force-push. The push is on `feat/upstream-0-17-schema-parity`. `gh run list --branch feat/upstream-0-17-schema-parity --limit 5` printed no runs. The workflow triggers on `pull_request` and `workflow_dispatch`, not `push`, and no pull request was opened.
 
 ### Task 23: Update the GoodSkills `skills/pgflow/` skill
 
 This lives in the separate GoodSkills repository, so it is its own branch. Do not open a PR.
 
-- [ ] **Step 1:** Clone GoodSkills and create `pgflow-0-6-0-upstream-0-17-2` from its default branch. Read `skills/pgflow/SKILL.md` and its reference files, and that repo's README/AGENTS conventions. Check `git log -20` there and use its commit style.
-- [ ] **Step 2: Update the skill.** It must state:
+- [x] **Step 1:** Clone GoodSkills and create `pgflow-0-6-0-upstream-0-17-2` from its default branch. Read `skills/pgflow/SKILL.md` and its reference files, and that repo's README/AGENTS conventions. Check `git log -20` there and use its commit style.
+- [x] **Step 2: Update the skill.** It must state:
   - pgflow 0.6.0 targets upstream pgflow 0.17.2 (`baa9e43…`): core V03, helpers V07
   - the upgrade is `mix pgflow.audit_slugs` → stop and drain → `mix pgflow.setup --upgrade` → `mix ecto.migrate` → deploy
   - the slug rules from upstream `is_valid_slug`: `[A-Za-z0-9_]` only, start with a letter, end with a letter or digit, no `__`, at most 128 characters, not `run`. Queue names are the lowercased flow slug, at most 47 characters, and unique across flows and jobs.
@@ -1253,8 +1253,8 @@ This lives in the separate GoodSkills repository, so it is its own branch. Do no
   - workers are stamped `elixir-<vsn>`
 
   Remove or correct any statement that says V02/V06 is current. Keep the skill's frontmatter `description` within its existing length budget.
-- [ ] **Step 3: Validate.** Run that repo's skill checks if it has any (`rg -n "lint|validate" package.json Makefile mix.exs 2>/dev/null`). Otherwise check that the frontmatter parses and every relative link resolves.
-- [ ] **Step 4: Commit and push** with that repo's style, matching `46c391f docs: Update PgFlow skill for helpers V06`: `docs: Update PgFlow skill for 0.6.0 and upstream 0.17.2`, then `git push -u origin pgflow-0-6-0-upstream-0-17-2`. Add the branch URL to the ledger.
+- [x] **Step 3: Validate.** Run that repo's skill checks if it has any (`rg -n "lint|validate" package.json Makefile mix.exs 2>/dev/null`). Otherwise check that the frontmatter parses and every relative link resolves.
+- [ ] **Step 4: Commit and push** with that repo's style, matching `46c391f docs: Update PgFlow skill for helpers V06`: `docs: Update PgFlow skill for 0.6.0 and upstream 0.17.2`, then `git push -u origin pgflow-0-6-0-upstream-0-17-2`. Add the branch URL to the ledger. The local commit is `356ec8f`. `git push` returned HTTP 403, `Permission to agoodway/GoodSkills.git denied to cursor[bot]`. The patch is `docs/superpowers/pgflow-0-6-0-upstream-0-17-2.patch`. No pull request was opened.
 
 ---
 
@@ -1262,17 +1262,17 @@ This lives in the separate GoodSkills repository, so it is its own branch. Do no
 
 The work branch is done when every box is true, each one shown by a command recorded in the ledger:
 
-- [ ] A fresh install (`PgFlow.Migration.up()` + `PgFlow.HelpersMigration.up()`) yields core V03 / helpers V07, and the catalog gate reports no diff beyond the recorded overlays (Tasks 1, 8, 9, 16).
-- [ ] Upgrading V02/V06 with data to V03/V07 keeps every run, task and message, and every `step_tasks.queue_name` is non-null (Tasks 8, 21).
-- [ ] An invalid slug or queue collision fails the migration atomically with the audit's message; nothing is renamed (Tasks 5, 8).
-- [ ] `mix pgflow.audit_slugs` and compile-time DSL validation agree on every rule (Tasks 2–5).
-- [ ] `PgFlow.Upstream.Bundle` regenerates V03 byte-for-byte (`--check`), V02's checksum is frozen, and every rule matches its declared count (Tasks 6, 7, 18).
-- [ ] Elixir calls only the 0.17.2 signatures, boot requires V03/V07, and step-mode flows are refused before `ensure_flow_compiled` runs (Tasks 10–12).
-- [ ] The listed upstream pgTAP files pass on plain Postgres; `known_divergences` holds only Supabase-only entries (Task 16).
-- [ ] TS 0.17.2 and Elixir workers complete the same flow-mode runs on one database (Task 17).
-- [ ] CI pins `baa9e43f…` and is green on the pushed work branch (Tasks 18, 22).
-- [ ] The demo upgrades in place and passes its tests, verifier and `mix precommit` (Task 21).
-- [ ] Docs, version 0.6.0 and the GoodSkills branch are published as branches, with no PRs (Tasks 19, 20, 23).
+- [x] A fresh install (`PgFlow.Migration.up()` + `PgFlow.HelpersMigration.up()`) yields core V03 / helpers V07, and the catalog gate reports no diff beyond the recorded overlays (Tasks 1, 8, 9, 16).
+- [x] Upgrading V02/V06 with data to V03/V07 keeps every run, task and message, and every `step_tasks.queue_name` is non-null (Tasks 8, 21).
+- [x] An invalid slug or queue collision fails the migration atomically with the audit's message; nothing is renamed (Tasks 5, 8).
+- [x] `mix pgflow.audit_slugs` and compile-time DSL validation agree on every rule (Tasks 2–5).
+- [x] `PgFlow.Upstream.Bundle` regenerates V03 byte-for-byte (`--check`), V02's checksum is frozen, and every rule matches its declared count (Tasks 6, 7, 18).
+- [x] Elixir calls only the 0.17.2 signatures, boot requires V03/V07, and step-mode flows are refused before `ensure_flow_compiled` runs (Tasks 10–12).
+- [x] The listed upstream pgTAP files pass on plain Postgres; `known_divergences` holds only Supabase-only entries (Task 16).
+- [x] TS 0.17.2 and Elixir workers complete the same flow-mode runs on one database (Task 17).
+- [ ] CI pins `baa9e43f…` and is green on the pushed work branch (Tasks 18, 22). The pin is in the workflow. No run exists: the workflow does not start on push, and no pull request was opened.
+- [x] The demo upgrades in place and passes its tests, verifier and `mix precommit` (Task 21).
+- [ ] Docs, version 0.6.0 and the GoodSkills branch are published as branches, with no PRs (Tasks 19, 20, 23). Docs and 0.6.0 are on `feat/upstream-0-17-schema-parity`. The GoodSkills branch is local only; the patch is on this branch. No pull request was opened.
 
 ## Execution ledger
 
@@ -1313,8 +1313,8 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 19 (two commits) | ecdd9f5, 776106c | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow_test.exs`; `mix compile --warnings-as-errors` | green | RED: `upstream_sha/0` was still `94490709…`, and the report map had no `upstream_release` key. GREEN: `test/pgflow_test.exs` 2 tests, 0 failures. `@pgflow_core_version` stays `"0.5.0"`. The install snippet in `README.md` and `mix.exs` `@version` are `0.6.0`. `mix compile --warnings-as-errors` exit 0. |
 | 20 | 7891c0c | `rg -n '94490709\|0\\.17\\.0' docs README.md AGENTS.md` | green | New guide `docs/UPGRADING_UPSTREAM_2026_10.md` covers audit, stop-and-drain, `mix pgflow.setup --upgrade`, deploy, the V03 contract, the step-mode refusal, and forward-only restore. `UPSTREAM_COMPATIBILITY.md` and the README pointer name 0.17.2, core 3, and helpers 7. Remaining `94490709` / `0.17.0` hits are the September guide, the 2026-09-14 plans and brief, and this plan's historical notes. |
 | 21 | 7e00dea | `MIX_ENV=test mix test test/pgflow_demo/upstream_upgrade_test.exs`; demo gates in Step 4 | green | RED: after the unversioned September wrapper, core was already 3 and helpers stayed 6. That wrapper is pinned to `Migration.up(version: 2)` so the V02 step stays historical. The fresh-database test uses `v03_contract!` rather than `catalog_contract!`, because `catalog_contract!` still asserts the V02 four-argument claim. GREEN: upgrade file 4 tests, 0 failures. `mix pgflow.audit_slugs --repo PgflowDemo.Repo` printed `no slug findings` (the demo config sets `:pgflow, :repo`, not `:ecto_repos`). Demo suite 90 tests, 0 failures. Verifier executed 29 presets, all passed. Prod compile clean. `mix precommit` exit 0. |
-| 22 | — | full gate, gap review, push | | work-branch URL, CI run URL |
-| 23 | | GoodSkills checks | | GoodSkills branch URL |
+| 22 | 924910f, a7eb4f0 | clean `_build`; `mix pgflow.test.reset`; `PGFLOW_REQUIRE_DB=1 mix test`; `--only migration`; `--only upstream_checkout`; importer `--check`; harness `--suite all`; `mix quality`; demo audit, `mix test`, `verify_scenarios`, prod compile, `mix precommit` | green after one fix | First gate, after `install-pgtap.sh` (reset drops the extension): suite 1083 tests, 0 failures (95 excluded). Migration 51 tests, 0 failures. Importer printed `pgflow core V03 output is current`. Harness `--suite all` passed, 310 tests, 0 failures (catalog 4, pgTAP 294, TypeScript 12). Demo audit printed `no slug findings`; demo suite 90 tests, 0 failures; verifier executed 29 presets, all passed; prod compile generated the app; `mix precommit` 90 tests, 0 failures. Two slices were red. `--only upstream_checkout` was 13 tests, 3 failures: `Jason.DecodeError` at byte `0x63` because `claimed msg_id=` was merged into stdout. `mix quality` exited 2 with 22 Dialyzer errors: `[] \| [atom()]` on mixed `depends_on` widened to `[any()]`, so `Shape.from_definition/1` had no local return. `924910f` reads the last JSON object and rebuilds those dependencies. Re-run: `--only upstream_checkout` 13 tests, 0 failures; `mix quality` exit 0; Dialyzer 0 errors. Gap review: Elixir calls the 5-arg claim, 4-arg compile, and 4-arg `register_worker`. `queue_mode.*step` matches nothing; the guard allows only `nil` and `"flow"`. No new dependency; `ecto_evolver` stays `~> 0.1.0`. `Core V02\|helpers V06` has no matches in `lib`, `UPSTREAM_COMPATIBILITY.md`, or `README.md`. The 2026-09-14 decisions were re-read; the September demo migration pin is now listed in the relationship table (`a7eb4f0`). `94490709` remains in frozen V02 provenance (`bundle_test.exs`, `spec/v02.ex`, `priv/pgflow_core/sql/versions/v02/v02_manifest.json`, `migrations/core/v02.ex`) and the historical external-waits brief. The plan's exclusion glob `priv/pgflow/sql/versions/v02` does not exist. `demo/docs/SCENARIOS.md` now cites `baa9e43f`. Pushed `feat/upstream-0-17-schema-parity`. `gh run list --branch feat/upstream-0-17-schema-parity --limit 5` printed nothing. The workflow does not run on push, and no pull request was opened. |
+| 23 | 18474bf; GoodSkills local 356ec8f | GoodSkills relative-link check; `git push` | push blocked | Local branch `pgflow-0-6-0-upstream-0-17-2` commit `356ec8f`, subject `docs: Update PgFlow skill for 0.6.0 and upstream 0.17.2`. That repo has no lint script. Relative links in `skills/pgflow` resolved, and the frontmatter description length stayed 276. `git push -u origin pgflow-0-6-0-upstream-0-17-2` returned HTTP 403: `Permission to agoodway/GoodSkills.git denied to cursor[bot]`. The patch is `docs/superpowers/pgflow-0-6-0-upstream-0-17-2.patch` on this branch (`18474bf`). Apply it in GoodSkills with `git am`. No pull request was opened. |
 
 **Deviation rule:** if a step's expected output does not appear, stop that task. Write the actual output in Notes, use `superpowers:systematic-debugging`, and fix it with the smallest change that keeps the spec's invariants. Never weaken a test, add a `known_divergences` entry for a non-Supabase reason, or edit `priv/pgflow/sql/versions/v02/**` to get green.
 
