@@ -48,6 +48,9 @@ A worker that expects a different queue mode or route map gets
 `{:error, {:flow_routing_mismatch, message}}`. `message` is the upstream text,
 unchanged.
 
+`PgFlow.Config` raises `ArgumentError` at boot when two configured flows or jobs
+share a PGMQ queue name (the lowercased slug).
+
 ## Documented Elixir overlays
 
 These are intentional and recorded in the compatibility harness manifest:
@@ -66,7 +69,7 @@ These are intentional and recorded in the compatibility harness manifest:
 
 | Area | Elixir behavior |
 | --- | --- |
-| JSON scalar preservation | Elixir preserves valid JSON scalars (`false`, `0`, `""`) through handlers. The pinned TypeScript 0.17.2 worker still coerces falsy output. That difference stays unresolved. |
+| JSON scalar preservation | Elixir preserves valid JSON scalars (`false`, `0`, `""`) through handlers. The pinned TypeScript 0.17.2 worker still coerces falsy output. Upstream main after 0.17.2 (#708, `f67145b0`) fixes that coercion and leaves the SQL schema unchanged (whitespace only), so the divergence will clear on the next pin. |
 | Step mode | Refused at boot, before compilation, even when `is_local()` is true. TypeScript step-mode workers are a separate deployment. |
 | `is_local()` | The database JWT GUC matching the Supabase local default enables destructive recompilation. An unset GUC does not; `MIX_ENV=dev` alone grants no permission to delete history. |
 | External waits | Not in this release. No signal store or manual tasks. |
@@ -87,13 +90,35 @@ All paths converge on core V03 + helpers V07:
 
 1. **Fresh install** — extensions → pgmq → `mix pgflow.setup` → `mix ecto.migrate`.
 2. **Existing V02 + helpers ≤V06** — stop-and-drain upgrade (see the October guide).
-3. **Core-only legacy** — apply helpers via a new wrapper; do not rerun a stamped setup.
+3. **Core-only legacy** — core V03 is required first. Generate a new wrapper whose
+   `up/0` calls the pinned core (`PgFlow.Migration.up(version: 3)`) and then
+   helpers (`PgFlow.HelpersMigration.up(version: 7)`). Do not rerun a stamped setup.
+
+### Consumer migration history (0.6.0 behavior change)
+
+A bare `PgFlow.Migration.up()` tracks the newest bundled library version, and so
+does a bare `PgFlow.HelpersMigration.up()`. An old setup migration that calls
+them installs V03 and V07 when history is replayed from an empty database (CI,
+new machines). Older flow-compile migrations with legacy slug literals then fail
+the V03 slug rules.
+
+- Pin existing wrappers to the versions they originally installed
+  (`up(version: N)`).
+- Fix slug literals in historical compile migrations.
+- Newly generated wrappers (`mix pgflow.setup`, `--upgrade`) are pinned to
+  `up(version: 3)` and `up(version: 7)`.
+- Do not pin helpers below 7 on core 3. Core V03 requires helpers V07, and
+  replaying helpers V05 alone re-creates the old four-argument `start_tasks`.
+- 0.6.0 workers refuse to boot (`{:schema_incompatible, ...}`) until the V03/V07
+  wrapper has run, so migrate before rolling workers.
+
+Details are in [UPGRADING_UPSTREAM_2026_10.md](UPGRADING_UPSTREAM_2026_10.md).
 
 ## Cross-language evidence
 
 The harness (`test/support/upstream/run.exs`) runs catalog, pgTAP, and
 TypeScript profiles against the pinned SHA. The demo is the consumer
-acceptance bed. JSON falsy parity with TypeScript 0.17.2 remains unresolved.
+acceptance bed. JSON falsy parity with TypeScript 0.17.2 is a known divergence that upstream has fixed (see above).
 
 The GitHub workflow runs on pull request and `workflow_dispatch`. A branch
 push alone does not start it.

@@ -467,6 +467,26 @@ defmodule PgFlow.Queries.Flows do
   end
 
   @doc """
+  Takes the flow definition advisory lock for the current transaction.
+
+  Uses the same key as upstream `pgflow.ensure_flow_compiled`,
+  `pg_advisory_xact_lock(1, hashtext(lower(flow_slug)))`, so a caller that
+  reads flow state before compiling serializes with every other definition
+  writer on the same slug. The lock is re-entrant within the transaction and
+  released at commit or rollback; calling it outside a transaction releases it
+  immediately.
+  """
+  @spec lock_flow_definition(Ecto.Repo.t(), String.t()) :: :ok | {:error, term()}
+  def lock_flow_definition(repo, flow_slug) do
+    sql = "SELECT pg_advisory_xact_lock(1, hashtext(lower($1::text)))"
+
+    case SQL.query(repo, sql, [flow_slug]) do
+      {:ok, _result} -> :ok
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  @doc """
   Returns the stored queue mode for a compiled flow.
 
   Unknown slugs return `{:ok, nil}`. Elixir serves flow mode only, so startup

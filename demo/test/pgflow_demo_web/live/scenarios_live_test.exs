@@ -327,6 +327,69 @@ defmodule PgflowDemoWeb.ScenariosLiveTest do
     end
   end
 
+  describe "check scenarios" do
+    test "catalogue labels contract checks", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/scenarios")
+
+      for id <- ~w(slug_rules schema_contract step_mode_guard) do
+        assert has_element?(view, "a[href='/scenarios/#{id}']")
+        assert has_element?(view, "#scenario-kind-#{id}", "Contract check")
+      end
+    end
+
+    test "renders a passing slug rule check with per-key assertions", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/scenarios/slug_rules")
+
+      assert has_element?(view, "#scenario-check #scenario-form")
+      assert has_element?(view, "#scenario-check-button")
+      assert has_element?(view, "#scenario-expected")
+      assert has_element?(view, "#scenario-source", "defmodule")
+      refute has_element?(view, "#scenario-run-button")
+      refute has_element?(view, "#scenario-check-result")
+
+      render_change(view, "validate", %{"preset" => "reserved_run"})
+
+      view
+      |> element("#scenario-form")
+      |> render_submit(%{"preset" => "reserved_run"})
+
+      assert has_element?(view, "#scenario-check-result[data-pass=true]")
+      assert has_element?(view, "#scenario-check-status", "passed")
+      assert has_element?(view, "#scenario-check-assertion-elixir_rule[data-match=true]")
+      assert has_element?(view, "#scenario-check-assertion-elixir_db_agree[data-match=true]")
+      assert has_element?(view, "#scenario-check-actual", "reserved")
+      refute has_element?(view, "#scenario-check-message")
+
+      render_change(view, "validate", %{"preset" => "mixed_case"})
+      refute has_element?(view, "#scenario-check-result")
+    end
+
+    test "renders the step-mode refusal check", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/scenarios/step_mode_guard")
+
+      view
+      |> element("#scenario-form")
+      |> render_submit(%{"preset" => "typescript_owned_flow"})
+
+      assert has_element?(view, "#scenario-check-result[data-pass=true]")
+      assert has_element?(view, "#scenario-check-assertion-bootstrap_result[data-match=true]")
+      assert has_element?(view, "#scenario-check-assertion-definition_unchanged[data-match=true]")
+      assert has_element?(view, "#scenario-check-actual", "unsupported_queue_mode")
+    end
+
+    test "renders the schema contract check", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/scenarios/schema_contract")
+
+      view
+      |> element("#scenario-form")
+      |> render_submit(%{"preset" => "installed_demo_db"})
+
+      assert has_element?(view, "#scenario-check-result[data-pass=true]")
+      assert has_element?(view, "#scenario-check-assertion-upstream_release", "0.17.2")
+      assert has_element?(view, "#scenario-check-assertion-worker_stamp", "elixir-")
+    end
+  end
+
   defp run_id_from_view(view) do
     assert has_element?(view, "#scenario-run[data-run-id]")
     html = render(view)

@@ -674,5 +674,26 @@ defmodule PgFlow.ConfigTest do
         PgFlow.Config.validate!(repo: PgFlow.TestRepo, flows: [OrdersLowerFlow, OrdersUpperFlow])
       end
     end
+
+    test "accepts a module listed twice" do
+      assert PgFlow.Config.validate!(
+               repo: PgFlow.TestRepo,
+               flows: [OrdersLowerFlow, OrdersLowerFlow]
+             )
+    end
+
+    test "accepts a module listed in flows and jobs" do
+      assert PgFlow.Config.validate!(
+               repo: PgFlow.TestRepo,
+               flows: [OrdersLowerFlow],
+               jobs: [OrdersLowerFlow]
+             )
+    end
+
+    test "names a non-flow entry" do
+      assert_raise ArgumentError, ~r/Enum is not a PgFlow flow or job module/, fn ->
+        PgFlow.Config.validate!(repo: PgFlow.TestRepo, flows: [Enum])
+      end
+    end
   end
 end

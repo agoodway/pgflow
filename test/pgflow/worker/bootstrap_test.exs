@@ -53,6 +53,16 @@ defmodule PgFlow.Worker.BootstrapTest do
     end
   end
 
+  defmodule BootstrapLockRaceFlow do
+    use PgFlow.Flow
+
+    @flow slug: :bootstrap_lock_race_flow, max_attempts: 3, timeout: 60
+
+    step :process do
+      fn input, _ctx -> %{value: input["value"]} end
+    end
+  end
+
   setup do
     :ok = Sandbox.checkout(TestRepo)
     :ok = Sandbox.mode(TestRepo, {:shared, self()})
@@ -154,7 +164,7 @@ defmodule PgFlow.Worker.BootstrapTest do
         "CREATE FUNCTION pgflow.start_tasks(text,bigint[],uuid) RETURNS SETOF pgflow.step_task_record LANGUAGE SQL AS 'SELECT * FROM pgflow.start_tasks($1,$2,$3,lower($1))'"
       )
 
-      assert {:error, {:schema_incompatible, :start_tasks_legacy}} =
+      assert {:error, {:schema_incompatible, :start_tasks_legacy_3arg}} =
                Bootstrap.prepare(TestRepo, BootstrapCompileFlow.__pgflow_definition__())
     end
 
@@ -364,6 +374,77 @@ defmodule PgFlow.Worker.BootstrapTest do
                TestRepo.query!("SELECT queue_mode FROM pgflow.flows WHERE flow_slug = $1", [slug])
 
       assert worker_function_count("elixir:PgFlow.Worker.BootstrapTest.BootstrapCompileFlow") == 0
+    end
+  end
+
+  describe "step-mode refusal under concurrent compilation" do
+    test "waits for a concurrent step-mode compile and refuses it without deleting it" do
+      definition = BootstrapLockRaceFlow.__pgflow_definition__()
+      slug = "bootstrap_lock_race_flow"
+      shape = Shape.from_definition(definition)
+
+      :ok = Sandbox.checkin(TestRepo)
+      Sandbox.mode(TestRepo, :auto)
+      ensure_v02_compilation_schema!()
+      TestRepo.query!("SELECT pgflow.delete_flow_and_data($1)", [slug])
+      on_exit(fn -> TestRepo.query!("SELECT pgflow.delete_flow_and_data($1)", [slug]) end)
+
+      {:ok, conn} = Postgrex.start_link(external_conn_opts())
+      test_pid = self()
+
+      holder =
+        Task.async(fn ->
+          Postgrex.transaction(conn, fn tx ->
+            Postgrex.query!(tx, "SELECT pg_advisory_xact_lock(1, hashtext(lower($1::text)))", [
+              slug
+            ])
+
+            Postgrex.query!(
+              tx,
+              "SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb, 'step', $3::jsonb)",
+              [slug, shape, step_route_map(slug, shape)]
+            )
+
+            send(test_pid, :holder_locked)
+
+            receive do
+              :commit -> :committed
+            end
+          end)
+        end)
+
+      assert_receive :holder_locked, 5_000
+
+      bootstrap =
+        Task.async(fn ->
+          TestRepo.transaction(fn ->
+            set_local_mode!()
+            send(test_pid, {:is_local, TestRepo.query!("SELECT pgflow.is_local()").rows})
+            send(test_pid, {:prepared, Bootstrap.prepare(TestRepo, definition)})
+          end)
+        end)
+
+      assert_receive {:is_local, [[true]]}, 5_000
+      assert :ok = wait_until(fn -> advisory_lock_waiters() > 0 end, timeout_ms: 5_000)
+      refute_received {:prepared, _}
+
+      send(holder.pid, :commit)
+      assert {:ok, :committed} = Task.await(holder, 5_000)
+
+      assert_receive {:prepared, result}, 5_000
+      Task.await(bootstrap, 5_000)
+      assert {:error, {:unsupported_queue_mode, ^slug, "step"}} = result
+
+      assert %{rows: [["step"]]} =
+               TestRepo.query!("SELECT queue_mode FROM pgflow.flows WHERE flow_slug = $1", [slug])
+
+      assert %{rows: [[1]]} =
+               TestRepo.query!("SELECT count(*) FROM pgflow.steps WHERE flow_slug = $1", [slug])
+
+      assert worker_function_count("elixir:PgFlow.Worker.BootstrapTest.BootstrapLockRaceFlow") ==
+               0
+
+      GenServer.stop(conn)
     end
   end
 
@@ -637,6 +718,20 @@ defmodule PgFlow.Worker.BootstrapTest do
     TestRepo.query!(
       "SET LOCAL app.settings.jwt_secret = 'super-secret-jwt-token-with-at-least-32-characters-long'"
     )
+  end
+
+  defp external_conn_opts do
+    TestRepo.config()
+    |> Keyword.take([:hostname, :port, :username, :password, :database])
+  end
+
+  defp advisory_lock_waiters do
+    %{rows: [[count]]} =
+      TestRepo.query!(
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND classid = 1 AND objsubid = 2"
+      )
+
+    count
   end
 
   defp wait_until(fun, opts) do

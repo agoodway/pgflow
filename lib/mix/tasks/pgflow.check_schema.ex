@@ -44,7 +44,7 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
 
     Mix.Task.run("app.config")
 
-    repo = Helpers.configured_repo(opts)
+    repo = Helpers.resolve_repo(Keyword.get(opts, :repo))
 
     Mix.shell().info("Checking pgflow schema in #{inspect(repo)}...")
 

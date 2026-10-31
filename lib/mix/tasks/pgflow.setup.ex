@@ -123,14 +123,21 @@ defmodule Mix.Tasks.Pgflow.Setup do
     |> IO.iodata_to_binary()
   end
 
+  # Pins core and helpers to the versions bundled at generation time so a
+  # consumer replaying its migration history installs the same schema each time.
+  defp pinned_up_steps(helpers?, dashboard?) do
+    [
+      "PgFlow.Migration.up(version: #{PgFlow.Migration.current_version()})",
+      if(helpers?,
+        do: "PgFlow.HelpersMigration.up(version: #{PgFlow.HelpersMigration.current_version()})"
+      ),
+      if(dashboard?, do: "PgFlowDashboard.Migration.up()")
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
   defp migration_content(repo, helpers?, dashboard?) do
-    up_steps =
-      [
-        "PgFlow.Migration.up()",
-        if(helpers?, do: "PgFlow.HelpersMigration.up()"),
-        if(dashboard?, do: "PgFlowDashboard.Migration.up()")
-      ]
-      |> Enum.reject(&is_nil/1)
+    up_steps = pinned_up_steps(helpers?, dashboard?)
 
     down_steps =
       [
@@ -157,10 +164,13 @@ defmodule Mix.Tasks.Pgflow.Setup do
       SQL sources (vendored inside pgflow):
       #{sources}
 
-      `PgFlow.Migration.up/0` runs via EctoEvolver with statement-level
+      Versions are pinned so replaying migration history on an empty database
+      installs the schema as it was when this wrapper was generated.
+
+      `PgFlow.Migration.up/1` runs via EctoEvolver with statement-level
       splitting — the V01 core bundle contains 138 statements and
       Postgrex rejects multi-statement queries (error `42601`).
-      `PgFlow.HelpersMigration.up/0` adds Elixir-binding SQL functions
+      `PgFlow.HelpersMigration.up/1` adds Elixir-binding SQL functions
       (`flow_exists`, `register_worker`, `get_flow_input`, ...) that the
       library's query layer calls via RPC.
 
@@ -188,13 +198,7 @@ defmodule Mix.Tasks.Pgflow.Setup do
   @forward_only_down_message "This PgFlow upstream upgrade is forward-only; restore the coordinated backup to revert"
 
   defp upgrade_migration_content(repo, helpers?, dashboard?) do
-    up_steps =
-      [
-        "PgFlow.Migration.up()",
-        if(helpers?, do: "PgFlow.HelpersMigration.up()"),
-        if(dashboard?, do: "PgFlowDashboard.Migration.up()")
-      ]
-      |> Enum.reject(&is_nil/1)
+    up_steps = pinned_up_steps(helpers?, dashboard?)
 
     up_body = up_steps |> Enum.map_join("\n    ", & &1)
     gen_command = setup_command(helpers?, dashboard?, true)

@@ -83,7 +83,7 @@ defmodule Mix.Tasks.Pgflow.Gen.HelpersMigration do
       use Ecto.Migration
 
       def up do
-        PgFlow.HelpersMigration.up()
+        PgFlow.HelpersMigration.up(version: #{PgFlow.HelpersMigration.current_version()})
       end
 
       def down do

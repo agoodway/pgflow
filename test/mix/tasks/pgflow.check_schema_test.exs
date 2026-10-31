@@ -21,6 +21,14 @@ defmodule Mix.Tasks.Pgflow.CheckSchemaTest do
     :ok
   end
 
+  describe "repo discovery" do
+    test "runs without --repo using the host app's configured repos" do
+      output = capture_io(fn -> CheckSchema.run([]) end)
+
+      assert output =~ "Checking pgflow schema in PgFlow.TestRepo"
+    end
+  end
+
   describe "SchemaCheck.run/1" do
     test "passes on the fully upgraded test database" do
       assert PgFlow.Migration.current_version() == 3
@@ -31,7 +39,7 @@ defmodule Mix.Tasks.Pgflow.CheckSchemaTest do
 
     @tag :destructive_schema
     test "rejects a recreated four-argument claim" do
-      assert {:error, {:schema_incompatible, :start_tasks_legacy}} =
+      assert {:error, {:schema_incompatible, :start_tasks_legacy_4arg}} =
                with_runtime_change("""
                CREATE FUNCTION pgflow.start_tasks(text, bigint[], uuid, text)
                RETURNS SETOF pgflow.step_task_record
@@ -50,6 +58,21 @@ defmodule Mix.Tasks.Pgflow.CheckSchemaTest do
                """)
 
       assert Enum.any?(errors, &String.contains?(&1, "obsolete four-argument claim"))
+    end
+
+    @tag :destructive_schema
+    test "rejects a recreated three-argument claim" do
+      sql = """
+      CREATE FUNCTION pgflow.start_tasks(text, bigint[], uuid)
+      RETURNS SETOF pgflow.step_task_record
+      LANGUAGE sql AS $$
+        SELECT * FROM pgflow.start_tasks($1, $2, $3, lower($1), NULL::text)
+      $$
+      """
+
+      assert {:error, {:schema_incompatible, :start_tasks_legacy_3arg}} = with_runtime_change(sql)
+      assert {:error, errors} = with_schema_change(sql)
+      assert Enum.any?(errors, &String.contains?(&1, "start_tasks(text,bigint[],uuid)"))
     end
 
     @tag :destructive_schema

@@ -5,12 +5,28 @@ permissions:
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - "lib/**"
+      - "priv/**"
+      - "test/**"
+      - "demo/**"
+      - "config/**"
+      - "mix.exs"
+      - "mix.lock"
+      - ".github/workflows/upstream-compatibility.yml"
   pull_request:
     paths:
       - "lib/**"
       - "priv/**"
       - "test/**"
       - "demo/**"
+      - "config/**"
+      - "mix.exs"
+      - "mix.lock"
       - ".github/workflows/upstream-compatibility.yml"
 
 jobs:

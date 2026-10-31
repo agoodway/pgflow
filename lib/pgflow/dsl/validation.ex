@@ -273,10 +273,12 @@ defmodule PgFlow.DSL.Validation do
   def validate_step_slugs!(step_slugs, flow_slug, env) do
     Enum.each(step_slugs, &validate_slug!(&1, :step, env))
 
-    step_slugs
-    |> Enum.group_by(&PgFlow.Slug.queue_name/1)
-    |> Enum.find(fn {_lower, slugs} -> length(slugs) > 1 end)
-    |> case do
+    collision =
+      step_slugs
+      |> Enum.group_by(&PgFlow.Slug.queue_name/1)
+      |> Enum.find(fn {_lower, slugs} -> length(slugs) > 1 end)
+
+    case collision do
       nil ->
         :ok
 

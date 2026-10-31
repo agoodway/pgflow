@@ -41,8 +41,11 @@ defmodule Mix.Tasks.Pgflow.SetupTest do
       assert content =~
                "defmodule PgFlow.TestRepo.Migrations.UpgradePgflowCoreV03HelpersV07 do"
 
-      core_index = content |> :binary.match("PgFlow.Migration.up()") |> elem(0)
-      helpers_index = content |> :binary.match("PgFlow.HelpersMigration.up()") |> elem(0)
+      core_index = content |> :binary.match("PgFlow.Migration.up(version: 3)") |> elem(0)
+
+      helpers_index =
+        content |> :binary.match("PgFlow.HelpersMigration.up(version: 7)") |> elem(0)
+
       assert core_index < helpers_index
       assert content =~ "mix pgflow.audit_slugs"
       assert content =~ "stop every worker"
@@ -101,8 +104,8 @@ defmodule Mix.Tasks.Pgflow.SetupTest do
       [migration_file] = File.ls!(@test_migrations_path)
       content = File.read!(Path.join(@test_migrations_path, migration_file))
 
-      core_index = :binary.match(content, "PgFlow.Migration.up()") |> elem(0)
-      helpers_index = :binary.match(content, "PgFlow.HelpersMigration.up()") |> elem(0)
+      core_index = :binary.match(content, "PgFlow.Migration.up(version: 3)") |> elem(0)
+      helpers_index = :binary.match(content, "PgFlow.HelpersMigration.up(version: 7)") |> elem(0)
 
       assert core_index < helpers_index
     end
@@ -122,8 +125,8 @@ defmodule Mix.Tasks.Pgflow.SetupTest do
       content = File.read!(Path.join(@test_migrations_path, migration_file))
 
       assert content =~ "forward-only"
-      assert content =~ "PgFlow.Migration.up()"
-      assert content =~ "PgFlow.HelpersMigration.up()"
+      assert content =~ "PgFlow.Migration.up(version: 3)"
+      assert content =~ "PgFlow.HelpersMigration.up(version: 7)"
       refute content =~ "PgFlow.HelpersMigration.down()"
       refute content =~ "PgFlow.Migration.down()"
     end

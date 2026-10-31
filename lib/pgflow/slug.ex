@@ -25,6 +25,7 @@ defmodule PgFlow.Slug do
 
   @doc "Validates a flow or step slug and returns the first broken rule."
   @spec validate(String.t() | atom()) :: :ok | {:error, reason()}
+  def validate(nil), do: {:error, :empty}
   def validate(slug) when is_atom(slug), do: validate(Atom.to_string(slug))
   def validate(""), do: {:error, :empty}
 

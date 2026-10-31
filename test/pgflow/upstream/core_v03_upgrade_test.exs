@@ -58,6 +58,92 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
     end)
   end
 
+  test "in-flight run completes after V03 upgrade" do
+    fixture = fixture!()
+
+    in_fixture(fixture, fn ->
+      migrate_v02!()
+      migrate_helpers_v05!()
+      migrate_helpers_v06!()
+
+      old = seed_in_flight!()
+      before_checksum = state_checksum()
+      before_messages = queue_messages()
+
+      migrate_v03!()
+      migrate_helpers_v07!()
+
+      assert core_version() == 3
+      assert state_checksum() == before_checksum
+      assert queue_messages() == before_messages
+
+      assert scalar!("""
+             SELECT count(*) FROM pgflow.step_tasks AS t
+             WHERE t.flow_slug = 'upg_main'
+               AND t.status IN ('queued', 'started')
+               AND NOT EXISTS (
+                 SELECT 1 FROM pgmq.q_upg_main AS q WHERE q.msg_id = t.message_id
+               )
+             """) == 0
+
+      assert run_status(old.done) == "completed"
+      assert run_status(old.failed) == "failed"
+
+      assert scalar!("SELECT count(*) FROM pgflow.workers WHERE worker_id = $1::text::uuid", [
+               old.worker
+             ]) == 1
+
+      # Run 1: b was claimed under the old signature; finishing it releases c.
+      assert task_status(old.started, "b") == "started"
+      assert complete_task!(old.started, "b", %{"b" => 1}) == "completed"
+      assert task_status(old.started, "c") == "queued"
+      assert claim!(old.started, "c", old.worker) == 1
+      assert complete_task!(old.started, "c", %{"c" => 1}) == "completed"
+      assert run_status(old.started) == "completed"
+
+      # Run 2: both root tasks were queued before the upgrade and are claimed
+      # through the five-argument signature.
+      for step <- ["a", "b"] do
+        assert task_status(old.queued, step) == "queued"
+        assert claim!(old.queued, step, old.worker) == 1
+        assert complete_task!(old.queued, step, %{step => 1}) == "completed"
+      end
+
+      assert claim!(old.queued, "c", old.worker) == 1
+      assert complete_task!(old.queued, "c", %{"c" => 2}) == "completed"
+      assert run_status(old.queued) == "completed"
+    end)
+  end
+
+  test "a failed V03 down migration leaves seeded data intact" do
+    fixture = fixture!()
+
+    in_fixture(fixture, fn ->
+      migrate_v02!()
+      migrate_helpers_v05!()
+      migrate_helpers_v06!()
+      seed_in_flight!()
+      migrate_v03!()
+
+      checksum = state_checksum()
+      messages = queue_messages()
+
+      assert_raise Postgrex.Error, ~r/PgFlow core V03 is forward-only/, fn ->
+        Ecto.Migrator.down(
+          PgFlow.TestRepo,
+          9_000_000_203,
+          PgFlow.Upstream.CoreV03Migration,
+          log: false
+        )
+      end
+
+      assert core_version() == 3
+      assert state_checksum() == checksum
+      assert queue_messages() == messages
+      assert column_exists?("flows", "queue_mode")
+    end)
+  end
+
   test "slug pre-flight rolls the V03 transaction back" do
     fixture = fixture!()
 
@@ -176,6 +262,144 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
       PgFlow.Upstream.CoreV03Migration,
       log: false
     )
+  end
+
+  defp migrate_helpers_v07! do
+    Ecto.Migrator.up(
+      PgFlow.TestRepo,
+      9_000_000_207,
+      PgFlow.Upstream.HelpersV07Migration,
+      log: false
+    )
+  end
+
+  # Seeds, on a V02/V06 schema: a run with `b` claimed (old signature) and `c`
+  # still blocked, a run with every root task queued, a completed run, and a
+  # run whose only task failed.
+  defp seed_in_flight! do
+    worker = scalar!("SELECT gen_random_uuid()::text")
+
+    PgFlow.TestRepo.query!(
+      "SELECT pgflow.register_worker($1::text::uuid, 'upg_main', 'elixir:Up')",
+      [worker]
+    )
+
+    PgFlow.TestRepo.query!("SELECT * FROM pgflow.create_flow('upg_main')")
+    add_step!("upg_main", "a", [])
+    add_step!("upg_main", "b", [])
+    add_step!("upg_main", "c", ["a", "b"])
+
+    PgFlow.TestRepo.query!("SELECT * FROM pgflow.create_flow('upg_done')")
+    add_step!("upg_done", "only", [])
+
+    PgFlow.TestRepo.query!("SELECT * FROM pgflow.create_flow('upg_fail', 1, 1, 60)")
+    add_step!("upg_fail", "only", [])
+
+    started = start_run!("upg_main")
+    queued = start_run!("upg_main")
+    done = start_run!("upg_done")
+    failed = start_run!("upg_fail")
+
+    old_claim!(started, "upg_main", "a", worker)
+    old_claim!(started, "upg_main", "b", worker)
+    complete_task!(started, "a", %{"a" => 1})
+
+    old_claim!(done, "upg_done", "only", worker)
+    complete_task!(done, "only", %{"ok" => true})
+
+    old_claim!(failed, "upg_fail", "only", worker)
+
+    PgFlow.TestRepo.query!("SELECT * FROM pgflow.fail_task($1::text::uuid, 'only', 0, 'boom')", [
+      failed
+    ])
+
+    assert run_status(started) == "started"
+    assert run_status(done) == "completed"
+    assert run_status(failed) == "failed"
+    assert task_status(started, "b") == "started"
+    assert task_status(queued, "a") == "queued"
+
+    %{worker: worker, started: started, queued: queued, done: done, failed: failed}
+  end
+
+  defp add_step!(flow, step, deps) do
+    PgFlow.TestRepo.query!(
+      "SELECT * FROM pgflow.add_step($1, $2, $3::text[], null, null, null, null, 'single')",
+      [flow, step, deps]
+    )
+  end
+
+  defp start_run!(flow) do
+    scalar!("SELECT (pgflow.start_flow($1, '{}'::jsonb)).run_id::text", [flow])
+  end
+
+  defp old_claim!(run_id, flow, step, worker) do
+    msg_id = message_id!(run_id, step)
+
+    %{num_rows: 1} =
+      PgFlow.TestRepo.query!(
+        "SELECT * FROM pgflow.start_tasks($1, ARRAY[$2]::bigint[], $3::text::uuid, $4)",
+        [flow, msg_id, worker, flow]
+      )
+  end
+
+  defp claim!(run_id, step, worker) do
+    msg_id = message_id!(run_id, step)
+
+    PgFlow.TestRepo.query!(
+      """
+      SELECT * FROM pgflow.start_tasks('upg_main', ARRAY[$1]::bigint[], $2::text::uuid, 'upg_main', NULL::text)
+      """,
+      [msg_id, worker]
+    ).num_rows
+  end
+
+  defp complete_task!(run_id, step, output) do
+    PgFlow.TestRepo.query!(
+      "SELECT * FROM pgflow.complete_task($1::text::uuid, $2, 0, $3::text::jsonb)",
+      [run_id, step, Jason.encode!(output)]
+    )
+
+    task_status(run_id, step)
+  end
+
+  defp message_id!(run_id, step) do
+    scalar!(
+      "SELECT message_id FROM pgflow.step_tasks WHERE run_id = $1::text::uuid AND step_slug = $2",
+      [run_id, step]
+    )
+  end
+
+  defp task_status(run_id, step) do
+    scalar!(
+      "SELECT status FROM pgflow.step_tasks WHERE run_id = $1::text::uuid AND step_slug = $2",
+      [run_id, step]
+    )
+  end
+
+  defp run_status(run_id) do
+    scalar!("SELECT status FROM pgflow.runs WHERE run_id = $1::text::uuid", [run_id])
+  end
+
+  # Content checksums over columns that exist before and after the upgrade.
+  defp state_checksum do
+    PgFlow.TestRepo.query!("""
+    SELECT
+      (SELECT md5(coalesce(string_agg(concat_ws('|', run_id, flow_slug, status, input, output, remaining_steps), ';' ORDER BY run_id), ''))
+         FROM pgflow.runs),
+      (SELECT md5(coalesce(string_agg(concat_ws('|', run_id, step_slug, status, remaining_deps, remaining_tasks), ';' ORDER BY run_id, step_slug), ''))
+         FROM pgflow.step_states),
+      (SELECT md5(coalesce(string_agg(concat_ws('|', run_id, step_slug, task_index, status, attempts_count, message_id, queue_name, output, error_message), ';' ORDER BY run_id, step_slug, task_index), ''))
+         FROM pgflow.step_tasks)
+    """).rows
+  end
+
+  defp queue_messages do
+    Enum.map(~w(upg_main upg_done upg_fail), fn queue ->
+      PgFlow.TestRepo.query!(
+        "SELECT msg_id, read_ct, vt, message FROM pgmq.q_#{queue} ORDER BY msg_id"
+      ).rows
+    end)
   end
 
   defp seed_flow! do

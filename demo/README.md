@@ -43,7 +43,10 @@ existing database to core V03 and helpers V07. Follow
 [the stop-and-drain guide](../docs/UPGRADING_UPSTREAM_2026_10.md) before that
 migration.
 
-On fresh databases, `mix ecto.migrate` replays the full chain. On existing
+On fresh databases, `mix ecto.migrate` replays the full chain. The earliest
+`setup_pgflow` migration calls a bare `up()`, so it installs the latest core and
+helpers versions, and the later pinned wrappers (V02, V05, V06, V03/V07) are
+then no-ops. On existing
 installations, Ecto runs only the pending migrations.
 
 - Demo app: http://localhost:4022
@@ -51,9 +54,11 @@ installations, Ecto runs only the pending migrations.
 
 ## Scenario verification (release gate)
 
-Executable scenarios are documented in [docs/SCENARIOS.md](docs/SCENARIOS.md).
-Baseline verification uses the same `ScenarioRunner` as the LiveView UI and
-requires no network or LLM credentials:
+Executable and check scenarios are documented in [docs/SCENARIOS.md](docs/SCENARIOS.md).
+Baseline verification uses the same `ScenarioRunner` and `ScenarioChecks` as
+the LiveView UI and requires no network or LLM credentials. Check scenarios
+(`slug_rules`, `schema_contract`, `step_mode_guard`) cover the pgflow 0.17.2
+slug rules, schema contract, and the Elixir refusal of step-mode flows:
 
 ```bash
 MIX_ENV=test mix pgflow_demo.verify_scenarios

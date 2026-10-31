@@ -1,11 +1,12 @@
 defmodule PgflowDemo.VerifyScenarios do
   @moduledoc """
   Runs executable catalogue presets through `PgflowDemo.ScenarioRunner` and
-  compares persisted outcomes to catalogue expectations.
+  compares persisted outcomes to catalogue expectations. Check presets run
+  through `PgflowDemo.ScenarioChecks` and are part of the same gate.
   """
 
   alias PgFlow.Runs
-  alias PgflowDemo.{Repo, ScenarioControls, ScenarioRunner, Scenarios}
+  alias PgflowDemo.{Repo, ScenarioChecks, ScenarioControls, ScenarioRunner, Scenarios}
 
   @default_timeout_ms 30_000
 
@@ -24,11 +25,12 @@ defmodule PgflowDemo.VerifyScenarios do
           walkthrough: [map()],
           llm: map(),
           executed_count: non_neg_integer(),
+          checked_count: non_neg_integer(),
           run_history_preserved: boolean()
         }
 
   @doc """
-  Verifies every executable preset in the catalogue.
+  Verifies every executable and check preset in the catalogue.
   """
   @spec run(keyword()) :: report()
   def run(opts \\ []) do
@@ -51,6 +53,15 @@ defmodule PgflowDemo.VerifyScenarios do
         end)
         |> then(fn results -> {results, length(results)} end)
 
+      check_results =
+        Scenarios.list()
+        |> Enum.filter(&(&1.kind == :check))
+        |> Enum.flat_map(fn descriptor ->
+          Enum.map(descriptor.presets, fn {preset_key, _preset} ->
+            verify_check(descriptor.id, preset_key)
+          end)
+        end)
+
       walkthrough =
         Scenarios.list()
         |> Enum.filter(&(&1.kind == :walkthrough))
@@ -66,17 +77,20 @@ defmodule PgflowDemo.VerifyScenarios do
       cron_after = pgflow_cron_snapshot()
       restore_cron!(cron_before, cron_after)
 
+      results = executable_results ++ check_results
+
       pass =
-        Enum.all?(executable_results, & &1.pass) and
+        Enum.all?(results, & &1.pass) and
           run_count() >= run_count_before + executed_count and
           cron_after == cron_before
 
       %{
         pass: pass,
-        results: executable_results,
+        results: results,
         walkthrough: walkthrough,
         llm: llm,
         executed_count: executed_count,
+        checked_count: length(check_results),
         run_history_preserved: run_count() >= run_count_before
       }
     after
@@ -117,6 +131,17 @@ defmodule PgflowDemo.VerifyScenarios do
   end
 
   @doc """
+  Verifies one check preset, optionally overriding expected outcomes (for tests).
+  """
+  @spec verify_check(String.t(), String.t(), keyword()) :: preset_result()
+  def verify_check(scenario_id, preset_key, opts \\ []) do
+    case ScenarioChecks.run(scenario_id, preset_key, opts) do
+      {:ok, result} -> result
+      {:error, reason} -> result(scenario_id, preset_key, false, %{}, %{}, inspect(reason))
+    end
+  end
+
+  @doc """
   Prints a human-readable verification report.
   """
   @spec print_report(report()) :: :ok
@@ -148,10 +173,11 @@ defmodule PgflowDemo.VerifyScenarios do
     IO.puts("LLM integration: #{report.llm.status} — #{report.llm.reason}")
     IO.puts("Run history preserved: #{report.run_history_preserved}")
     IO.puts("Executed presets: #{report.executed_count}")
+    IO.puts("Check presets: #{report.checked_count}")
     IO.puts(String.duplicate("=", 60))
 
     if pass do
-      IO.puts("ALL EXECUTABLE SCENARIOS PASSED")
+      IO.puts("ALL EXECUTABLE AND CHECK SCENARIOS PASSED")
     else
       IO.puts("SCENARIO VERIFICATION FAILED")
     end
@@ -244,18 +270,9 @@ defmodule PgflowDemo.VerifyScenarios do
   end
 
   defp compare(expected, actual) do
-    mismatches =
-      Enum.filter(expected, fn {key, value} -> Map.get(actual, key) != value end)
-
-    case mismatches do
-      [] ->
-        :ok
-
-      [{key, expected_value} | _] ->
-        actual_value = Map.get(actual, key)
-
-        {:error, :mismatch, expected, actual,
-         "#{key}: expected #{inspect(expected_value)}, got #{inspect(actual_value)}"}
+    case ScenarioChecks.mismatch_message(expected, actual) do
+      nil -> :ok
+      message -> {:error, :mismatch, expected, actual, message}
     end
   end
 

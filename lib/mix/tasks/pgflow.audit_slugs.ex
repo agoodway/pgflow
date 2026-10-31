@@ -35,7 +35,7 @@ defmodule Mix.Tasks.Pgflow.AuditSlugs do
 
     Mix.Task.run("app.config")
 
-    repo = Helpers.configured_repo(opts)
+    repo = Helpers.resolve_repo(Keyword.get(opts, :repo))
     prefix = Keyword.get(opts, :prefix, "pgflow")
 
     {:ok, _} = Application.ensure_all_started(:ecto_sql)

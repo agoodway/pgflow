@@ -327,12 +327,14 @@ defmodule PgFlow.FlowStarterTest do
       # Instead probe the waiter-cleanup path by injecting a fake waiter and
       # a :DOWN message directly.
       fake_pid = spawn(fn -> :ok end)
-      Process.sleep(20)
+      fake_monitor = Process.monitor(fake_pid)
+      assert_receive {:DOWN, ^fake_monitor, :process, ^fake_pid, _}
       # Process is dead; the cleanup handler must tolerate :DOWN for a ref
       # not present in waiters without crashing.
       fake_ref = Process.monitor(fake_pid)
       send(FlowStarter, {:DOWN, fake_ref, :process, fake_pid, :normal})
-      Process.sleep(20)
+      # Mailbox order guarantees the :DOWN was handled once this call returns.
+      _ = :sys.get_state(FlowStarter)
 
       # FlowStarter is still alive → no crash from unexpected :DOWN.
       assert Process.alive?(Process.whereis(FlowStarter))
@@ -351,7 +353,8 @@ defmodule PgFlow.FlowStarterTest do
       # Inject a stale message directly. Without the generation guard this
       # would invoke run_module_attempt and bump the attempts counter.
       send(FlowStarter, {:attempt, NotAFlow, stale_gen})
-      Process.sleep(30)
+      # Mailbox order guarantees the stale message was handled once this call returns.
+      _ = :sys.get_state(FlowStarter)
 
       # Stale message must be ignored — state unchanged.
       after_state = FlowStarter.module_status(NotAFlow)

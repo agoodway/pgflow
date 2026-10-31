@@ -2,21 +2,6 @@ defmodule Mix.Tasks.Pgflow.Helpers do
   @moduledoc false
 
   @doc false
-  @spec configured_repo(keyword()) :: module()
-  def configured_repo(opts) when is_list(opts) do
-    case Keyword.get(opts, :repo) do
-      nil ->
-        case Application.get_env(:pgflow, :ecto_repos, []) do
-          [repo | _] -> repo
-          [] -> Mix.raise("No repo configured. Use --repo or configure :pgflow, :ecto_repos")
-        end
-
-      repo_string ->
-        Module.concat([repo_string])
-    end
-  end
-
-  @doc false
   @spec start_repo(module()) :: :ok
   def start_repo(repo) do
     case repo.start_link() do

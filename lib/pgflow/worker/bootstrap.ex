@@ -22,7 +22,10 @@ defmodule PgFlow.Worker.Bootstrap do
   in production return `{:error, {:flow_shape_mismatch, differences}}`. A flow
   already compiled in step mode returns
   `{:error, {:unsupported_queue_mode, slug, mode}}` before compilation, so a
-  local database cannot convert it to flow mode. Missing or incompatible
+  local database cannot convert it to flow mode. The mode check and the
+  compilation share one transaction under the upstream flow definition
+  advisory lock, so a concurrent step-mode compile of the same slug is either
+  visible to the check or waits for this worker. Missing or incompatible
   schema objects return `{:error, {:schema_incompatible, key}}`.
   """
   @spec prepare(Ecto.Repo.t(), Definition.t()) ::
@@ -42,7 +45,8 @@ defmodule PgFlow.Worker.Bootstrap do
 
     tx_result =
       repo.transaction(fn ->
-        with {:ok, mode} <- Flows.queue_mode(repo, slug),
+        with :ok <- Flows.lock_flow_definition(repo, slug),
+             {:ok, mode} <- Flows.queue_mode(repo, slug),
              :ok <- require_flow_mode(slug, mode),
              {:ok, %{status: status}} <- Flows.ensure_flow_compiled(repo, slug, shape),
              :ok <- update_flow_type(repo, slug, flow_type),

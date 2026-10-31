@@ -28,6 +28,7 @@ defmodule PgflowDemo.Scenarios do
     WhenUnmetSkipFlow
   }
 
+  alias PgflowDemo.Checks.{SchemaContract, SlugRules, StepModeGuard}
   alias PgflowDemo.Jobs.RecordJob
 
   @max_map_count 10
@@ -36,7 +37,7 @@ defmodule PgflowDemo.Scenarios do
   @max_delay_seconds 60
   @override_allowlist []
 
-  @type kind :: :executable | :walkthrough
+  @type kind :: :executable | :walkthrough | :check
 
   @type preset :: %{
           title: String.t(),
@@ -326,8 +327,122 @@ defmodule PgflowDemo.Scenarios do
         module: nil,
         presets: %{},
         walkthrough: "Future work — not available in the demo UI"
+      },
+      %{
+        id: "slug_rules",
+        title: "Slug rules",
+        features: ["slug_rules"],
+        kind: :check,
+        module: SlugRules,
+        presets: slug_rule_presets()
+      },
+      %{
+        id: "schema_contract",
+        title: "Schema contract",
+        features: ["schema_contract"],
+        kind: :check,
+        module: SchemaContract,
+        presets: %{
+          "installed_demo_db" =>
+            preset("Installed demo database", %{}, %{
+              "upstream_release" => "0.17.2",
+              "bundled_core_version" => 3,
+              "bundled_helpers_version" => 7,
+              "schema_check" => "ok",
+              "slug_audit_findings" => [],
+              "worker_stamp" => PgFlow.Version.worker_stamp(),
+              "live_workers_stamped" => true
+            })
+        }
+      },
+      %{
+        id: "step_mode_guard",
+        title: "Step-mode guard",
+        features: ["queue_mode"],
+        kind: :check,
+        module: StepModeGuard,
+        flow_slug: "ts_step_mode_shadow",
+        presets: %{
+          "typescript_owned_flow" =>
+            preset("TypeScript-owned step-mode flow", %{}, %{
+              "queue_mode" => "step",
+              "step_queues" => [
+                "ts_step_mode_shadow__fetch_order",
+                "ts_step_mode_shadow__notify"
+              ],
+              "bootstrap_result" => "refused",
+              "refusal" => %{
+                "reason" => "unsupported_queue_mode",
+                "flow_slug" => "ts_step_mode_shadow",
+                "queue_mode" => "step"
+              },
+              "definition_unchanged" => true,
+              "worker_function_tracked" => false,
+              "registered_with_flow_starter" => false
+            })
+        }
       }
     ]
+  end
+
+  # 48 characters: a valid step slug whose lowercased flow queue name exceeds
+  # the 47-character PGMQ cap.
+  @long_flow_slug "quarterly_portfolio_rebalancing_report_flow_v001"
+
+  defp slug_rule_presets do
+    %{
+      "valid_flow_slug" =>
+        slug_preset("Valid flow slug", "order_pipeline", %{
+          "elixir_rule" => "ok",
+          "db_is_valid_slug" => true,
+          "flow_queue_name" => "order_pipeline",
+          "valid_flow_slug" => true
+        }),
+      "reserved_run" =>
+        slug_preset("Reserved word run", "run", %{
+          "elixir_rule" => "reserved",
+          "db_is_valid_slug" => false,
+          "valid_step_slug" => false
+        }),
+      "double_underscore" =>
+        slug_preset("Double underscore", "a__b", %{
+          "elixir_rule" => "double_underscore",
+          "db_is_valid_slug" => false,
+          "valid_step_slug" => false
+        }),
+      "leading_underscore" =>
+        slug_preset("Leading underscore", "_leading", %{
+          "elixir_rule" => "bad_start",
+          "db_is_valid_slug" => false,
+          "valid_step_slug" => false
+        }),
+      "trailing_underscore" =>
+        slug_preset("Trailing underscore", "trailing_", %{
+          "elixir_rule" => "bad_end",
+          "db_is_valid_slug" => false,
+          "valid_step_slug" => false
+        }),
+      "flow_queue_too_long" =>
+        slug_preset("48-character flow slug", @long_flow_slug, %{
+          "elixir_rule" => "ok",
+          "db_is_valid_slug" => true,
+          "valid_step_slug" => true,
+          "elixir_queue_check" => "queue_name_too_long",
+          "db_queue_check" => "queue_name_too_long",
+          "valid_flow_slug" => false
+        }),
+      "mixed_case" =>
+        slug_preset("Mixed case", "OrderFlow", %{
+          "elixir_rule" => "ok",
+          "db_is_valid_slug" => true,
+          "flow_queue_name" => "orderflow",
+          "valid_flow_slug" => true
+        })
+    }
+  end
+
+  defp slug_preset(title, slug, expected) do
+    preset(title, %{"slug" => slug}, Map.put(expected, "elixir_db_agree", true))
   end
 
   @doc """
@@ -347,7 +462,7 @@ defmodule PgflowDemo.Scenarios do
   @spec flow_slug(descriptor()) :: String.t()
   def flow_slug(%{flow_slug: slug}) when is_binary(slug), do: slug
 
-  def flow_slug(%{module: module}) when not is_nil(module),
+  def flow_slug(%{kind: kind, module: module}) when kind != :check and not is_nil(module),
     do: module.__pgflow_slug__() |> Atom.to_string()
 
   defp index, do: Map.new(scenario_definitions(), &{&1.id, &1})
@@ -360,9 +475,7 @@ defmodule PgflowDemo.Scenarios do
   end
 
   defp normalize(definition) do
-    flow_slug =
-      definition[:flow_slug] ||
-        (definition[:module] && Atom.to_string(definition.module.__pgflow_slug__()))
+    flow_slug = definition[:flow_slug] || module_flow_slug(definition)
 
     %{
       id: definition.id,
@@ -371,17 +484,27 @@ defmodule PgflowDemo.Scenarios do
       kind: definition.kind,
       module: Map.get(definition, :module),
       flow_slug: flow_slug,
-      presets:
-        Map.new(definition.presets, fn {key, preset} ->
-          {key,
-           %{
-             preset
-             | expected:
-                 Map.merge(preset.expected, expected_details(definition, key, preset.input))
-           }}
-        end),
+      presets: normalize_presets(definition),
       walkthrough: Map.get(definition, :walkthrough)
     }
+  end
+
+  defp module_flow_slug(%{kind: :check}), do: nil
+  defp module_flow_slug(%{module: nil}), do: nil
+  defp module_flow_slug(%{module: module}), do: Atom.to_string(module.__pgflow_slug__())
+  defp module_flow_slug(_definition), do: nil
+
+  # Check presets compare the check result map, so they carry no run details.
+  defp normalize_presets(%{kind: :check, presets: presets}), do: presets
+
+  defp normalize_presets(definition) do
+    Map.new(definition.presets, fn {key, preset} ->
+      {key,
+       %{
+         preset
+         | expected: Map.merge(preset.expected, expected_details(definition, key, preset.input))
+       }}
+    end)
   end
 
   defp expected_details(definition, key, input) do

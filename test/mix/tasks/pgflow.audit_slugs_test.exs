@@ -25,4 +25,10 @@ defmodule Mix.Tasks.Pgflow.AuditSlugsTest do
       end)
     end
   end
+
+  test "discovers the repo from the host app config without --repo" do
+    output = capture_io(fn -> AuditSlugs.run([]) end)
+
+    assert output =~ "no slug findings"
+  end
 end

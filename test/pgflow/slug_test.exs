@@ -14,7 +14,9 @@ defmodule PgFlow.SlugTest do
     {"run", {:error, :reserved}},
     {"_private", {:error, :bad_start}},
     {"trailing_", {:error, :bad_end}},
-    {"a__b", {:error, :double_underscore}}
+    {"a__b", {:error, :double_underscore}},
+    {nil, {:error, :empty}},
+    {String.duplicate("a", 128), :ok}
   ]
 
   for {slug, expected} <- @cases do

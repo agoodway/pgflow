@@ -18,8 +18,8 @@ defmodule PgFlow.SchemaCheck do
 
   @claim_signature "pgflow.start_tasks(text,bigint[],uuid,text,text)"
   @legacy_claim_signatures [
-    "pgflow.start_tasks(text,bigint[],uuid,text)",
-    "pgflow.start_tasks(text,bigint[],uuid)"
+    start_tasks_legacy_4arg: "pgflow.start_tasks(text,bigint[],uuid,text)",
+    start_tasks_legacy_3arg: "pgflow.start_tasks(text,bigint[],uuid)"
   ]
   @compile_signature "pgflow.ensure_flow_compiled(text,jsonb,text,jsonb)"
   @legacy_compile_signature "pgflow.ensure_flow_compiled(text,jsonb)"
@@ -40,10 +40,11 @@ defmodule PgFlow.SchemaCheck do
       ensure_flow_compiled_legacy: {@legacy_compile_signature, false},
       track_worker_function: {"pgflow.track_worker_function(text,text)", true},
       register_worker: {@register_worker_signature, true},
-      start_tasks: {@claim_signature, true},
-      start_tasks_legacy: {"pgflow.start_tasks(text,bigint[],uuid,text)", false},
-      start_tasks_legacy: {"pgflow.start_tasks(text,bigint[],uuid)", false}
+      start_tasks: {@claim_signature, true}
     ]
+
+    signatures =
+      signatures ++ Enum.map(@legacy_claim_signatures, fn {key, sig} -> {key, {sig, false}} end)
 
     with :ok <- runtime_signatures(repo, signatures),
          :ok <- runtime_record_layout(repo) do
@@ -279,12 +280,12 @@ defmodule PgFlow.SchemaCheck do
   end
 
   defp check_legacy_claim_absent(repo) do
-    case Enum.find(@legacy_claim_signatures, &function_exists?(repo, &1)) do
-      nil ->
-        :ok
+    legacy =
+      Enum.find(@legacy_claim_signatures, fn {_key, sig} -> function_exists?(repo, sig) end)
 
-      signature ->
-        {:error, obsolete_signature_message(signature)}
+    case legacy do
+      nil -> :ok
+      {_key, signature} -> {:error, obsolete_signature_message(signature)}
     end
   end
 
