@@ -79,7 +79,9 @@ function consoleLogger() {
     info: noop,
     warn: noop,
     error: noop,
-    taskStarted: noop,
+    taskStarted: (ctx) => {
+      console.error(`claimed msg_id=${ctx.msgId}`);
+    },
     taskCompleted: noop,
     taskFailed: noop,
     polling: noop,
@@ -120,20 +122,46 @@ async function waitForRun(sql, runId, expectedStatus, timeoutMs = 20_000) {
   throw new Error(`run ${runId} did not reach ${expectedStatus}`);
 }
 
-async function installFlow(sql, flow) {
-  const shape = extractFlowShape(flow);
-  await sql`SELECT pgflow.create_flow(${flow.slug})`;
-  await sql`SELECT pgflow.ensure_flow_compiled(${flow.slug}, ${sql.json(shape)}::jsonb)`;
-  for (const step of shape.steps) {
-    const stepType = step.stepType === 'map' ? 'map' : 'single';
-    await sql`SELECT pgflow.add_step(${flow.slug}, ${step.slug}, ARRAY[]::text[], null, null, null, null, ${stepType})`;
-  }
+function mixedFlow() {
+  // Match Elixir flow defaults so both compilers persist the same execution options.
+  const options = { maxAttempts: 1, baseDelay: 1, timeout: 30 };
+  return new Flow({ slug: 'mixed_lang_flow', ...options })
+    .step({ slug: 'prepare', ...options }, async () => {
+      await delay(50);
+      return { ok: true };
+    })
+    .step({ slug: 'process', dependsOn: ['prepare'], ...options }, async () => {
+      await delay(50);
+      return { ok: true };
+    })
+    .step({ slug: 'deliver', dependsOn: ['process'], ...options }, async () => {
+      await delay(50);
+      return { ok: true };
+    });
 }
 
-async function runFlowWorker(sql, flow) {
+async function installFlow(sql, flow) {
+  const shape = extractFlowShape(flow);
+  const [row] = await sql`
+    SELECT pgflow.ensure_flow_compiled(
+      ${flow.slug},
+      ${sql.json(shape)}::jsonb,
+      'flow',
+      ${null}::jsonb
+    ) AS result
+  `;
+  return row.result;
+}
+
+async function runFlowWorker(sql, flow, options = {}) {
   const worker = createFlowWorker(
     flow,
-    { sql, maxConcurrent: 1, batchSize: 5, visibilityTimeout: 30 },
+    {
+      sql,
+      maxConcurrent: 1,
+      batchSize: options.batchSize ?? 5,
+      visibilityTimeout: 30,
+    },
     () => consoleLogger(),
     createTestPlatformAdapter(sql)
   );
@@ -144,6 +172,38 @@ async function runFlowWorker(sql, flow) {
   });
 
   return worker;
+}
+
+async function scenarioCompileMixedFlow() {
+  return withSql(async (sql) => {
+    const flow = mixedFlow();
+    const result = await installFlow(sql, flow);
+    return { status: result.status, slug: flow.slug };
+  });
+}
+
+async function scenarioMixedWorker() {
+  return withSql(async (sql) => {
+    const flow = mixedFlow();
+    const expected = Number(process.env.PGFLOW_MIXED_RUN_COUNT || '20');
+    const worker = await runFlowWorker(sql, flow, { batchSize: 1 });
+    const started = Date.now();
+
+    try {
+      while (Date.now() - started < 60_000) {
+        const [row] = await sql`
+          SELECT count(*)::int AS n
+          FROM pgflow.runs
+          WHERE flow_slug = ${flow.slug} AND status = 'completed'
+        `;
+        if (row.n >= expected) return { completed: row.n, slug: flow.slug };
+        await delay(100);
+      }
+      throw new Error(`mixed worker timed out before ${expected} runs completed`);
+    } finally {
+      await worker.stop();
+    }
+  });
 }
 
 async function scenarioWorkerExistingFlow() {
@@ -310,6 +370,8 @@ async function scenarioConcurrentWorkers() {
 }
 
 const scenarios = {
+  compile_mixed_flow: scenarioCompileMixedFlow,
+  mixed_worker: scenarioMixedWorker,
   worker_existing_flow: scenarioWorkerExistingFlow,
   worker_completes_flow: scenarioWorkerCompletesFlow,
   ts_start: scenarioStartFlowOnly,

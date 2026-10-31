@@ -543,6 +543,25 @@ defmodule PgFlow.Test.UpstreamHarness do
     end
   end
 
+  defp decode_script_json(output) do
+    case extract_json_line(output) do
+      nil -> :error
+      json -> Jason.decode(json)
+    end
+  end
+
+  defp extract_json_line(output) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.reverse()
+    |> Enum.find(&String.starts_with?(&1, "{"))
+  end
+
+  defp script_output_excerpt(output) do
+    output = String.trim(output)
+    if String.length(output) <= 800, do: output, else: String.slice(output, -800, 800)
+  end
+
   defp run_node_script!(script, checkout, database_url, extra_args \\ []) do
     script_path = Path.join(@support_dir, script)
 
@@ -559,7 +578,7 @@ defmodule PgFlow.Test.UpstreamHarness do
            stderr_to_stdout: true
          ) do
       {output, 0} ->
-        case Jason.decode(output) do
+        case decode_script_json(output) do
           {:ok, %{"tests" => tests, "failures" => failures} = decoded} ->
             {:ok,
              %{
@@ -576,8 +595,7 @@ defmodule PgFlow.Test.UpstreamHarness do
         end
 
       {output, status} ->
-        {:error,
-         "#{script} failed (exit #{status}): #{String.slice(String.trim(output), 0, 500)}"}
+        {:error, "#{script} failed (exit #{status}): #{script_output_excerpt(output)}"}
     end
   end
 

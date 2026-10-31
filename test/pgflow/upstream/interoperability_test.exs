@@ -99,6 +99,47 @@ defmodule PgFlow.Upstream.InteroperabilityTest do
     end
   end
 
+  describe "mixed workers" do
+    @describetag :upstream_checkout
+
+    setup do
+      checkout = System.fetch_env!("PGFLOW_UPSTREAM_CHECKOUT")
+      fixture = UpstreamHarness.setup_compat_database!()
+      System.put_env("PGFLOW_UPSTREAM_CHECKOUT", checkout)
+
+      on_exit(fn -> UpstreamHarness.teardown_compat_database!(fixture) end)
+
+      UpstreamHarness.install_elixir_adaptations!(fixture.database_url)
+      %{fixture: fixture, checkout: checkout}
+    end
+
+    test "typescript and elixir workers share one flow-mode flow", %{
+      fixture: fixture,
+      checkout: checkout
+    } do
+      assert {:ok, result} =
+               UpstreamInterop.run_mixed_workers!(checkout, fixture.database_url)
+
+      assert result.ts_status in ["compiled", "verified"]
+      assert result.elixir_status in ["compiled", "verified"]
+      assert result.completed_runs == 20
+      assert length(result.worker_ids) == 2
+
+      ts_version =
+        checkout
+        |> Path.join("pkgs/edge-worker/package.json")
+        |> File.read!()
+        |> Jason.decode!()
+        |> Map.fetch!("version")
+
+      elixir_version = "elixir-" <> to_string(Application.spec(:pgflow, :vsn))
+
+      assert ts_version in result.versions
+      assert elixir_version in result.versions
+      assert result.max_attempts == 1
+    end
+  end
+
   describe "cross-language execution" do
     @describetag :upstream_checkout
 

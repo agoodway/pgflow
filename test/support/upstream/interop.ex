@@ -14,6 +14,34 @@ defmodule PgFlow.Test.UpstreamInteropFlow do
   end
 end
 
+defmodule PgFlow.Test.MixedLangFlow do
+  @moduledoc false
+  use PgFlow.Flow
+
+  @flow slug: :mixed_lang_flow
+
+  step :prepare do
+    fn _input, _ctx ->
+      Process.sleep(50)
+      %{ok: true}
+    end
+  end
+
+  step :process, depends_on: [:prepare] do
+    fn _input, _ctx ->
+      Process.sleep(50)
+      %{ok: true}
+    end
+  end
+
+  step :deliver, depends_on: [:process] do
+    fn _input, _ctx ->
+      Process.sleep(50)
+      %{ok: true}
+    end
+  end
+end
+
 defmodule PgFlow.Test.UpstreamInterop.Repo do
   @moduledoc false
   use Ecto.Repo, otp_app: :pgflow, adapter: Ecto.Adapters.Postgres
@@ -22,11 +50,15 @@ end
 defmodule PgFlow.Test.UpstreamInterop do
   @moduledoc false
 
+  alias PgFlow.Flow.Shape
+  alias PgFlow.Test.MixedLangFlow
   alias PgFlow.Test.UpstreamHarness
   alias PgFlow.Test.UpstreamInterop.Repo
   alias PgFlow.Test.UpstreamInteropFlow
   alias PgFlow.Test.WaitHelpers
   alias PgFlow.Worker.Server, as: WorkerServer
+
+  @mixed_run_count 20
 
   @script_dir Path.expand(".", Path.dirname(__ENV__.file))
 
@@ -69,6 +101,22 @@ defmodule PgFlow.Test.UpstreamInterop do
            status: :failed,
            details: %{"error" => Exception.message(exception)}
          }}
+    end
+  end
+
+  @doc """
+  Compiles one three-step flow from TypeScript and from Elixir, then runs both
+  workers on its flow-mode queue.
+  """
+  @spec run_mixed_workers!(Path.t(), String.t()) :: {:ok, map()} | {:error, String.t()}
+  def run_mixed_workers!(checkout, database_url) do
+    slug = Atom.to_string(MixedLangFlow.__pgflow_slug__())
+    shape = Shape.from_definition(MixedLangFlow.__pgflow_definition__())
+
+    with {:ok, ts_compile} <-
+           run_worker_scenario!(checkout, database_url, "compile_mixed_flow", %{}),
+         {:ok, elixir_status} <- compile_elixir_shape!(database_url, slug, shape) do
+      share_mixed_runs!(checkout, database_url, slug, ts_compile["status"], elixir_status)
     end
   end
 
@@ -202,7 +250,7 @@ defmodule PgFlow.Test.UpstreamInterop do
            stderr_to_stdout: true
          ) do
       {output, 0} ->
-        case Jason.decode(output) do
+        case decode_worker_json(output) do
           {:ok, %{"failures" => 0, "results" => [result | _]}} ->
             {:ok, result["details"]}
 
@@ -214,9 +262,28 @@ defmodule PgFlow.Test.UpstreamInterop do
         end
 
       {output, status} ->
-        {:error,
-         "worker.mjs #{scenario} exited #{status}: #{String.slice(String.trim(output), 0, 500)}"}
+        {:error, "worker.mjs #{scenario} exited #{status}: #{script_output_excerpt(output)}"}
     end
+  end
+
+  # Claim logs go to stderr. Keep the JSON object even if a line is mixed into stdout.
+  defp decode_worker_json(output) do
+    case extract_json_line(output) do
+      nil -> :error
+      json -> Jason.decode(json)
+    end
+  end
+
+  defp extract_json_line(output) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.reverse()
+    |> Enum.find(&String.starts_with?(&1, "{"))
+  end
+
+  defp script_output_excerpt(output) do
+    output = String.trim(output)
+    if String.length(output) <= 800, do: output, else: String.slice(output, -800, 800)
   end
 
   defp start_flow!(conn, slug, input) do
@@ -258,6 +325,281 @@ defmodule PgFlow.Test.UpstreamInterop do
 
       {:error, error} ->
         {:error, Exception.message(error)}
+    end
+  end
+
+  defp share_mixed_runs!(checkout, database_url, slug, ts_status, elixir_status) do
+    ts_task =
+      Task.async(fn ->
+        run_worker_scenario!(
+          checkout,
+          database_url,
+          "mixed_worker",
+          %{"PGFLOW_MIXED_RUN_COUNT" => Integer.to_string(@mixed_run_count)}
+        )
+      end)
+
+    result =
+      with :ok <- wait_for_worker!(database_url, slug, "worker_#{slug}", ts_task),
+           {:ok, elixir} <- start_mixed_elixir_worker!(database_url) do
+        try do
+          finish_mixed_runs!(database_url, slug, ts_status, elixir_status, ts_task)
+        after
+          stop_mixed_elixir_worker(elixir)
+        end
+      end
+
+    shutdown_ts_task(ts_task)
+    result
+  end
+
+  defp finish_mixed_runs!(database_url, slug, ts_status, elixir_status, ts_task) do
+    elixir_function = "elixir:PgFlow.Test.MixedLangFlow"
+
+    with :ok <- wait_for_worker!(database_url, slug, elixir_function, ts_task),
+         :ok <- start_mixed_runs!(database_url, slug, @mixed_run_count),
+         {:ok, completed} <- wait_for_completed_runs!(database_url, slug, @mixed_run_count),
+         {:ok, stats} <- mixed_worker_stats!(database_url, slug) do
+      {:ok,
+       Map.merge(stats, %{
+         ts_status: ts_status,
+         elixir_status: elixir_status,
+         completed_runs: completed
+       })}
+    end
+  end
+
+  defp compile_elixir_shape!(database_url, slug, shape) do
+    with {:ok, conn} <- connect(database_url) do
+      result =
+        case Postgrex.query(
+               conn,
+               "SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb, 'flow', NULL::jsonb) AS result",
+               [slug, shape]
+             ) do
+          {:ok, %{rows: [[%{"status" => status}]]}} -> {:ok, status}
+          {:ok, %{rows: rows}} -> {:error, "unexpected compile result #{inspect(rows)}"}
+          {:error, error} -> {:error, Exception.message(error)}
+        end
+
+      GenServer.stop(conn)
+      result
+    end
+  end
+
+  defp start_mixed_elixir_worker!(database_url) do
+    with {:ok, repo_pid} <-
+           Repo.start_link(url: database_url, pool: DBConnection.ConnectionPool, pool_size: 4),
+         {:ok, task_supervisor} <- Task.Supervisor.start_link() do
+      config = %{
+        flow_module: MixedLangFlow,
+        repo: Repo,
+        task_supervisor: task_supervisor,
+        max_concurrency: 1,
+        batch_size: 1,
+        signal_strategy: :polling,
+        min_poll_interval: 50,
+        max_poll_interval: 200,
+        notify_fallback_interval: 30_000,
+        heartbeat_interval: 10_000
+      }
+
+      case WorkerServer.start_link(config) do
+        {:ok, worker_pid} ->
+          {:ok, %{repo_pid: repo_pid, task_supervisor: task_supervisor, worker_pid: worker_pid}}
+
+        {:error, reason} ->
+          stop_supervisor(task_supervisor)
+          stop_supervisor(repo_pid)
+          {:error, "elixir worker failed to start: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  defp stop_mixed_elixir_worker(%{
+         repo_pid: repo_pid,
+         task_supervisor: task_supervisor,
+         worker_pid: worker_pid
+       }) do
+    stop_worker(worker_pid)
+    stop_supervisor(task_supervisor)
+    stop_supervisor(repo_pid)
+  end
+
+  defp stop_worker(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      try do
+        GenServer.stop(pid, :normal, 5_000)
+      catch
+        :exit, _ -> :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp stop_supervisor(pid) when is_pid(pid) do
+    if Process.alive?(pid) do
+      try do
+        Supervisor.stop(pid)
+      catch
+        :exit, _ -> :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp start_mixed_runs!(database_url, slug, count) do
+    with {:ok, conn} <- connect(database_url) do
+      result = Enum.reduce_while(1..count, :ok, &start_one_mixed_run(conn, slug, &1, &2))
+      GenServer.stop(conn)
+      result
+    end
+  end
+
+  defp start_one_mixed_run(conn, slug, n, :ok) do
+    case start_flow!(conn, slug, %{"n" => n}) do
+      {:ok, _run_id} -> {:cont, :ok}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp wait_for_completed_runs!(database_url, slug, expected) do
+    deadline = System.monotonic_time(:millisecond) + 60_000
+
+    with {:ok, conn} <- connect(database_url) do
+      result = poll_completed_runs(conn, slug, expected, deadline)
+      GenServer.stop(conn)
+      result
+    end
+  end
+
+  defp poll_completed_runs(conn, slug, expected, deadline) do
+    case completed_run_count(conn, slug) do
+      {:ok, count} when count >= expected ->
+        {:ok, count}
+
+      {:ok, count} ->
+        wait_or_timeout(deadline, "timed out with #{count} completed runs", fn ->
+          poll_completed_runs(conn, slug, expected, deadline)
+        end)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp completed_run_count(conn, slug) do
+    case Postgrex.query(
+           conn,
+           "SELECT count(*) FROM pgflow.runs WHERE flow_slug = $1 AND status = 'completed'",
+           [slug]
+         ) do
+      {:ok, %{rows: [[count]]}} -> {:ok, count}
+      {:error, error} -> {:error, Exception.message(error)}
+    end
+  end
+
+  defp wait_for_worker!(database_url, queue, function_name, ts_task) do
+    deadline = System.monotonic_time(:millisecond) + 20_000
+    poll_worker(database_url, queue, function_name, ts_task, deadline)
+  end
+
+  defp poll_worker(database_url, queue, function_name, ts_task, deadline) do
+    with :running <- ts_task_failure(ts_task),
+         {:ok, false} <- worker_present?(database_url, queue, function_name) do
+      wait_or_timeout(deadline, "timed out waiting for worker #{function_name}", fn ->
+        poll_worker(database_url, queue, function_name, ts_task, deadline)
+      end)
+    else
+      {:ok, true} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp wait_or_timeout(deadline, timeout_message, continue) do
+    if System.monotonic_time(:millisecond) > deadline do
+      {:error, timeout_message}
+    else
+      receive do
+      after
+        100 -> :ok
+      end
+
+      continue.()
+    end
+  end
+
+  defp ts_task_failure(ts_task) do
+    case Task.yield(ts_task, 0) do
+      nil -> :running
+      {:ok, {:ok, _details}} -> {:error, "typescript worker exited before the runs finished"}
+      {:ok, {:error, reason}} -> {:error, "typescript worker failed: #{reason}"}
+      {:ok, other} -> {:error, "typescript worker returned #{inspect(other)}"}
+      {:exit, reason} -> {:error, "typescript worker exited: #{inspect(reason)}"}
+    end
+  end
+
+  defp worker_present?(database_url, queue, function_name) do
+    with {:ok, conn} <- connect(database_url) do
+      result =
+        case Postgrex.query(
+               conn,
+               """
+               SELECT count(*) FROM pgflow.workers
+               WHERE queue_name = $1 AND function_name = $2 AND stopped_at IS NULL
+               """,
+               [queue, function_name]
+             ) do
+          {:ok, %{rows: [[count]]}} -> {:ok, count > 0}
+          {:error, error} -> {:error, Exception.message(error)}
+        end
+
+      GenServer.stop(conn)
+      result
+    end
+  end
+
+  defp mixed_worker_stats!(database_url, slug) do
+    sql = """
+    SELECT
+      COALESCE(
+        array_agg(DISTINCT task.last_worker_id::text)
+          FILTER (WHERE task.last_worker_id IS NOT NULL),
+        '{}'::text[]
+      ),
+      COALESCE(
+        array_agg(DISTINCT worker.pgflow_version)
+          FILTER (WHERE worker.pgflow_version IS NOT NULL),
+        '{}'::text[]
+      ),
+      COALESCE(MAX(task.attempts_count), 0)
+    FROM pgflow.step_tasks AS task
+    LEFT JOIN pgflow.workers AS worker ON worker.queue_name = task.flow_slug
+    WHERE task.flow_slug = $1
+    """
+
+    with {:ok, conn} <- connect(database_url) do
+      result =
+        case Postgrex.query(conn, sql, [slug]) do
+          {:ok, %{rows: [[worker_ids, versions, max_attempts]]}} ->
+            {:ok, %{worker_ids: worker_ids, versions: versions, max_attempts: max_attempts}}
+
+          {:error, error} ->
+            {:error, Exception.message(error)}
+        end
+
+      GenServer.stop(conn)
+      result
+    end
+  end
+
+  defp shutdown_ts_task(task) do
+    case Task.shutdown(task, 5_000) || Task.shutdown(task, :brutal_kill) do
+      {:ok, _} -> :ok
+      {:exit, _} -> :ok
+      nil -> :ok
     end
   end
 
