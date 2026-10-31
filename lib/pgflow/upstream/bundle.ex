@@ -10,10 +10,11 @@ defmodule PgFlow.Upstream.Bundle do
 
   @published ~w(01 02)
   @specs %{"03" => PgFlow.Upstream.Spec.V03}
-  @seven_names ~w(flow_slug run_id step_slug input msg_id task_index flow_input)
-  @seven_types ["text", "uuid", "text", "jsonb", "bigint", "integer", "jsonb"]
-  @eight_names @seven_names ++ ["attempts_count"]
-  @eight_types @seven_types ++ ["integer"]
+  {eight_names, eight_types} = Enum.unzip(PgFlow.SchemaCheck.step_task_record_layout())
+  @eight_names eight_names
+  @eight_types eight_types
+  @seven_names Enum.drop(eight_names, -1)
+  @seven_types Enum.drop(eight_types, -1)
 
   @doc "Core versions whose generated SQL must not be rewritten."
   @spec published_versions() :: [String.t()]

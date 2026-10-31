@@ -1,6 +1,8 @@
 defmodule PgFlow.ClientTest do
   use ExUnit.Case
 
+  import PgFlow.Test.FlowFixtures, only: [compile_flow: 1]
+
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.Client
   alias PgFlow.TestRepo
@@ -35,42 +37,6 @@ defmodule PgFlow.ClientTest do
     # Compile the flow in the DB
     flow_slug = compile_flow(ClientTestFlow)
     {:ok, flow_slug: flow_slug}
-  end
-
-  defp compile_flow(flow_module) do
-    definition = flow_module.__pgflow_definition__()
-    flow_slug = Atom.to_string(definition.slug)
-
-    max_attempts = definition.opts[:max_attempts] || 3
-    base_delay = definition.opts[:base_delay] || 1
-    timeout = definition.opts[:timeout] || 30
-
-    TestRepo.query!(
-      "SELECT pgflow.create_flow($1, $2, $3, $4)",
-      [flow_slug, max_attempts, base_delay, timeout]
-    )
-
-    for step <- definition.steps do
-      step_slug = Atom.to_string(step.slug)
-      deps = Enum.map(step.depends_on, &Atom.to_string/1)
-      step_type = Atom.to_string(step.step_type)
-
-      TestRepo.query!(
-        "SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8)",
-        [
-          flow_slug,
-          step_slug,
-          deps,
-          step.max_attempts,
-          step.base_delay,
-          step.timeout,
-          step.start_delay,
-          step_type
-        ]
-      )
-    end
-
-    flow_slug
   end
 
   # ── start_flow ─────────────────────────────────────────────────────

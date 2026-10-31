@@ -12,6 +12,16 @@ defmodule Mix.Tasks.Pgflow.Helpers do
   end
 
   @doc false
+  @spec boot_repo!(String.t() | nil) :: module()
+  def boot_repo!(repo_opt) do
+    Mix.Task.run("app.config")
+    repo = resolve_repo(repo_opt)
+    {:ok, _} = Application.ensure_all_started(:ecto_sql)
+    start_repo(repo)
+    repo
+  end
+
+  @doc false
   def resolve_repo(nil) do
     app = Mix.Project.config()[:app]
 

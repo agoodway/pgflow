@@ -70,6 +70,11 @@ defmodule PgFlow.WorkerSupervisor do
   replacement that exited before it could be returned (retrying is safe), or
   `{:error, reason}` on failure. Raises `ArgumentError` for unknown option keys
   or invalid values.
+
+  A start for a module waits while `stop_worker/1` drains that module's worker.
+  When options are supplied and a worker is running, its limits are read with
+  `check_worker/1`; a worker that does not reply within 5 seconds makes the
+  caller exit with `{:timeout, {GenServer, :call, _}}`.
   """
   @spec start_worker(module(), keyword()) ::
           {:ok, pid()}
@@ -148,10 +153,7 @@ defmodule PgFlow.WorkerSupervisor do
 
       # A supervisor restart registered a replacement while this call waited.
       :ignore ->
-        case find_worker(flow_module) do
-          nil -> {:error, :not_started}
-          pid -> reply_for_existing_worker(flow_module, opts, worker_opts, pid)
-        end
+        reply_after_ignore(find_worker(flow_module), flow_module, opts, worker_opts)
 
       {:error, reason} = error ->
         Logger.error(
@@ -162,10 +164,10 @@ defmodule PgFlow.WorkerSupervisor do
     end
   end
 
-  @doc false
-  def start_worker_process(flow_module, repo) do
-    start_worker_process(flow_module, repo, [])
-  end
+  defp reply_after_ignore(nil, _flow_module, _opts, _worker_opts), do: {:error, :not_started}
+
+  defp reply_after_ignore(pid, flow_module, opts, worker_opts),
+    do: reply_for_existing_worker(flow_module, opts, worker_opts, pid)
 
   # DynamicSupervisor runs start functions one at a time in its own process,
   # so this check and the registration below cannot interleave with another
@@ -213,28 +215,41 @@ defmodule PgFlow.WorkerSupervisor do
   Gracefully stops the worker, waiting for active tasks to complete, then
   terminates the supervised child and unregisters it. Normal stops are final
   under the transient restart policy; crashes and deprecation exits restart.
+
+  The stop holds the same per-module lock as `start_worker/2`, so a concurrent
+  `start_worker/2` for this module waits for the drain to finish and then
+  starts a fresh worker instead of returning the one being stopped.
   """
   @spec stop_worker(module()) :: :ok | {:error, :not_found}
   def stop_worker(flow_module) do
+    :global.trans(
+      {{__MODULE__, flow_module}, self()},
+      fn -> do_stop_worker(flow_module) end,
+      [node()]
+    )
+  end
+
+  defp do_stop_worker(flow_module) do
     case find_worker(flow_module) do
-      nil ->
-        {:error, :not_found}
-
-      pid ->
-        monitor = Process.monitor(pid)
-
-        try do
-          WorkerServer.stop(pid)
-        catch
-          :exit, _ -> :ok
-        end
-
-        receive do
-          {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
-        end
-
-        remove_stopped_child(flow_module, pid)
+      nil -> {:error, :not_found}
+      pid -> drain_and_remove(flow_module, pid)
     end
+  end
+
+  defp drain_and_remove(flow_module, pid) do
+    monitor = Process.monitor(pid)
+
+    try do
+      WorkerServer.stop(pid)
+    catch
+      :exit, _ -> :ok
+    end
+
+    receive do
+      {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+    end
+
+    remove_stopped_child(flow_module, pid)
   end
 
   defp remove_stopped_child(flow_module, pid) do
@@ -254,7 +269,7 @@ defmodule PgFlow.WorkerSupervisor do
         :ok
 
       _replacement ->
-        stop_worker(flow_module)
+        do_stop_worker(flow_module)
     end
   end
 
@@ -305,7 +320,8 @@ defmodule PgFlow.WorkerSupervisor do
   end
 
   # Calls `fun` with the registered worker pid, returning `gone` when no worker
-  # is registered or the worker exits before replying. Call timeouts re-raise:
+  # is registered or the worker exits before replying. `GenServer.call/3` exits
+  # with `{reason, {GenServer, :call, args}}`; call timeouts propagate because
   # the request may still be applied, so reporting the worker as gone would lie.
   defp call_local_worker(flow_module, gone, fun) do
     case find_worker(flow_module) do
@@ -316,10 +332,7 @@ defmodule PgFlow.WorkerSupervisor do
         try do
           fun.(pid)
         catch
-          :exit, reason ->
-            if worker_gone_exit?(reason),
-              do: gone,
-              else: :erlang.raise(:exit, reason, __STACKTRACE__)
+          :exit, {reason, {GenServer, :call, _args}} when reason != :timeout -> gone
         end
     end
   end
@@ -329,22 +342,26 @@ defmodule PgFlow.WorkerSupervisor do
   """
   @spec find_worker(module()) :: pid() | nil
   def find_worker(flow_module) do
-    if :ets.whereis(@registry_table) == :undefined do
-      nil
-    else
-      lookup_registered_worker(flow_module)
+    case registry_entry(flow_module) do
+      {:live, pid} -> pid
+      _stale_or_none -> nil
     end
   end
 
-  defp lookup_registered_worker(flow_module) do
-    case :ets.lookup(@registry_table, flow_module) do
-      [{^flow_module, pid}] when is_pid(pid) ->
-        if Process.alive?(pid), do: pid, else: nil
-
-      [] ->
-        nil
+  # Classifies the registry entry for a module as a live worker, a stale pid
+  # left by a worker that exited, or no entry.
+  defp registry_entry(flow_module) do
+    case :ets.whereis(@registry_table) do
+      :undefined -> :none
+      _table -> classify_entry(:ets.lookup(@registry_table, flow_module))
     end
   end
+
+  defp classify_entry([{_flow_module, pid}]) when is_pid(pid) do
+    if Process.alive?(pid), do: {:live, pid}, else: {:stale, pid}
+  end
+
+  defp classify_entry([]), do: :none
 
   @doc """
   Lists all running workers.
@@ -378,25 +395,7 @@ defmodule PgFlow.WorkerSupervisor do
 
   defp maybe_register_replacement_notify(_config, _flow_module, _pid, _replacement?), do: :ok
 
-  defp replacing_worker?(flow_module) do
-    case :ets.whereis(@registry_table) do
-      :undefined ->
-        false
-
-      _table ->
-        stale_worker_registered?(flow_module)
-    end
-  end
-
-  defp stale_worker_registered?(flow_module) do
-    case :ets.lookup(@registry_table, flow_module) do
-      [{^flow_module, previous_pid}] when is_pid(previous_pid) ->
-        not Process.alive?(previous_pid)
-
-      [] ->
-        false
-    end
-  end
+  defp replacing_worker?(flow_module), do: match?({:stale, _pid}, registry_entry(flow_module))
 
   defp live_worker_summary({_flow_module, pid}) when is_pid(pid) do
     if Process.alive?(pid), do: [%{pid: pid, status: :running}], else: []
@@ -424,10 +423,4 @@ defmodule PgFlow.WorkerSupervisor do
         :ok
     end
   end
-
-  # `GenServer.call/3` exits with `{reason, {GenServer, :call, args}}`. Any
-  # reason other than a timeout means the worker died before replying.
-  defp worker_gone_exit?({:timeout, {GenServer, :call, _args}}), do: false
-  defp worker_gone_exit?({_reason, {GenServer, :call, _args}}), do: true
-  defp worker_gone_exit?(_reason), do: false
 end

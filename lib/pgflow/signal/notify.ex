@@ -25,6 +25,7 @@ defmodule PgFlow.Signal.Notify do
   require Logger
 
   alias PgFlow.Queries.Pgmq
+  alias PgFlow.Slug
 
   @min_pgmq_version "1.8.0"
   @registration_retry_base_ms 1_000
@@ -100,7 +101,7 @@ defmodule PgFlow.Signal.Notify do
   @impl GenServer
   def init(opts) do
     repo = Keyword.fetch!(opts, :repo)
-    throttle_ms = Keyword.get(opts, :notify_throttle_ms, 250)
+    throttle_ms = Keyword.get(opts, :notify_throttle_ms, Pgmq.default_throttle_ms())
 
     reconcile_ms =
       Keyword.get(opts, :throttle_reconcile_interval_ms, @default_throttle_reconcile_interval_ms)
@@ -151,7 +152,7 @@ defmodule PgFlow.Signal.Notify do
         maybe_unlisten(state.conn, listen_ref)
         disable_notify(state.repo, flow_slug)
 
-        channel = pgmq_channel(canonical_queue_name(flow_slug))
+        channel = pgmq_channel(Slug.queue_name(flow_slug))
         state = %{state | workers: workers, channels: Map.delete(state.channels, channel)}
         {:reply, :ok, state}
 
@@ -180,7 +181,7 @@ defmodule PgFlow.Signal.Notify do
       {flow_slug, entry} ->
         maybe_unlisten(state.conn, entry.listen_ref)
 
-        channel = pgmq_channel(canonical_queue_name(flow_slug))
+        channel = pgmq_channel(Slug.queue_name(flow_slug))
 
         {:noreply,
          %{
@@ -229,7 +230,7 @@ defmodule PgFlow.Signal.Notify do
   # logs each queue whose notifications were silent. Failures are logged and
   # retried on the next tick.
   defp reconcile_throttle_rows(state) do
-    queue_names = state.workers |> Map.keys() |> Enum.map(&canonical_queue_name/1)
+    queue_names = state.workers |> Map.keys() |> Enum.map(&Slug.queue_name/1)
 
     case Pgmq.restore_notify_throttle_rows(state.repo, queue_names, state.notify_throttle_ms) do
       {:ok, []} ->
@@ -257,7 +258,7 @@ defmodule PgFlow.Signal.Notify do
   end
 
   defp do_register_worker_binding(state, flow_slug, worker_pid) do
-    queue_name = canonical_queue_name(flow_slug)
+    queue_name = Slug.queue_name(flow_slug)
     channel = pgmq_channel(queue_name)
     monitor_ref = Process.monitor(worker_pid)
     notifications_module = Map.get(state, :notifications_module, Postgrex.Notifications)
@@ -359,7 +360,7 @@ defmodule PgFlow.Signal.Notify do
       %{monitor_ref: monitor_ref, listen_ref: listen_ref} ->
         Process.demonitor(monitor_ref, [:flush])
         maybe_unlisten(state.conn, listen_ref)
-        channel = pgmq_channel(canonical_queue_name(flow_slug))
+        channel = pgmq_channel(Slug.queue_name(flow_slug))
 
         %{
           state
@@ -369,15 +370,13 @@ defmodule PgFlow.Signal.Notify do
     end
   end
 
-  defp canonical_queue_name(flow_slug), do: String.downcase(flow_slug)
-
   defp pgmq_channel(queue_name), do: "pgmq.q_#{queue_name}.INSERT"
 
   defp maybe_unlisten(_conn, nil), do: :ok
   defp maybe_unlisten(conn, listen_ref), do: Postgrex.Notifications.unlisten(conn, listen_ref)
 
   defp disable_notify(repo, flow_slug) do
-    case Pgmq.disable_notify_insert(repo, canonical_queue_name(flow_slug)) do
+    case Pgmq.disable_notify_insert(repo, Slug.queue_name(flow_slug)) do
       :ok ->
         :ok
 

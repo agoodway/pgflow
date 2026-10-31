@@ -46,7 +46,7 @@ defmodule PgFlow.FlowStarter do
   use GenServer
   require Logger
 
-  alias PgFlow.{FlowRegistry, WorkerSupervisor}
+  alias PgFlow.{FlowRegistry, Slug, WorkerSupervisor}
   alias PgFlow.Queries.Pgmq, as: PgmqQueries
   alias PgFlow.Signal
 
@@ -213,9 +213,11 @@ defmodule PgFlow.FlowStarter do
     state = %State{
       repo: repo,
       signal_strategy: Keyword.get(opts, :signal_strategy, :polling),
-      notify_throttle_ms: Keyword.get(opts, :notify_throttle_ms, 250),
-      notify_trigger: Keyword.get(opts, :notify_trigger, :deferred),
-      notify_lock_timeout_ms: Keyword.get(opts, :notify_lock_timeout_ms, 2_000),
+      notify_throttle_ms:
+        Keyword.get(opts, :notify_throttle_ms, PgmqQueries.default_throttle_ms()),
+      notify_trigger: Keyword.get(opts, :notify_trigger, PgmqQueries.default_trigger()),
+      notify_lock_timeout_ms:
+        Keyword.get(opts, :notify_lock_timeout_ms, PgmqQueries.default_lock_timeout_ms()),
       backoff: backoff,
       modules: modules,
       timers: %{},
@@ -424,7 +426,7 @@ defmodule PgFlow.FlowStarter do
 
   defp maybe_run_notify_phases(ms, %State{signal_strategy: :notify} = state, worker_pid) do
     slug = flow_slug(ms.module)
-    queue_name = canonical_queue_name(slug)
+    queue_name = Slug.queue_name(slug)
 
     with {:ok, ms} <- run_notify_db(ms, state, queue_name) do
       run_notify_register(ms, slug, worker_pid)
@@ -525,8 +527,6 @@ defmodule PgFlow.FlowStarter do
   defp flow_slug(module) do
     module.__pgflow_definition__().slug |> Atom.to_string()
   end
-
-  defp canonical_queue_name(flow_slug), do: String.downcase(flow_slug)
 
   # ── Readiness ──────────────────────────────────────────────────────
 

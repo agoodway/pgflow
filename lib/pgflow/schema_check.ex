@@ -30,6 +30,14 @@ defmodule PgFlow.SchemaCheck do
 
   @record_fields ~w(flow_slug run_id step_slug input msg_id task_index flow_input attempts_count)
   @record_types ~w(text uuid text jsonb bigint integer jsonb integer)
+  @record_layout Enum.zip_with(@record_fields, @record_types, &[&1, &2])
+
+  @flow_queue_tables_sql "SELECT pgmq.format_table_name(lower(flow_slug), 'q') " <>
+                           "FROM pgflow.flows WHERE queue_mode = 'flow'"
+
+  @doc false
+  @spec step_task_record_layout() :: [{String.t(), String.t()}]
+  def step_task_record_layout, do: Enum.zip(@record_fields, @record_types)
 
   @doc """
   Checks the claim and startup protocol before any worker reserves messages.
@@ -89,8 +97,8 @@ defmodule PgFlow.SchemaCheck do
 
   defp runtime_signatures(repo, signatures) do
     Enum.reduce_while(signatures, :ok, fn {key, {signature, expected}}, :ok ->
-      case SQL.query(repo, "SELECT to_regprocedure($1::text) IS NOT NULL", [signature]) do
-        {:ok, %{rows: [[^expected]]}} -> {:cont, :ok}
+      case regprocedure_exists(repo, signature) do
+        {:ok, ^expected} -> {:cont, :ok}
         {:ok, _} -> {:halt, {:error, {:schema_incompatible, key}}}
         {:error, error} -> {:halt, {:error, error}}
       end
@@ -100,7 +108,7 @@ defmodule PgFlow.SchemaCheck do
   defp runtime_record_layout(repo) do
     case record_layout(repo) do
       {:ok, %{rows: rows}} ->
-        if rows == Enum.zip_with(@record_fields, @record_types, &[&1, &2]),
+        if rows == @record_layout,
           do: :ok,
           else: {:error, {:schema_incompatible, :record_layout}}
 
@@ -138,15 +146,10 @@ defmodule PgFlow.SchemaCheck do
       &check_queue_constraints/1
     ]
 
-    errors =
-      Enum.flat_map(checks, fn check ->
-        case check.(repo) do
-          :ok -> []
-          {:error, message} -> [message]
-        end
-      end)
-
-    if errors == [], do: :ok, else: {:error, errors}
+    case collect_errors(checks, repo) do
+      [] -> :ok
+      errors -> {:error, errors}
+    end
   end
 
   @doc """
@@ -178,15 +181,22 @@ defmodule PgFlow.SchemaCheck do
   @spec warnings(module(), keyword()) :: [String.t()]
   def warnings(repo, opts \\ []) do
     opts
-    |> Keyword.get(:notify_trigger, :deferred)
+    |> Keyword.get(:notify_trigger, Pgmq.default_trigger())
     |> warning_checks()
-    |> Enum.flat_map(fn check ->
+    |> collect_errors(repo)
+  end
+
+  # Runs each check against `repo` and returns the messages of those that fail.
+  defp collect_errors(checks, repo) do
+    Enum.flat_map(checks, fn check ->
       case check.(repo) do
         :ok -> []
         {:error, message} -> [message]
       end
     end)
   end
+
+  defp pgmq_tables(rows), do: Enum.map_join(rows, ", ", fn [table] -> "pgmq.#{table}" end)
 
   defp warning_checks(:deferred),
     do: [(&check_notify_triggers_deferred/1) | warning_checks(:pgmq_default)]
@@ -209,9 +219,7 @@ defmodule PgFlow.SchemaCheck do
            WHERE n.nspname = 'pgmq'
              AND t.tgname = $1
              AND NOT (t.tgdeferrable AND t.tginitdeferred)
-             AND c.relname IN (
-               SELECT pgmq.format_table_name(lower(flow_slug), 'q') FROM pgflow.flows WHERE queue_mode = 'flow'
-             )
+             AND c.relname IN (#{@flow_queue_tables_sql})
            ORDER BY c.relname
            """,
            [Pgmq.notify_trigger_name()]
@@ -220,7 +228,7 @@ defmodule PgFlow.SchemaCheck do
         :ok
 
       {:ok, %{rows: rows}} ->
-        tables = Enum.map_join(rows, ", ", fn [table] -> "pgmq.#{table}" end)
+        tables = pgmq_tables(rows)
 
         {:error,
          "pgmq notify triggers are not DEFERRABLE INITIALLY DEFERRED on #{tables}; " <>
@@ -239,47 +247,50 @@ defmodule PgFlow.SchemaCheck do
   # pgmq.notify_insert_throttle row. The table is UNLOGGED, so crash recovery,
   # or a Neon compute restart, empties it and silences the queue's trigger.
   defp check_notify_throttle_rows(repo) do
-    with {:ok, true} <- throttle_table_exists(repo),
-         {:ok, %{rows: [_ | _] = rows}} <-
-           repo_query(
-             repo,
-             """
-             SELECT c.relname
-             FROM pg_trigger t
-             JOIN pg_class c ON c.oid = t.tgrelid
-             JOIN pg_namespace n ON n.oid = c.relnamespace
-             JOIN pgflow.flows f ON c.relname = pgmq.format_table_name(lower(f.flow_slug), 'q')
-             WHERE n.nspname = 'pgmq'
-               AND f.queue_mode = 'flow'
-               AND t.tgname = $1
-               AND NOT EXISTS (
-                 SELECT 1
-                 FROM pgmq.notify_insert_throttle r
-                 WHERE r.queue_name = lower(f.flow_slug)
-               )
-             ORDER BY c.relname
-             """,
-             [Pgmq.notify_trigger_name()]
-           ) do
-      tables = Enum.map_join(rows, ", ", fn [table] -> "pgmq.#{table}" end)
-
-      {:error,
-       "pgmq notify triggers on #{tables} have no pgmq.notify_insert_throttle row, so they " <>
-         "send no NOTIFY and workers wait for their fallback poll. The table is UNLOGGED: " <>
-         "crash recovery and Neon compute restarts empty it. Running PgFlow.Signal.Notify " <>
-         "processes restore missing rows within 30s, and worker boot restores them; " <>
-         "PgFlow.Queries.Pgmq.enable_notify_insert/4 also restores them"}
-    else
-      {:ok, false} ->
-        :ok
-
-      {:ok, %{rows: []}} ->
-        :ok
-
-      {:error, error} ->
-        {:error, "failed to inspect pgmq notify throttle rows: #{inspect(error)}"}
+    case throttle_table_exists(repo) do
+      {:ok, true} -> repo |> missing_throttle_rows() |> throttle_rows_result()
+      {:ok, false} -> :ok
+      {:error, error} -> throttle_rows_result({:error, error})
     end
   end
+
+  defp missing_throttle_rows(repo) do
+    repo_query(
+      repo,
+      """
+      SELECT c.relname
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pgflow.flows f ON c.relname = pgmq.format_table_name(lower(f.flow_slug), 'q')
+      WHERE n.nspname = 'pgmq'
+        AND f.queue_mode = 'flow'
+        AND t.tgname = $1
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pgmq.notify_insert_throttle r
+          WHERE r.queue_name = lower(f.flow_slug)
+        )
+      ORDER BY c.relname
+      """,
+      [Pgmq.notify_trigger_name()]
+    )
+  end
+
+  defp throttle_rows_result({:ok, %{rows: []}}), do: :ok
+
+  defp throttle_rows_result({:ok, %{rows: rows}}) do
+    {:error,
+     "pgmq notify triggers on #{pgmq_tables(rows)} have no pgmq.notify_insert_throttle row, so " <>
+       "they send no NOTIFY and workers wait for their fallback poll. The table is UNLOGGED: " <>
+       "crash recovery and Neon compute restarts empty it. Running PgFlow.Signal.Notify " <>
+       "processes restore missing rows on their next reconcile tick " <>
+       "(:throttle_reconcile_interval_ms, default 30s), and worker boot restores them; " <>
+       "PgFlow.Queries.Pgmq.enable_notify_insert/4 also restores them"}
+  end
+
+  defp throttle_rows_result({:error, error}),
+    do: {:error, "failed to inspect pgmq notify throttle rows: #{inspect(error)}"}
 
   # On a partitioned queue table each partition carries a clone of the
   # trigger, so TG_TABLE_NAME names the partition. pgmq releases before
@@ -296,9 +307,7 @@ defmodule PgFlow.SchemaCheck do
            JOIN pg_partitioned_table p ON p.partrelid = c.oid
            WHERE n.nspname = 'pgmq'
              AND t.tgname = $1
-             AND c.relname IN (
-               SELECT pgmq.format_table_name(lower(flow_slug), 'q') FROM pgflow.flows WHERE queue_mode = 'flow'
-             )
+             AND c.relname IN (#{@flow_queue_tables_sql})
              AND (
                t.tgnargs = 0
                OR NOT EXISTS (
@@ -316,10 +325,8 @@ defmodule PgFlow.SchemaCheck do
         :ok
 
       {:ok, %{rows: rows}} ->
-        tables = Enum.map_join(rows, ", ", fn [table] -> "pgmq.#{table}" end)
-
         {:error,
-         "partitioned pgmq queues #{tables} never send NOTIFY: this pgmq release " <>
+         "partitioned pgmq queues #{pgmq_tables(rows)} never send NOTIFY: this pgmq release " <>
            "(before 1.13.1) resolves the queue from the partition's table name. " <>
            "Upgrade pgmq to 1.13.1 or later and restart workers, or use signal_strategy: :polling"}
 
@@ -474,7 +481,7 @@ defmodule PgFlow.SchemaCheck do
 
     case legacy do
       nil -> :ok
-      {_key, signature} -> {:error, obsolete_signature_message(signature)}
+      {key, signature} -> {:error, obsolete_signature_message(key, signature)}
     end
   end
 
@@ -488,7 +495,8 @@ defmodule PgFlow.SchemaCheck do
 
   defp check_legacy_compile_absent(repo) do
     if function_exists?(repo, @legacy_compile_signature) do
-      {:error, obsolete_signature_message(@legacy_compile_signature)}
+      {:error,
+       obsolete_signature_message(:ensure_flow_compiled_legacy, @legacy_compile_signature)}
     else
       :ok
     end
@@ -502,17 +510,17 @@ defmodule PgFlow.SchemaCheck do
     end
   end
 
-  defp obsolete_signature_message("pgflow.start_tasks(text,bigint[],uuid,text)" = signature) do
+  defp obsolete_signature_message(:start_tasks_legacy_4arg, signature) do
     "obsolete four-argument claim #{signature} is still present; " <>
       "upgrade core and helpers before deploying this library release"
   end
 
-  defp obsolete_signature_message("pgflow.start_tasks(text,bigint[],uuid)" = signature) do
+  defp obsolete_signature_message(:start_tasks_legacy_3arg, signature) do
     "obsolete three-argument claim #{signature} is still present; " <>
       "upgrade core and helpers before deploying this library release"
   end
 
-  defp obsolete_signature_message(signature) do
+  defp obsolete_signature_message(_key, signature) do
     "obsolete signature #{signature} is still present; " <>
       "upgrade core and helpers before deploying this library release"
   end
@@ -520,13 +528,11 @@ defmodule PgFlow.SchemaCheck do
   defp check_record_layout(repo) do
     case record_layout(repo) do
       {:ok, %{rows: rows}} ->
-        fields = rows
-
-        if fields == Enum.zip_with(@record_fields, @record_types, &[&1, &2]) do
+        if rows == @record_layout do
           :ok
         else
           {:error,
-           "step_task_record layout mismatch: expected #{inspect(@record_fields)}, got #{inspect(fields)}"}
+           "step_task_record layout mismatch: expected #{inspect(@record_fields)}, got #{inspect(rows)}"}
         end
 
       {:error, %Postgrex.Error{postgres: %{code: :undefined_object}}} ->
@@ -643,10 +649,13 @@ defmodule PgFlow.SchemaCheck do
     end
   end
 
-  defp function_exists?(repo, signature) do
+  defp function_exists?(repo, signature),
+    do: match?({:ok, true}, regprocedure_exists(repo, signature))
+
+  defp regprocedure_exists(repo, signature) do
     case repo_query(repo, "SELECT to_regprocedure($1::text) IS NOT NULL", [signature]) do
-      {:ok, %{rows: [[true]]}} -> true
-      _ -> false
+      {:ok, %{rows: [[exists?]]}} -> {:ok, exists?}
+      {:error, error} -> {:error, error}
     end
   end
 

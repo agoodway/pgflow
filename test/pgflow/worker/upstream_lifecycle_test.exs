@@ -2,6 +2,8 @@ defmodule PgFlow.Worker.UpstreamLifecycleTest do
   @moduledoc false
   use ExUnit.Case
 
+  import PgFlow.Test.FlowFixtures, only: [compile_flow: 1, start_flow_run: 2, worker_config: 3]
+
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.IntegrationCase
   alias PgFlow.Signal.Notify
@@ -571,60 +573,17 @@ defmodule PgFlow.Worker.UpstreamLifecycleTest do
     end
   end
 
-  defp compile_flow(flow_module) do
-    definition = flow_module.__pgflow_definition__()
-    flow_slug = Atom.to_string(definition.slug)
-
-    TestRepo.query!(
-      "SELECT pgflow.create_flow($1, $2, $3, $4)",
-      [
-        flow_slug,
-        definition.opts[:max_attempts] || 3,
-        definition.opts[:base_delay] || 1,
-        definition.opts[:timeout] || 30
-      ]
-    )
-
-    for step <- definition.steps do
-      TestRepo.query!(
-        "SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8)",
-        [
-          flow_slug,
-          Atom.to_string(step.slug),
-          Enum.map(step.depends_on, &Atom.to_string/1),
-          step.max_attempts,
-          step.base_delay,
-          step.timeout,
-          step.start_delay,
-          Atom.to_string(step.step_type)
-        ]
-      )
-    end
-
-    flow_slug
-  end
-
   defp start_worker(flow_module, task_supervisor, opts \\ []) do
-    config = %{
-      flow_module: flow_module,
-      repo: TestRepo,
-      task_supervisor: task_supervisor,
-      max_concurrency: Keyword.get(opts, :max_concurrency, 1),
-      batch_size: Keyword.get(opts, :batch_size, 1),
-      signal_strategy: Keyword.get(opts, :signal_strategy, :polling),
-      min_poll_interval: Keyword.get(opts, :min_poll_interval, 50),
-      max_poll_interval: Keyword.get(opts, :max_poll_interval, 5_000),
-      notify_fallback_interval: Keyword.get(opts, :notify_fallback_interval, 30_000),
-      heartbeat_interval: Keyword.get(opts, :heartbeat_interval, 10_000)
-    }
+    config =
+      worker_config(
+        flow_module,
+        task_supervisor,
+        Keyword.merge([max_concurrency: 1, batch_size: 1], opts)
+      )
 
     {:ok, pid} = Server.start_link(config)
     Sandbox.allow(TestRepo, self(), pid)
     pid
-  end
-
-  defp start_flow_run(flow_slug, input) do
-    IntegrationCase.start_flow_run(flow_slug, input)
   end
 
   defp run_status(run_id) do

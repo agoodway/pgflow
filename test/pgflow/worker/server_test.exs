@@ -19,6 +19,8 @@ defmodule PgFlow.Worker.ServerTest do
   """
   use ExUnit.Case
 
+  import PgFlow.Test.FlowFixtures, only: [compile_flow: 1, start_flow_run: 2, worker_config: 3]
+
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.Queries.Flows, as: FlowQueries
   alias PgFlow.Test.UnavailableRepo, as: UnavailableHeartbeatRepo
@@ -540,58 +542,8 @@ defmodule PgFlow.Worker.ServerTest do
 
   # ============= Helper Functions =============
 
-  defp compile_flow(flow_module) do
-    definition = flow_module.__pgflow_definition__()
-    flow_slug = Atom.to_string(definition.slug)
-
-    # Create flow with options
-    max_attempts = definition.opts[:max_attempts] || 3
-    base_delay = definition.opts[:base_delay] || 1
-    timeout = definition.opts[:timeout] || 30
-
-    TestRepo.query!(
-      "SELECT pgflow.create_flow($1, $2, $3, $4)",
-      [flow_slug, max_attempts, base_delay, timeout]
-    )
-
-    # Add each step
-    for step <- definition.steps do
-      step_slug = Atom.to_string(step.slug)
-      deps = Enum.map(step.depends_on, &Atom.to_string/1)
-      step_type = Atom.to_string(step.step_type)
-
-      # pgflow.add_step(flow_slug, step_slug, deps, max_attempts, base_delay, timeout, start_delay, step_type)
-      TestRepo.query!(
-        "SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8)",
-        [
-          flow_slug,
-          step_slug,
-          deps,
-          step.max_attempts,
-          step.base_delay,
-          step.timeout,
-          step.start_delay,
-          step_type
-        ]
-      )
-    end
-
-    flow_slug
-  end
-
   defp start_worker(flow_module, task_supervisor, opts \\ []) do
-    config = %{
-      flow_module: flow_module,
-      repo: TestRepo,
-      task_supervisor: task_supervisor,
-      max_concurrency: Keyword.get(opts, :max_concurrency, 10),
-      batch_size: Keyword.get(opts, :batch_size, 10),
-      signal_strategy: Keyword.get(opts, :signal_strategy, :polling),
-      min_poll_interval: Keyword.get(opts, :min_poll_interval, 50),
-      max_poll_interval: Keyword.get(opts, :max_poll_interval, 5_000),
-      notify_fallback_interval: Keyword.get(opts, :notify_fallback_interval, 30_000),
-      heartbeat_interval: Keyword.get(opts, :heartbeat_interval, 10_000)
-    }
+    config = worker_config(flow_module, task_supervisor, opts)
 
     {:ok, pid} = Server.start_link(config)
 
@@ -599,23 +551,6 @@ defmodule PgFlow.Worker.ServerTest do
     Sandbox.allow(TestRepo, self(), pid)
 
     pid
-  end
-
-  defp start_flow_run(flow_slug, input) do
-    %{rows: [[result]]} =
-      TestRepo.query!(
-        "SELECT pgflow.start_flow($1, cast($2 as text)::jsonb)",
-        [flow_slug, Jason.encode!(input)]
-      )
-
-    # Extract run_id from the composite type
-    case result do
-      {run_id, _, _, _, _, _, _, _, _} ->
-        Ecto.UUID.load!(run_id)
-
-      _ ->
-        raise "Unexpected result: #{inspect(result)}"
-    end
   end
 
   defp get_run(run_id) do
@@ -759,7 +694,7 @@ defmodule PgFlow.Worker.ServerTest do
         end
       end)
 
-      {:ok, worker_pid} = WorkerSupervisor.start_worker_process(SimpleWorkerFlow, TestRepo)
+      {:ok, worker_pid} = WorkerSupervisor.start_worker_process(SimpleWorkerFlow, TestRepo, [])
       state = Server.get_state(worker_pid)
 
       assert state.heartbeat_interval == 123

@@ -1,10 +1,15 @@
 defmodule PgFlow.Worker.BootstrapTest do
   use ExUnit.Case, async: false
 
+  use PgFlow.Test.WaitHelpers
+
+  import PgFlow.Test.FlowFixtures, only: [start_flow_run: 2]
+
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.Flow.Shape
   alias PgFlow.Queries.Flows
   alias PgFlow.Queries.Workers, as: WorkerQueries
+  alias PgFlow.Test.DatabaseHelpers
   alias PgFlow.Test.UnavailableRepo, as: UnavailableBootstrapRepo
   alias PgFlow.TestRepo
   alias PgFlow.Worker.Bootstrap
@@ -425,7 +430,7 @@ defmodule PgFlow.Worker.BootstrapTest do
         end)
 
       assert_receive {:is_local, [[true]]}, 5_000
-      assert :ok = wait_until(fn -> advisory_lock_waiters() > 0 end, timeout_ms: 5_000)
+      assert :ok = wait_until(fn -> advisory_lock_waiters() > 0 end, timeout: 5_000)
       refute_received {:prepared, _}
 
       send(holder.pid, :commit)
@@ -550,7 +555,7 @@ defmodule PgFlow.Worker.BootstrapTest do
 
                  task && task.status == "failed" && task.attempts_count >= 1
                end,
-               timeout_ms: 15_000
+               timeout: 15_000
              ) == :ok
 
       Server.stop(worker_pid)
@@ -611,19 +616,6 @@ defmodule PgFlow.Worker.BootstrapTest do
     {:ok, pid} = Server.start_link(config)
     Sandbox.allow(TestRepo, self(), pid)
     pid
-  end
-
-  defp start_flow_run(flow_slug, input) do
-    %{rows: [[result]]} =
-      TestRepo.query!("SELECT pgflow.start_flow($1, cast($2 as text)::jsonb)", [
-        flow_slug,
-        Jason.encode!(input)
-      ])
-
-    case result do
-      {run_id, _, _, _, _, _, _, _, _} -> Ecto.UUID.load!(run_id)
-      _ -> raise "unexpected start_flow result"
-    end
   end
 
   defp get_task_details(run_id, step_slug) do
@@ -720,10 +712,7 @@ defmodule PgFlow.Worker.BootstrapTest do
     )
   end
 
-  defp external_conn_opts do
-    TestRepo.config()
-    |> Keyword.take([:hostname, :port, :username, :password, :database])
-  end
+  defp external_conn_opts, do: DatabaseHelpers.connection_opts(TestRepo.config())
 
   defp advisory_lock_waiters do
     %{rows: [[count]]} =
@@ -732,25 +721,5 @@ defmodule PgFlow.Worker.BootstrapTest do
       )
 
     count
-  end
-
-  defp wait_until(fun, opts) do
-    timeout_ms = Keyword.get(opts, :timeout_ms, 5_000)
-    poll_interval_ms = Keyword.get(opts, :poll_interval_ms, 50)
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-    do_wait_until(fun, deadline, poll_interval_ms)
-  end
-
-  defp do_wait_until(fun, deadline, poll_interval_ms) do
-    if fun.() do
-      :ok
-    else
-      if System.monotonic_time(:millisecond) > deadline do
-        {:error, :timeout}
-      else
-        Process.sleep(poll_interval_ms)
-        do_wait_until(fun, deadline, poll_interval_ms)
-      end
-    end
   end
 end

@@ -1,50 +1,14 @@
 defmodule PgFlow.Test.WorkerSupervisorSetup do
   @moduledoc false
 
+  import ExUnit.Assertions
   import ExUnit.Callbacks
+  import PgFlow.Test.FlowFixtures, only: [compile_flow: 1]
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias PgFlow.Test.WaitHelpers
   alias PgFlow.TestRepo
   alias PgFlow.WorkerSupervisor
-
-  @doc """
-  Compiles a flow definition into the database and returns its slug.
-  """
-  def compile_flow(flow_module) do
-    definition = flow_module.__pgflow_definition__()
-    flow_slug = Atom.to_string(definition.slug)
-
-    max_attempts = definition.opts[:max_attempts] || 3
-    base_delay = definition.opts[:base_delay] || 1
-    timeout = definition.opts[:timeout] || 30
-
-    TestRepo.query!(
-      "SELECT pgflow.create_flow($1, $2, $3, $4)",
-      [flow_slug, max_attempts, base_delay, timeout]
-    )
-
-    for step <- definition.steps do
-      step_slug = Atom.to_string(step.slug)
-      deps = Enum.map(step.depends_on, &Atom.to_string/1)
-      step_type = Atom.to_string(step.step_type)
-
-      TestRepo.query!(
-        "SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8)",
-        [
-          flow_slug,
-          step_slug,
-          deps,
-          step.max_attempts,
-          step.base_delay,
-          step.timeout,
-          step.start_delay,
-          step_type
-        ]
-      )
-    end
-
-    flow_slug
-  end
 
   @doc """
   Starts a task supervisor and `WorkerSupervisor` with the given `worker_options`
@@ -79,12 +43,9 @@ defmodule PgFlow.Test.WorkerSupervisorSetup do
 
     compile_flow(flow_module)
 
+    # ExUnit stops the supervised WorkerSupervisor, and its workers, before
+    # on_exit callbacks run.
     on_exit(fn ->
-      case WorkerSupervisor.find_worker(flow_module) do
-        nil -> :ok
-        _ -> WorkerSupervisor.stop_worker(flow_module)
-      end
-
       restore_term(repo_key, previous_repo, missing)
       restore_term(config_key, previous_config, missing)
 
@@ -92,6 +53,19 @@ defmodule PgFlow.Test.WorkerSupervisorSetup do
     end)
 
     :ok
+  end
+
+  @doc """
+  Kills the registered worker `pid` for `flow_module`, asserts it exits, and
+  returns the replacement the supervisor starts.
+  """
+  @spec kill_and_await_restart!(module(), pid()) :: pid()
+  def kill_and_await_restart!(flow_module, pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 5_000
+    WaitHelpers.wait_until(fn -> is_pid(WorkerSupervisor.find_worker(flow_module)) end)
+    WorkerSupervisor.find_worker(flow_module)
   end
 
   defp restore_term(key, missing, missing), do: :persistent_term.erase(key)

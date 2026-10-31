@@ -1,8 +1,7 @@
 defmodule PgFlow.Upstream.HelpersV07UpgradeTest do
   use ExUnit.Case, async: false
 
-  alias EctoEvolver.Adapters.Postgres, as: EvolverPostgres
-  alias PgFlow.Test.UpstreamFixture
+  import PgFlow.Test.UpstreamUpgrade
 
   @moduletag :integration
   @moduletag :migration
@@ -11,9 +10,9 @@ defmodule PgFlow.Upstream.HelpersV07UpgradeTest do
     fixture = fixture!()
 
     in_fixture(fixture, fn ->
-      migrate_core_v03!()
-      migrate_helpers_v06!()
-      migrate_helpers_v07!()
+      migrate!(:core_v03)
+      migrate!([:helpers_v05, :helpers_v06])
+      migrate!(:helpers_v07)
 
       assert function_arguments("start_tasks") == [
                "flow_slug text, msg_ids bigint[], worker_id uuid, queue_name text, step_slug text"
@@ -31,11 +30,11 @@ defmodule PgFlow.Upstream.HelpersV07UpgradeTest do
     fixture = fixture!()
 
     in_fixture(fixture, fn ->
-      migrate_core_v02!()
-      migrate_helpers_v06!()
+      migrate!(:core_v02)
+      migrate!([:helpers_v05, :helpers_v06])
 
       assert_raise Postgrex.Error, ~r/PgFlow helpers V07 requires core V03/, fn ->
-        migrate_helpers_v07!()
+        migrate!(:helpers_v07)
       end
 
       assert helpers_version() == 6
@@ -47,8 +46,8 @@ defmodule PgFlow.Upstream.HelpersV07UpgradeTest do
     fixture = fixture!()
 
     in_fixture(fixture, fn ->
-      migrate_core_v03!()
-      migrate_helpers_v07!()
+      migrate!(:core_v03)
+      migrate!(:helpers_v07)
 
       %{rows: [[worker_id]]} = PgFlow.TestRepo.query!("SELECT gen_random_uuid()")
 
@@ -77,8 +76,8 @@ defmodule PgFlow.Upstream.HelpersV07UpgradeTest do
     fixture = fixture!()
 
     in_fixture(fixture, fn ->
-      migrate_core_v03!()
-      migrate_helpers_v07!()
+      migrate!(:core_v03)
+      migrate!(:helpers_v07)
 
       [flow_slug, message_id, queue_name] =
         PgFlow.TestRepo.query!("""
@@ -105,93 +104,6 @@ defmodule PgFlow.Upstream.HelpersV07UpgradeTest do
                  [flow_slug, message_id, worker_id, queue_name]
                ).rows
     end)
-  end
-
-  defp fixture! do
-    fixture = UpstreamFixture.setup!()
-    Process.unlink(fixture.repo_pid)
-    on_exit(fn -> UpstreamFixture.teardown!(fixture) end)
-    fixture
-  end
-
-  defp in_fixture(fixture, fun) do
-    previous = PgFlow.TestRepo.put_dynamic_repo(fixture.repo_name)
-
-    try do
-      fun.()
-    after
-      PgFlow.TestRepo.put_dynamic_repo(previous)
-    end
-  end
-
-  defp migrate_core_v02! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_102,
-      PgFlow.Upstream.CoreUpgradeMigration,
-      log: false
-    )
-  end
-
-  defp migrate_core_v03! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_203,
-      PgFlow.Upstream.CoreV03Migration,
-      log: false
-    )
-  end
-
-  defp migrate_helpers_v06! do
-    Ecto.Migrator.up(PgFlow.TestRepo, 9_000_000_205, PgFlow.Upstream.HelpersUpgradeMigration,
-      log: false
-    )
-
-    Ecto.Migrator.up(PgFlow.TestRepo, 9_000_000_206, PgFlow.Upstream.HelpersV06Migration,
-      log: false
-    )
-  end
-
-  defp migrate_helpers_v07! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_207,
-      PgFlow.Upstream.HelpersV07Migration,
-      log: false
-    )
-  end
-
-  defp helpers_version do
-    EvolverPostgres.get_version(PgFlow.TestRepo, "pgflow", {:view, "extensions_version"})
-  end
-
-  defp function_arguments(name) do
-    PgFlow.TestRepo.query!(
-      """
-      SELECT pg_get_function_identity_arguments(p.oid)
-      FROM pg_proc AS p
-      JOIN pg_namespace AS n ON n.oid = p.pronamespace
-      WHERE n.nspname = 'pgflow' AND p.proname = $1
-      ORDER BY 1
-      """,
-      [name]
-    ).rows
-    |> List.flatten()
-  end
-
-  defp column_exists?(table, column) do
-    %{rows: [[exists?]]} =
-      PgFlow.TestRepo.query!(
-        """
-        SELECT EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_schema = 'pgflow' AND table_name = $1 AND column_name = $2
-        )
-        """,
-        [table, column]
-      )
-
-    exists?
   end
 
   defp worker_row!(worker_id) do

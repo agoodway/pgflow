@@ -1,8 +1,6 @@
 defmodule PgFlow.Worker.PublicScalingTest do
   use ExUnit.Case, async: false
 
-  use PgFlow.Test.WaitHelpers
-
   import PgFlow.Test.WorkerSupervisorSetup
 
   alias PgFlow.TestFlows.SimpleFlow
@@ -72,15 +70,7 @@ defmodule PgFlow.Worker.PublicScalingTest do
       {:ok, pid} = WorkerSupervisor.start_worker(SimpleFlow)
       assert {:ok, _} = PgFlow.scale_worker(SimpleFlow, max_concurrency: 6)
 
-      Process.exit(pid, :kill)
-
-      wait_until(fn ->
-        case WorkerSupervisor.find_worker(SimpleFlow) do
-          new_pid when is_pid(new_pid) and new_pid != pid -> true
-          _ -> false
-        end
-      end)
-
+      _new_pid = kill_and_await_restart!(SimpleFlow, pid)
       assert %{max_concurrency: 3} = PgFlow.check_worker(SimpleFlow)
     end
 

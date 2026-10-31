@@ -10,7 +10,7 @@ defmodule PgFlow.Worker.Bootstrap do
   alias Ecto.Adapters.SQL
   alias PgFlow.Flow.{Definition, Shape}
   alias PgFlow.Queries.{Flows, Workers}
-  alias PgFlow.SchemaCheck
+  alias PgFlow.{SchemaCheck, Slug}
   require Logger
 
   @doc """
@@ -51,7 +51,7 @@ defmodule PgFlow.Worker.Bootstrap do
              {:ok, %{status: status}} <- Flows.ensure_flow_compiled(repo, slug, shape),
              :ok <- update_flow_type(repo, slug, flow_type),
              {:ok, _} <- Workers.track_worker_function(repo, function_name, "process") do
-          %{queue_name: canonical_queue_name(slug), compilation_status: status}
+          %{queue_name: Slug.queue_name(slug), compilation_status: status}
         else
           {:error, reason} -> repo.rollback(reason)
         end
@@ -124,6 +124,4 @@ defmodule PgFlow.Worker.Bootstrap do
   defp elixir_function_name(module) when is_atom(module) do
     "elixir:" <> (module |> Module.split() |> Enum.join("."))
   end
-
-  defp canonical_queue_name(flow_slug), do: String.downcase(flow_slug)
 end

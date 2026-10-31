@@ -59,20 +59,16 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
   use Mix.Task
 
   alias Mix.Tasks.Pgflow.Helpers
+  alias PgFlow.Queries.Pgmq
   alias PgFlow.SchemaCheck
 
   @impl Mix.Task
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, switches: [repo: :string, notify_trigger: :string])
 
-    Mix.Task.run("app.config")
-
-    repo = Helpers.resolve_repo(Keyword.get(opts, :repo))
+    repo = Helpers.boot_repo!(Keyword.get(opts, :repo))
 
     Mix.shell().info("Checking pgflow schema in #{inspect(repo)}...")
-
-    {:ok, _} = Application.ensure_all_started(:ecto_sql)
-    Helpers.start_repo(repo)
 
     notify_trigger = get_notify_trigger(opts)
 
@@ -100,7 +96,10 @@ defmodule Mix.Tasks.Pgflow.CheckSchema do
   end
 
   defp get_notify_trigger(opts) do
-    case Keyword.get(opts, :notify_trigger, "deferred") do
+    case Keyword.get(opts, :notify_trigger) do
+      nil ->
+        Pgmq.default_trigger()
+
       "deferred" ->
         :deferred
 

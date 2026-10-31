@@ -129,7 +129,7 @@ defmodule PgFlow.Upstream.QueueIdentityTest do
       worker_id: worker_id
     } do
       flow_slug = "MixedCaseQueue"
-      queue_name = canonical_queue_name(flow_slug)
+      queue_name = PgFlow.Slug.queue_name(flow_slug)
 
       create_flow(flow_slug)
       add_step(flow_slug, "work")

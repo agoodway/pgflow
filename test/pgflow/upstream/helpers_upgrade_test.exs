@@ -1,9 +1,9 @@
 defmodule PgFlow.Upstream.HelpersUpgradeTest do
   use ExUnit.Case, async: false
 
-  alias EctoEvolver.Adapters.Postgres, as: EvolverPostgres
+  import PgFlow.Test.UpstreamUpgrade
+
   alias PgFlow.Queries.Flows
-  alias PgFlow.Test.UpstreamFixture
   alias PgFlow.Upstream.Claim
 
   @moduletag :integration
@@ -22,13 +22,13 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
   end
 
   test "baseline fixture upgrades core V01 helpers V04 through V06" do
-    fixture = baseline_fixture!()
+    fixture = fixture!()
 
     in_fixture(fixture, fn ->
       task_count = scalar!("SELECT count(*) FROM pgflow.step_tasks")
-      migrate_core_v02!()
-      migrate_helpers_v05!()
-      migrate_helpers_v06!()
+      migrate!(:core_v02)
+      migrate!(:helpers_v05)
+      migrate!(:helpers_v06)
 
       assert core_version() == 2
       assert helpers_version() == 6
@@ -65,7 +65,7 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
 
   test "fresh and upgraded databases expose the same final catalog contract" do
     fresh = fresh_fixture!()
-    baseline = baseline_fixture!()
+    baseline = fixture!()
 
     fresh_catalog =
       in_fixture(fresh, fn ->
@@ -75,11 +75,11 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
 
     upgraded_catalog =
       in_fixture(baseline, fn ->
-        migrate_core_v02!()
-        migrate_helpers_v05!()
-        migrate_helpers_v06!()
-        migrate_core_v03!()
-        migrate_helpers_v07!()
+        migrate!(:core_v02)
+        migrate!(:helpers_v05)
+        migrate!(:helpers_v06)
+        migrate!(:core_v03)
+        migrate!(:helpers_v07)
         catalog_snapshot!()
       end)
 
@@ -88,10 +88,10 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
   end
 
   test "every intermediate V05 DDL statement validates on its own" do
-    fixture = baseline_fixture!()
+    fixture = fixture!()
 
     in_fixture(fixture, fn ->
-      migrate_core_v02!()
+      migrate!(:core_v02)
 
       v05_up =
         :pgflow
@@ -107,7 +107,7 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
         assert {:ok, _} = PgFlow.TestRepo.query(statement <> "\n", [])
       end)
 
-      migrate_helpers_v05!()
+      migrate!(:helpers_v05)
       assert helpers_version() == 5
     end)
   end
@@ -124,11 +124,11 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
   end
 
   test "recovery archives exhausted tasks even when nothing is requeued" do
-    fixture = baseline_fixture!()
+    fixture = fixture!()
 
     in_fixture(fixture, fn ->
-      migrate_core_v02!()
-      migrate_helpers_v05!()
+      migrate!(:core_v02)
+      migrate!(:helpers_v05)
 
       [run_id, queue_name, message_id] =
         PgFlow.TestRepo.query!("""
@@ -168,11 +168,11 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
   end
 
   test "V05 downgrade fails with an actionable forward-only error" do
-    fixture = baseline_fixture!()
+    fixture = fixture!()
 
     in_fixture(fixture, fn ->
-      migrate_core_v02!()
-      migrate_helpers_v05!()
+      migrate!(:core_v02)
+      migrate!(:helpers_v05)
 
       assert_raise Postgrex.Error, ~r/forward-only.*queue-aware claim/, fn ->
         Ecto.Migrator.down(
@@ -189,21 +189,12 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
   end
 
   defp fresh_fixture! do
-    fixture = UpstreamFixture.setup!([])
-    Process.unlink(fixture.repo_pid)
-    on_exit(fn -> UpstreamFixture.teardown!(fixture) end)
+    fixture = fixture!()
 
     in_fixture(fixture, fn ->
       PgFlow.TestRepo.query!("DROP SCHEMA IF EXISTS pgflow CASCADE")
     end)
 
-    fixture
-  end
-
-  defp baseline_fixture! do
-    fixture = UpstreamFixture.setup!()
-    Process.unlink(fixture.repo_pid)
-    on_exit(fn -> UpstreamFixture.teardown!(fixture) end)
     fixture
   end
 
@@ -220,74 +211,6 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
       PgFlow.Upstream.HelpersFullChainMigration,
       log: false
     )
-  end
-
-  defp migrate_core_v02! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_102,
-      PgFlow.Upstream.CoreUpgradeMigration,
-      log: false
-    )
-  end
-
-  defp migrate_helpers_v05! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_105,
-      PgFlow.Upstream.HelpersUpgradeMigration,
-      log: false
-    )
-  end
-
-  defp migrate_helpers_v06! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_106,
-      PgFlow.Upstream.HelpersV06Migration,
-      log: false
-    )
-  end
-
-  defp migrate_core_v03! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_203,
-      PgFlow.Upstream.CoreV03Migration,
-      log: false
-    )
-  end
-
-  defp migrate_helpers_v07! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_207,
-      PgFlow.Upstream.HelpersV07Migration,
-      log: false
-    )
-  end
-
-  defp in_fixture(fixture, fun) do
-    previous = PgFlow.TestRepo.put_dynamic_repo(fixture.repo_name)
-
-    try do
-      fun.()
-    after
-      PgFlow.TestRepo.put_dynamic_repo(previous)
-    end
-  end
-
-  defp core_version do
-    EvolverPostgres.get_version(PgFlow.TestRepo, "pgflow", {:view, "pgflow_version"})
-  end
-
-  defp helpers_version do
-    EvolverPostgres.get_version(PgFlow.TestRepo, "pgflow", {:view, "extensions_version"})
-  end
-
-  defp scalar!(sql, params \\ []) do
-    %{rows: [[value]]} = PgFlow.TestRepo.query!(sql, params)
-    value
   end
 
   defp latest_catalog_contract! do
@@ -355,20 +278,6 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
       AND (table_name, column_name) IN (('steps', 'queue_name'), ('step_tasks', 'queue_name'))
     ORDER BY table_name
     """).rows
-  end
-
-  defp record_fields do
-    PgFlow.TestRepo.query!("""
-    SELECT attname
-    FROM pg_attribute
-    WHERE attrelid = (
-      SELECT typrelid FROM pg_type WHERE oid = 'pgflow.step_task_record'::regtype
-    )
-      AND attnum > 0
-      AND NOT attisdropped
-    ORDER BY attnum
-    """).rows
-    |> List.flatten()
   end
 
   defp start_tasks_signatures do

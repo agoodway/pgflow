@@ -1,31 +1,12 @@
-defmodule PgFlow.Test.GatedFlow do
-  @moduledoc false
-  use PgFlow.Flow
-
-  @flow slug: :gated_flow, max_attempts: 1
-
-  step :gate do
-    fn input, _ctx ->
-      test_pid = :persistent_term.get({__MODULE__, :test_pid})
-      send(test_pid, {:task_started, self(), input["n"]})
-
-      receive do
-        :release -> :ok
-      end
-
-      %{n: input["n"]}
-    end
-  end
-end
-
 defmodule PgFlow.Worker.ScalingTest do
   use ExUnit.Case
 
   use PgFlow.Test.WaitHelpers
 
-  import PgFlow.Test.WorkerSupervisorSetup, only: [compile_flow: 1]
+  import PgFlow.Test.FlowFixtures, only: [compile_flow: 1, start_flow_run: 2, worker_config: 3]
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias PgFlow.Queries
   alias PgFlow.Test.GatedFlow
   alias PgFlow.TestRepo
   alias PgFlow.Worker.Server
@@ -39,20 +20,12 @@ defmodule PgFlow.Worker.ScalingTest do
 
     :persistent_term.put({GatedFlow, :test_pid}, self())
 
-    {:ok, task_supervisor} = Task.Supervisor.start_link()
+    task_supervisor = start_supervised!(Task.Supervisor)
     _flow_slug = compile_flow(GatedFlow)
 
+    # ExUnit stops supervised workers and the task supervisor before on_exit runs.
     on_exit(fn ->
       :persistent_term.erase({GatedFlow, :test_pid})
-
-      try do
-        if Process.alive?(task_supervisor) do
-          Supervisor.stop(task_supervisor)
-        end
-      catch
-        :exit, _ -> :ok
-      end
-
       Sandbox.mode(TestRepo, :manual)
     end)
 
@@ -103,7 +76,7 @@ defmodule PgFlow.Worker.ScalingTest do
     send(handler5, :release)
 
     for run_id <- run_ids do
-      assert {:ok, "completed"} = await_run_status(run_id, 10_000)
+      assert_run_completed(run_id)
     end
 
     Server.stop(worker_pid)
@@ -127,7 +100,7 @@ defmodule PgFlow.Worker.ScalingTest do
 
     handler = receive_started()
 
-    spawn(fn -> Server.stop(worker_pid) end)
+    stop_task = Task.async(fn -> Server.stop(worker_pid) end)
 
     wait_until(fn -> Server.check(worker_pid).lifecycle == :stopping end)
 
@@ -135,7 +108,7 @@ defmodule PgFlow.Worker.ScalingTest do
     assert Server.check(worker_pid).max_concurrency == 2
 
     send(handler, :release)
-    Server.stop(worker_pid)
+    Task.await(stop_task)
   end
 
   defp assert_scaling_up_immediately(task_supervisor, signal_strategy) do
@@ -183,7 +156,7 @@ defmodule PgFlow.Worker.ScalingTest do
     end
 
     for run_id <- run_ids do
-      assert {:ok, "completed"} = await_run_status(run_id, 10_000)
+      assert_run_completed(run_id)
     end
 
     Server.stop(worker_pid)
@@ -195,67 +168,19 @@ defmodule PgFlow.Worker.ScalingTest do
   end
 
   defp start_worker(flow_module, task_supervisor, opts) do
-    config = %{
-      flow_module: flow_module,
-      repo: TestRepo,
-      task_supervisor: task_supervisor,
-      max_concurrency: Keyword.get(opts, :max_concurrency, 10),
-      batch_size: Keyword.get(opts, :batch_size, 10),
-      signal_strategy: Keyword.get(opts, :signal_strategy, :polling),
-      min_poll_interval: Keyword.get(opts, :min_poll_interval, 50),
-      max_poll_interval: Keyword.get(opts, :max_poll_interval, 5_000),
-      notify_fallback_interval: Keyword.get(opts, :notify_fallback_interval, 30_000),
-      heartbeat_interval: Keyword.get(opts, :heartbeat_interval, 10_000)
-    }
+    pid =
+      start_supervised!(%{
+        id: {Server, make_ref()},
+        start: {Server, :start_link, [worker_config(flow_module, task_supervisor, opts)]},
+        restart: :temporary
+      })
 
-    {:ok, pid} = Server.start_link(config)
     Sandbox.allow(TestRepo, self(), pid)
     pid
   end
 
-  defp start_flow_run(flow_slug, input) do
-    %{rows: [[result]]} =
-      TestRepo.query!(
-        "SELECT pgflow.start_flow($1, cast($2 as text)::jsonb)",
-        [flow_slug, Jason.encode!(input)]
-      )
-
-    case result do
-      {run_id, _, _, _, _, _, _, _, _} ->
-        Ecto.UUID.load!(run_id)
-
-      _ ->
-        raise "Unexpected result: #{inspect(result)}"
-    end
-  end
-
-  defp get_run(run_id) do
-    %{rows: [[status, _output]]} =
-      TestRepo.query!(
-        "SELECT status, output FROM pgflow.runs WHERE run_id = $1",
-        [Ecto.UUID.dump!(run_id)]
-      )
-
-    %{status: status}
-  end
-
-  defp await_run_status(run_id, timeout_ms) do
-    deadline = System.monotonic_time(:millisecond) + timeout_ms
-    wait_loop(run_id, deadline)
-  end
-
-  defp wait_loop(run_id, deadline) do
-    if System.monotonic_time(:millisecond) > deadline do
-      {:error, :timeout}
-    else
-      case get_run(run_id) do
-        %{status: status} when status in ["completed", "failed"] ->
-          {:ok, status}
-
-        _ ->
-          Process.sleep(50)
-          wait_loop(run_id, deadline)
-      end
-    end
+  defp assert_run_completed(run_id) do
+    :ok = wait_for_run_completion(TestRepo, run_id, timeout: 10_000)
+    assert {:ok, %{status: "completed"}} = Queries.Flows.get_run(TestRepo, run_id)
   end
 end

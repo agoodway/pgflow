@@ -362,7 +362,7 @@ defmodule PgFlow.Upstream.OperationalRoutesTest do
   describe "worker health and notify" do
     test "worker filters use flow identity when queue name differs in case" do
       flow_slug = "MixedCaseWorker"
-      queue_name = canonical_queue_name(flow_slug)
+      queue_name = PgFlow.Slug.queue_name(flow_slug)
       create_flow(flow_slug)
       add_step(flow_slug, "work")
 
@@ -390,7 +390,7 @@ defmodule PgFlow.Upstream.OperationalRoutesTest do
     test "notify registers on canonical queue without creating mixed-case queue metadata" do
       if pgmq_notify_available?() do
         flow_slug = "MixedCaseNotify"
-        queue_name = canonical_queue_name(flow_slug)
+        queue_name = PgFlow.Slug.queue_name(flow_slug)
         create_flow(flow_slug)
         add_step(flow_slug, "work")
 

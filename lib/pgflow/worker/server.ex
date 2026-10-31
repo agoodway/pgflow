@@ -238,7 +238,7 @@ defmodule PgFlow.Worker.Server do
           configured_batch_size: pos_integer(),
           active: non_neg_integer()
         }
-  def check(pid, timeout \\ 5_000) do
+  def check(pid, timeout \\ WorkerOptions.default_call_timeout()) do
     GenServer.call(pid, :check, timeout)
   end
 
@@ -252,7 +252,7 @@ defmodule PgFlow.Worker.Server do
   and the worker may still apply the scale.
   """
   @spec scale(pid(), keyword(), timeout()) :: {:ok, map()} | {:error, :not_running}
-  def scale(pid, opts, timeout \\ 5_000) when is_list(opts) do
+  def scale(pid, opts, timeout \\ WorkerOptions.default_call_timeout()) when is_list(opts) do
     WorkerOptions.validate_scale!(opts)
     GenServer.call(pid, {:scale, opts}, timeout)
   end
@@ -580,37 +580,22 @@ defmodule PgFlow.Worker.Server do
   end
 
   @impl true
-  def handle_call({:scale, opts}, _from, state) do
-    if Lifecycle.can_accept_work?(state.lifecycle) do
-      state = apply_scale_opts(state, opts)
-      active = map_size(state.active_tasks)
+  def handle_call({:scale, opts}, _from, %{lifecycle: %Lifecycle{state: :running}} = state) do
+    state =
+      state
+      |> Map.merge(opts |> Keyword.take(WorkerOptions.keys()) |> Map.new())
+      |> poll_if_capacity()
 
-      state =
-        if state.max_concurrency > active do
-          send(self(), :poll_now)
-          state
-        else
-          state
-        end
-
-      {:reply, {:ok, check_map(state)}, state}
-    else
-      {:reply, {:error, :not_running}, state}
-    end
+    {:reply, {:ok, check_map(state)}, state}
   end
 
-  defp apply_scale_opts(state, opts) do
-    state
-    |> maybe_put_scale_opt(opts, :max_concurrency)
-    |> maybe_put_scale_opt(opts, :batch_size)
-  end
+  def handle_call({:scale, _opts}, _from, state), do: {:reply, {:error, :not_running}, state}
 
-  defp maybe_put_scale_opt(state, opts, key) do
-    case Keyword.fetch(opts, key) do
-      {:ok, value} -> Map.put(state, key, value)
-      :error -> state
-    end
-  end
+  # Claims work right away when the scaled limit leaves free task slots.
+  defp poll_if_capacity(state) when state.max_concurrency > map_size(state.active_tasks),
+    do: schedule_immediate_poll(state)
+
+  defp poll_if_capacity(state), do: state
 
   defp check_map(state) do
     %{

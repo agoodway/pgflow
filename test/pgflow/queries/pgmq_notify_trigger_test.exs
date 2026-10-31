@@ -809,15 +809,5 @@ defmodule PgFlow.Queries.PgmqNotifyTriggerTest do
     end
   end
 
-  defp connection_opts do
-    repo_config = TestRepo.config()
-
-    [
-      hostname: Keyword.fetch!(repo_config, :hostname),
-      port: DatabaseHelpers.resolve_port(repo_config),
-      database: DatabaseHelpers.resolve_database(repo_config),
-      username: Keyword.fetch!(repo_config, :username),
-      password: Keyword.fetch!(repo_config, :password)
-    ]
-  end
+  defp connection_opts, do: DatabaseHelpers.connection_opts(TestRepo.config())
 end

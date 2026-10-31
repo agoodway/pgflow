@@ -6,12 +6,21 @@ defmodule PgFlow.Queries.Pgmq do
   pgmq extension metadata.
   """
 
+  import PgFlow.Queries.Helpers, only: [execute_ok: 3]
+
   alias Ecto.Adapters.SQL
 
   require Logger
 
   @notify_trigger "trigger_notify_queue_insert_listeners"
   @default_lock_timeout_ms 2_000
+  @default_trigger :deferred
+  @default_throttle_ms 250
+
+  @enable_schema [
+    trigger: [type: {:in, [:deferred, :pgmq_default]}, default: @default_trigger],
+    lock_timeout: [type: :pos_integer, default: @default_lock_timeout_ms]
+  ]
 
   # Reports whether the queue's notify trigger is the deferred one pgflow
   # installs (deferrable, initially deferred, calling
@@ -125,6 +134,26 @@ defmodule PgFlow.Queries.Pgmq do
   @type enable_option :: {:trigger, notify_trigger()} | {:lock_timeout, pos_integer()}
 
   @doc """
+  Returns the default notify trigger mode, `#{inspect(@default_trigger)}`.
+  """
+  @spec default_trigger() :: notify_trigger()
+  def default_trigger, do: @default_trigger
+
+  @doc """
+  Returns the default milliseconds a `:deferred` trigger install waits for the
+  queue table lock, `#{@default_lock_timeout_ms}`.
+  """
+  @spec default_lock_timeout_ms() :: pos_integer()
+  def default_lock_timeout_ms, do: @default_lock_timeout_ms
+
+  @doc """
+  Returns the default minimum interval, in milliseconds, between notifications
+  for a queue, `#{@default_throttle_ms}`.
+  """
+  @spec default_throttle_ms() :: non_neg_integer()
+  def default_throttle_ms, do: @default_throttle_ms
+
+  @doc """
   Enables NOTIFY triggers for a pgmq queue.
 
   `throttle_ms` is the minimum interval between notifications for the queue.
@@ -134,6 +163,8 @@ defmodule PgFlow.Queries.Pgmq do
     * `:trigger` - `:deferred` (default) or `:pgmq_default`.
     * `:lock_timeout` - milliseconds the `:deferred` install waits for the
       queue table lock before failing. Default: `#{@default_lock_timeout_ms}`.
+
+  Raises `ArgumentError` on unknown options or invalid values.
 
   ## `:deferred`
 
@@ -186,12 +217,19 @@ defmodule PgFlow.Queries.Pgmq do
   @spec enable_notify_insert(module(), String.t(), non_neg_integer(), [enable_option()]) ::
           :ok | {:error, :in_transaction | term()}
   def enable_notify_insert(repo, queue_name, throttle_ms, opts \\ []) do
+    opts = validate_enable_opts!(opts)
+
     if repo.in_transaction?() do
       {:error, :in_transaction}
     else
-      trigger = Keyword.get(opts, :trigger, :deferred)
-      lock_timeout = Keyword.get(opts, :lock_timeout, @default_lock_timeout_ms)
-      enable(repo, queue_name, throttle_ms, trigger, lock_timeout)
+      enable(repo, queue_name, throttle_ms, opts[:trigger], opts[:lock_timeout])
+    end
+  end
+
+  defp validate_enable_opts!(opts) do
+    case NimbleOptions.validate(opts, @enable_schema) do
+      {:ok, validated} -> validated
+      {:error, error} -> raise ArgumentError, Exception.message(error)
     end
   end
 
@@ -226,22 +264,20 @@ defmodule PgFlow.Queries.Pgmq do
   # Runs `fun` in a transaction whose lock waits are bounded by
   # `lock_timeout` milliseconds. `fun` returns `:ok` or `{:error, reason}`.
   defp transaction_with_lock_timeout(repo, lock_timeout, fun) do
-    fn ->
-      with {:ok, _} <-
-             SQL.query(repo, "SELECT set_config('lock_timeout', $1::text, true)", [
-               "#{lock_timeout}ms"
-             ]),
-           :ok <- fun.() do
-        :ok
-      else
-        {:error, reason} -> repo.rollback(reason)
-      end
-    end
-    |> repo.transaction()
-    |> case do
-      {:ok, :ok} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    result =
+      repo.transaction(fn ->
+        with :ok <-
+               execute_ok(repo, "SELECT set_config('lock_timeout', $1::text, true)", [
+                 "#{lock_timeout}ms"
+               ]),
+             :ok <- fun.() do
+          :ok
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end)
+
+    with {:ok, :ok} <- result, do: :ok
   rescue
     error in [DBConnection.ConnectionError, Postgrex.Error] -> {:error, error}
   end
@@ -292,12 +328,7 @@ defmodule PgFlow.Queries.Pgmq do
     end
   end
 
-  defp release_savepoint(repo) do
-    case SQL.query(repo, @release_savepoint_sql, []) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  defp release_savepoint(repo), do: execute_ok(repo, @release_savepoint_sql, [])
 
   defp keep_immediate_trigger(repo, queue_name, reason) do
     case SQL.query(repo, @rollback_savepoint_sql, []) do
@@ -315,21 +346,14 @@ defmodule PgFlow.Queries.Pgmq do
   end
 
   defp run_pgmq_enable(repo, queue_name, throttle_ms) do
-    case SQL.query(repo, "SELECT pgmq.enable_notify_insert($1::text, $2::integer)", [
-           queue_name,
-           throttle_ms
-         ]) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    execute_ok(repo, "SELECT pgmq.enable_notify_insert($1::text, $2::integer)", [
+      queue_name,
+      throttle_ms
+    ])
   end
 
-  defp upsert_throttle(repo, queue_name, throttle_ms) do
-    case SQL.query(repo, @upsert_throttle_sql, [queue_name, throttle_ms]) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  defp upsert_throttle(repo, queue_name, throttle_ms),
+    do: execute_ok(repo, @upsert_throttle_sql, [queue_name, throttle_ms])
 
   defp notify_state(repo, queue_name) do
     case SQL.query(repo, @notify_state_sql, [queue_name, @notify_trigger]) do
@@ -380,12 +404,7 @@ defmodule PgFlow.Queries.Pgmq do
   lasting effect.
   """
   @spec flush_notify_events(module()) :: :ok | {:error, term()}
-  def flush_notify_events(repo) do
-    case SQL.query(repo, @flush_notify_events_sql, []) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  def flush_notify_events(repo), do: execute_ok(repo, @flush_notify_events_sql, [])
 
   @doc false
   @spec notify_trigger_name() :: String.t()
@@ -398,12 +417,8 @@ defmodule PgFlow.Queries.Pgmq do
   that fires NOTIFY events when messages are added to the queue.
   """
   @spec disable_notify_insert(module(), String.t()) :: :ok | {:error, term()}
-  def disable_notify_insert(repo, queue_name) do
-    case SQL.query(repo, "SELECT pgmq.disable_notify_insert($1::text)", [queue_name]) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  def disable_notify_insert(repo, queue_name),
+    do: execute_ok(repo, "SELECT pgmq.disable_notify_insert($1::text)", [queue_name])
 
   @doc """
   Gets the installed pgmq version.

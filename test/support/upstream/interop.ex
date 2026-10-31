@@ -55,6 +55,7 @@ defmodule PgFlow.Test.UpstreamInterop do
   alias PgFlow.Test.UpstreamHarness
   alias PgFlow.Test.UpstreamInterop.Repo
   alias PgFlow.Test.UpstreamInteropFlow
+  alias PgFlow.Test.UpstreamScriptOutput
   alias PgFlow.Test.WaitHelpers
   alias PgFlow.Worker.Server, as: WorkerServer
 
@@ -234,10 +235,10 @@ defmodule PgFlow.Test.UpstreamInterop do
         WaitHelpers.wait_for_run_completion(repo_module, run_id, timeout: 20_000)
         :ok
       after
-        if Process.alive?(worker_pid), do: GenServer.stop(worker_pid, :normal, 5_000)
+        stop_worker(worker_pid)
       end
     after
-      if Process.alive?(task_supervisor), do: Supervisor.stop(task_supervisor)
+      stop_supervisor(task_supervisor)
     end
   end
 
@@ -268,7 +269,7 @@ defmodule PgFlow.Test.UpstreamInterop do
            stderr_to_stdout: true
          ) do
       {output, 0} ->
-        case decode_worker_json(output) do
+        case UpstreamScriptOutput.decode_json(output) do
           {:ok, %{"failures" => 0, "results" => [result | _]}} ->
             {:ok, result["details"]}
 
@@ -280,28 +281,9 @@ defmodule PgFlow.Test.UpstreamInterop do
         end
 
       {output, status} ->
-        {:error, "worker.mjs #{scenario} exited #{status}: #{script_output_excerpt(output)}"}
+        {:error,
+         "worker.mjs #{scenario} exited #{status}: #{UpstreamScriptOutput.excerpt(output)}"}
     end
-  end
-
-  # Claim logs go to stderr. Keep the JSON object even if a line is mixed into stdout.
-  defp decode_worker_json(output) do
-    case extract_json_line(output) do
-      nil -> :error
-      json -> Jason.decode(json)
-    end
-  end
-
-  defp extract_json_line(output) do
-    output
-    |> String.split("\n", trim: true)
-    |> Enum.reverse()
-    |> Enum.find(&String.starts_with?(&1, "{"))
-  end
-
-  defp script_output_excerpt(output) do
-    output = String.trim(output)
-    if String.length(output) <= 800, do: output, else: String.slice(output, -800, 800)
   end
 
   defp start_flow!(conn, slug, input) do
@@ -407,30 +389,40 @@ defmodule PgFlow.Test.UpstreamInterop do
 
   defp start_mixed_elixir_worker!(database_url) do
     with {:ok, repo_pid} <-
-           Repo.start_link(url: database_url, pool: DBConnection.ConnectionPool, pool_size: 4),
-         {:ok, task_supervisor} <- Task.Supervisor.start_link() do
-      config = %{
-        flow_module: MixedLangFlow,
-        repo: Repo,
-        task_supervisor: task_supervisor,
-        max_concurrency: 1,
-        batch_size: 1,
-        signal_strategy: :polling,
-        min_poll_interval: 50,
-        max_poll_interval: 200,
-        notify_fallback_interval: 30_000,
-        heartbeat_interval: 10_000
-      }
-
-      case WorkerServer.start_link(config) do
-        {:ok, worker_pid} ->
-          {:ok, %{repo_pid: repo_pid, task_supervisor: task_supervisor, worker_pid: worker_pid}}
+           Repo.start_link(url: database_url, pool: DBConnection.ConnectionPool, pool_size: 4) do
+      case Task.Supervisor.start_link() do
+        {:ok, task_supervisor} ->
+          start_mixed_worker(repo_pid, task_supervisor)
 
         {:error, reason} ->
-          stop_supervisor(task_supervisor)
           stop_supervisor(repo_pid)
-          {:error, "elixir worker failed to start: #{inspect(reason)}"}
+          {:error, "task supervisor failed to start: #{inspect(reason)}"}
       end
+    end
+  end
+
+  defp start_mixed_worker(repo_pid, task_supervisor) do
+    config = %{
+      flow_module: MixedLangFlow,
+      repo: Repo,
+      task_supervisor: task_supervisor,
+      max_concurrency: 1,
+      batch_size: 1,
+      signal_strategy: :polling,
+      min_poll_interval: 50,
+      max_poll_interval: 200,
+      notify_fallback_interval: 30_000,
+      heartbeat_interval: 10_000
+    }
+
+    case WorkerServer.start_link(config) do
+      {:ok, worker_pid} ->
+        {:ok, %{repo_pid: repo_pid, task_supervisor: task_supervisor, worker_pid: worker_pid}}
+
+      {:error, reason} ->
+        stop_supervisor(task_supervisor)
+        stop_supervisor(repo_pid)
+        {:error, "elixir worker failed to start: #{inspect(reason)}"}
     end
   end
 
@@ -444,28 +436,17 @@ defmodule PgFlow.Test.UpstreamInterop do
     stop_supervisor(repo_pid)
   end
 
-  defp stop_worker(pid) when is_pid(pid) do
-    if Process.alive?(pid) do
-      try do
-        GenServer.stop(pid, :normal, 5_000)
-      catch
-        :exit, _ -> :ok
-      end
-    else
-      :ok
-    end
-  end
+  defp stop_worker(pid) when is_pid(pid),
+    do: stop_quietly(fn -> GenServer.stop(pid, :normal, 5_000) end)
 
-  defp stop_supervisor(pid) when is_pid(pid) do
-    if Process.alive?(pid) do
-      try do
-        Supervisor.stop(pid)
-      catch
-        :exit, _ -> :ok
-      end
-    else
-      :ok
-    end
+  defp stop_supervisor(pid) when is_pid(pid), do: stop_quietly(fn -> Supervisor.stop(pid) end)
+
+  # Runs `stop_fun`, treating an already-exited process as stopped.
+  defp stop_quietly(stop_fun) do
+    stop_fun.()
+    :ok
+  catch
+    :exit, _ -> :ok
   end
 
   defp start_mixed_runs!(database_url, slug, count) do

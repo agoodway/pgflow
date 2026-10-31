@@ -37,16 +37,7 @@ defmodule PgFlow.Worker.WorkerOptionsSupervisionTest do
 
   test "a crashed worker restarts with its resolved options" do
     {:ok, pid} = WorkerSupervisor.start_worker(SimpleFlow, max_concurrency: 2)
-    Process.exit(pid, :kill)
-
-    wait_until(fn ->
-      case WorkerSupervisor.find_worker(SimpleFlow) do
-        new_pid when is_pid(new_pid) and new_pid != pid -> true
-        _ -> false
-      end
-    end)
-
-    new_pid = WorkerSupervisor.find_worker(SimpleFlow)
+    new_pid = kill_and_await_restart!(SimpleFlow, pid)
     assert %{max_concurrency: 2} = Server.check(new_pid)
   end
 
@@ -79,28 +70,17 @@ defmodule PgFlow.Worker.WorkerOptionsSupervisionTest do
   end
 
   test "concurrent first starts create one worker" do
-    parent = self()
-    count = 5
-
     tasks =
-      for i <- 1..count do
-        spawn(fn ->
+      for _ <- 1..5 do
+        Task.async(fn ->
           receive do
-            :go -> :ok
+            :go -> WorkerSupervisor.start_worker(SimpleFlow)
           end
-
-          result = WorkerSupervisor.start_worker(SimpleFlow)
-          send(parent, {:result, i, result})
         end)
       end
 
-    Enum.each(tasks, fn task -> send(task, :go) end)
-
-    results =
-      for _ <- 1..count do
-        assert_receive {:result, _i, result}, 5_000
-        result
-      end
+    Enum.each(tasks, &send(&1.pid, :go))
+    results = Task.await_many(tasks, 5_000)
 
     assert Enum.all?(results, fn
              {:ok, pid} when is_pid(pid) -> true
@@ -124,11 +104,11 @@ defmodule PgFlow.Worker.WorkerOptionsSupervisionTest do
     parent = self()
     :ok = :sys.suspend(pid)
 
-    caller_check =
-      spawn(fn -> send(parent, {:check, PgFlow.check_worker(SimpleFlow)}) end)
+    {caller_check, check_ref} =
+      spawn_monitor(fn -> send(parent, {:check, PgFlow.check_worker(SimpleFlow)}) end)
 
-    caller_scale =
-      spawn(fn ->
+    {caller_scale, scale_ref} =
+      spawn_monitor(fn ->
         send(parent, {:scale, PgFlow.scale_worker(SimpleFlow, max_concurrency: 2)})
       end)
 
@@ -148,8 +128,9 @@ defmodule PgFlow.Worker.WorkerOptionsSupervisionTest do
     assert scale_result == {:error, :not_found} or
              match?({:ok, %{pid: new_pid}} when new_pid != pid, scale_result)
 
-    refute Process.alive?(caller_check)
-    refute Process.alive?(caller_scale)
+    # Both callers return normally instead of crashing on the dead worker.
+    assert_receive {:DOWN, ^check_ref, :process, ^caller_check, :normal}, 5_000
+    assert_receive {:DOWN, ^scale_ref, :process, ^caller_scale, :normal}, 5_000
   end
 
   test "invalid start options raise" do

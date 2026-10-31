@@ -1,10 +1,8 @@
 defmodule PgFlow.WorkerOptionsTest do
   use ExUnit.Case, async: true
 
+  alias PgFlow.TestRepo
   alias PgFlow.WorkerOptions
-
-  defmodule R do
-  end
 
   describe "validate!/1" do
     test "accepts max_concurrency and batch_size" do
@@ -59,8 +57,8 @@ defmodule PgFlow.WorkerOptionsTest do
 
   describe "split/1" do
     test "separates worker keys from other start options" do
-      assert WorkerOptions.split(repo: R, max_concurrency: 4) ==
-               {[max_concurrency: 4], [repo: R]}
+      assert WorkerOptions.split(repo: TestRepo, max_concurrency: 4) ==
+               {[max_concurrency: 4], [repo: TestRepo]}
     end
   end
 end

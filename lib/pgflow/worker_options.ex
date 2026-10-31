@@ -24,6 +24,12 @@ defmodule PgFlow.WorkerOptions do
   def keys, do: @worker_keys
 
   @doc """
+  Returns the default timeout, in milliseconds, for worker check and scale calls.
+  """
+  @spec default_call_timeout() :: pos_integer()
+  def default_call_timeout, do: @default_call_timeout
+
+  @doc """
   Validates worker option keywords.
 
   Raises `ArgumentError` on unknown keys or invalid values. An empty keyword list is valid.

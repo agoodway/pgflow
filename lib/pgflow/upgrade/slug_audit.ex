@@ -27,6 +27,8 @@ defmodule PgFlow.Upgrade.SlugAudit do
     queue_name_too_long
     case_insensitive_duplicate
   )a
+  @kind_by_name Map.new(@kinds, &{Atom.to_string(&1), &1})
+  @reason_by_name Map.new(@reasons, &{Atom.to_string(&1), &1})
 
   @type kind :: :flow | :step | :step_collision
   @type reason ::
@@ -204,15 +206,12 @@ defmodule PgFlow.Upgrade.SlugAudit do
     "'" <> String.replace(text, "'", "''") <> "'"
   end
 
-  defp prefix!(opts) do
-    prefix = Keyword.get(opts, :prefix, "pgflow")
+  defp prefix!(opts), do: opts |> Keyword.get(:prefix, "pgflow") |> binary_prefix!()
 
-    if is_binary(prefix) do
-      prefix
-    else
-      raise ArgumentError, "invalid pgflow schema prefix #{inspect(prefix)}"
-    end
-  end
+  defp binary_prefix!(prefix) when is_binary(prefix), do: prefix
+
+  defp binary_prefix!(prefix),
+    do: raise(ArgumentError, "invalid pgflow schema prefix #{inspect(prefix)}")
 
   defp quoted_prefix!(prefix) do
     if Regex.match?(@prefix_pattern, prefix) do
@@ -234,23 +233,26 @@ defmodule PgFlow.Upgrade.SlugAudit do
     %{rows: rows} = SQL.query!(repo, sql, [])
 
     Enum.map(rows, fn [kind, flow_slug, step_slug, reason] ->
-      finding = %{
-        kind: existing_atom!(kind, @kinds),
-        flow_slug: flow_slug,
-        reason: existing_atom!(reason, @reasons)
-      }
-
-      if is_nil(step_slug), do: finding, else: Map.put(finding, :step_slug, step_slug)
+      put_step(
+        %{
+          kind: decode!(kind, @kind_by_name),
+          flow_slug: flow_slug,
+          reason: decode!(reason, @reason_by_name)
+        },
+        step_slug
+      )
     end)
   end
 
-  defp existing_atom!(value, allowed) when is_binary(value) do
-    atom = String.to_existing_atom(value)
+  defp put_step(finding, nil), do: finding
+  defp put_step(finding, step_slug), do: Map.put(finding, :step_slug, step_slug)
 
-    if atom in allowed do
-      atom
-    else
-      raise ArgumentError, "unexpected slug audit value #{inspect(value)}"
+  # Maps database text onto the known kind or reason atoms without touching
+  # the atom table.
+  defp decode!(value, table) do
+    case Map.fetch(table, value) do
+      {:ok, atom} -> atom
+      :error -> raise ArgumentError, "unexpected slug audit value #{inspect(value)}"
     end
   end
 

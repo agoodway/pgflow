@@ -93,7 +93,7 @@ defmodule Mix.Tasks.Pgflow.Setup do
 
     File.mkdir_p!(migrations_dir)
 
-    timestamp = timestamp()
+    timestamp = Helpers.generate_timestamp()
 
     {filename, content} =
       if upgrade? do
@@ -114,13 +114,6 @@ defmodule Mix.Tasks.Pgflow.Setup do
     Ensure pgmq is installed before this migration runs (via
     `mix pgflow.gen.pgmq_migration`) unless your Postgres already ships pgmq.
     """)
-  end
-
-  defp timestamp do
-    {{y, m, d}, {hh, mm, ss}} = :calendar.universal_time()
-
-    :io_lib.format("~4..0B~2..0B~2..0B~2..0B~2..0B~2..0B", [y, m, d, hh, mm, ss])
-    |> IO.iodata_to_binary()
   end
 
   # Pins core and helpers to the versions bundled at generation time so a
@@ -244,23 +237,19 @@ defmodule Mix.Tasks.Pgflow.Setup do
   end
 
   defp upgrade_filename(timestamp) do
-    core = version_tag(PgFlow.Migration.current_version())
-    helpers = version_tag(PgFlow.HelpersMigration.current_version())
+    core = padded_version("v", PgFlow.Migration.current_version())
+    helpers = padded_version("v", PgFlow.HelpersMigration.current_version())
     "#{timestamp}_upgrade_pgflow_core_#{core}_helpers_#{helpers}.exs"
   end
 
   defp upgrade_module_name do
-    core = module_version(PgFlow.Migration.current_version())
-    helpers = module_version(PgFlow.HelpersMigration.current_version())
+    core = padded_version("V", PgFlow.Migration.current_version())
+    helpers = padded_version("V", PgFlow.HelpersMigration.current_version())
     "UpgradePgflowCore#{core}Helpers#{helpers}"
   end
 
-  defp version_tag(version) when is_integer(version) do
-    "v" <> String.pad_leading(Integer.to_string(version), 2, "0")
-  end
-
-  defp module_version(version) when is_integer(version) do
-    "V" <> String.pad_leading(Integer.to_string(version), 2, "0")
+  defp padded_version(prefix, version) when is_integer(version) do
+    prefix <> String.pad_leading(Integer.to_string(version), 2, "0")
   end
 
   defp setup_command(helpers?, dashboard?, upgrade?) do

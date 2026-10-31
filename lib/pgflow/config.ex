@@ -45,6 +45,7 @@ defmodule PgFlow.Config do
   """
 
   alias PgFlow.Config.RepoValidator
+  alias PgFlow.Queries.Pgmq
   alias PgFlow.WorkerOptions
 
   # Maximum allowed values for interval configurations
@@ -110,18 +111,18 @@ defmodule PgFlow.Config do
     ],
     notify_throttle_ms: [
       type: :non_neg_integer,
-      default: 250,
+      default: Pgmq.default_throttle_ms(),
       doc: "Throttle interval in ms for pgmq LISTEN/NOTIFY trigger (0 = every insert notifies)"
     ],
     notify_trigger: [
       type: {:in, [:deferred, :pgmq_default]},
-      default: :deferred,
+      default: Pgmq.default_trigger(),
       doc:
         "Notify trigger installed in :notify mode: :deferred (DEFERRABLE INITIALLY DEFERRED, runs at commit) or :pgmq_default (pgmq's immediate trigger)"
     ],
     notify_lock_timeout_ms: [
       type: :pos_integer,
-      default: 2_000,
+      default: Pgmq.default_lock_timeout_ms(),
       doc:
         "Milliseconds the :deferred notify trigger install waits for the queue table lock before failing; FlowStarter retries with backoff"
     ],
@@ -239,12 +240,8 @@ defmodule PgFlow.Config do
     collision =
       (List.wrap(config[:flows]) ++ List.wrap(config[:jobs]))
       |> Enum.uniq()
-      |> Enum.map(fn module ->
-        slug = flow_slug!(module)
-        {slug, PgFlow.Slug.queue_name(slug)}
-      end)
-      |> Enum.group_by(&elem(&1, 1), &elem(&1, 0))
-      |> Enum.find(fn {_queue, slugs} -> length(slugs) > 1 end)
+      |> Enum.map(&flow_slug!/1)
+      |> PgFlow.Slug.find_case_collision()
 
     case collision do
       nil ->

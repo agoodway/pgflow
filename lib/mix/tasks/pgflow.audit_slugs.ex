@@ -33,13 +33,8 @@ defmodule Mix.Tasks.Pgflow.AuditSlugs do
   def run(args) do
     {opts, _, _} = OptionParser.parse(args, switches: [repo: :string, prefix: :string])
 
-    Mix.Task.run("app.config")
-
-    repo = Helpers.resolve_repo(Keyword.get(opts, :repo))
+    repo = Helpers.boot_repo!(Keyword.get(opts, :repo))
     prefix = Keyword.get(opts, :prefix, "pgflow")
-
-    {:ok, _} = Application.ensure_all_started(:ecto_sql)
-    Helpers.start_repo(repo)
 
     case SlugAudit.run(repo, prefix: prefix) do
       [] ->
