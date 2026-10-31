@@ -45,11 +45,11 @@ config :pgflow_demo,
   ai_model_name: System.get_env("AI_MODEL_NAME", "accounts/fireworks/models/deepseek-v3p2")
 
 if config_env() == :prod do
-  unless Code.ensure_loaded?(PgFlow.Migration) and PgFlow.Migration.current_version() >= 2 and
+  unless Code.ensure_loaded?(PgFlow.Migration) and PgFlow.Migration.current_version() >= 3 and
            Code.ensure_loaded?(PgFlow.HelpersMigration) and
-           PgFlow.HelpersMigration.current_version() >= 6 do
+           PgFlow.HelpersMigration.current_version() >= 7 do
     raise """
-    [pgflow_demo] Production deployment requires PgFlow core V02 and helpers V06.
+    [pgflow_demo] Production deployment requires PgFlow core V03 and helpers V07.
     For local verification against the parent checkout, build from demo/ with:
 
         MIX_ENV=prod mix compile --warnings-as-errors

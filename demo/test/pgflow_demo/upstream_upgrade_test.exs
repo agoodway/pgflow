@@ -25,11 +25,22 @@ defmodule PgflowDemo.UpstreamUpgradeTest do
 
     UpstreamUpgradeFixture.migrate_all!(fixture)
 
-    assert UpstreamUpgradeFixture.core_version(fixture) == 2
-    assert UpstreamUpgradeFixture.helpers_version(fixture) == 6
-    assert catalog_contract!(fixture)
+    assert UpstreamUpgradeFixture.core_version(fixture) == 3
+    assert UpstreamUpgradeFixture.helpers_version(fixture) == 7
     assert helpers_v06_contract!(fixture)
+    assert v03_contract!(fixture)
     assert dashboard_comment(fixture) == "PgFlowDashboard version=4"
+
+    assert_raise RuntimeError, ~r/forward-only/, fn ->
+      UpstreamUpgradeFixture.with_fixture_repo(fixture, fn ->
+        Ecto.Migrator.down(
+          PgflowDemo.Repo,
+          UpstreamUpgradeFixture.core_v03_migration_version!(),
+          UpstreamUpgradeFixture.core_v03_migration_module(),
+          log: false
+        )
+      end)
+    end
   end
 
   test "populated pre-upgrade demo data survives the upgrade wrapper", %{fixture: fixture} do
@@ -96,6 +107,23 @@ defmodule PgflowDemo.UpstreamUpgradeTest do
 
     assert UpstreamUpgradeFixture.scalar!(fixture, "SELECT count(*) FROM pgflow.runs") ==
              snapshot.run_count
+
+    UpstreamUpgradeFixture.migrate_core_v03!(fixture)
+
+    assert UpstreamUpgradeFixture.core_version(fixture) == 3
+    assert UpstreamUpgradeFixture.helpers_version(fixture) == 7
+    assert v03_contract!(fixture)
+
+    assert UpstreamUpgradeFixture.scalar!(fixture, "SELECT count(*) FROM pgflow.runs") ==
+             snapshot.run_count
+
+    assert UpstreamUpgradeFixture.scalar!(fixture, "SELECT count(*) FROM pgflow.step_tasks") ==
+             snapshot.task_count
+
+    assert UpstreamUpgradeFixture.scalar!(
+             fixture,
+             "SELECT count(*) FROM pgflow.step_tasks WHERE queue_name IS NULL"
+           ) == 0
   end
 
   test "upgrade wrapper is forward-only", %{fixture: fixture} do
@@ -120,6 +148,25 @@ defmodule PgflowDemo.UpstreamUpgradeTest do
     assert Enum.all?(PgFlow.FlowStarter.status().modules, fn state ->
              state.status == :succeeded
            end)
+  end
+
+  defp v03_contract!(fixture) do
+    assert UpstreamUpgradeFixture.scalar!(
+             fixture,
+             "SELECT to_regprocedure('pgflow.start_tasks(text,bigint[],uuid,text,text)') IS NOT NULL"
+           )
+
+    assert UpstreamUpgradeFixture.scalar!(
+             fixture,
+             "SELECT to_regprocedure('pgflow.ensure_flow_compiled(text,jsonb,text,jsonb)') IS NOT NULL"
+           )
+
+    assert UpstreamUpgradeFixture.scalar!(
+             fixture,
+             "SELECT count(*) FROM pgflow.flows WHERE queue_mode IS DISTINCT FROM 'flow'"
+           ) == 0
+
+    true
   end
 
   defp helpers_v06_contract!(fixture) do

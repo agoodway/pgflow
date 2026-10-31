@@ -38,7 +38,10 @@ pgflow setup, flow/job compilation, and dashboard upgrades. Do **not** regenerat
 duplicate setup or definition migrations on existing databases. The committed
 `upgrade_pgflow_upstream_alignment` wrapper advances core V02, helpers V05, and
 dashboard V04; `add_pgflow_helpers_v06` then adds stalled-task escalation and
-the `pgflow.step_progress` view.
+the `pgflow.step_progress` view. `upgrade_pgflow_core_v03_helpers_v07` moves an
+existing database to core V03 and helpers V07. Follow
+[the stop-and-drain guide](../docs/UPGRADING_UPSTREAM_2026_10.md) before that
+migration.
 
 On fresh databases, `mix ecto.migrate` replays the full chain. On existing
 installations, Ecto runs only the pending migrations.
@@ -61,15 +64,15 @@ Article/LLM integration is opt-in (`--include-llm`) and never required for CI.
 ## Local production verification
 
 The demo temporarily uses `{:pgflow, path: ".."}` in every Mix environment
-while the 0.5.0 release is being tuned. Production-mode verification must run
+while the 0.6.0 release is being tuned. Production-mode verification must run
 from the demo directory with the parent checkout available:
 
 ```bash
 MIX_ENV=prod mix compile --warnings-as-errors
 ```
 
-Production refuses to boot unless its PgFlow dependency includes core V02 and
-helpers V06. The demo-only Docker context contains no parent checkout, so its
+Production refuses to boot unless its PgFlow dependency includes core V03 and
+helpers V07. The demo-only Docker context contains no parent checkout, so its
 image build cannot resolve the temporary path dependency. Include the parent
 checkout in that context or return to a Hex dependency after publication.
 
