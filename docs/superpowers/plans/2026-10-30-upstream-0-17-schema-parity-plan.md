@@ -1182,20 +1182,20 @@ The demo is the consumer acceptance bed. It must upgrade in place from its commi
 - Modify: `demo/test/pgflow_demo/upstream_upgrade_test.exs`
 - Modify: `demo/README.md` (the pgflow version/upgrade note only)
 
-- [ ] **Step 1: Write the failing tests** in `upstream_upgrade_test.exs`:
+- [x] **Step 1: Write the failing tests** in `upstream_upgrade_test.exs`:
   - "fresh database replays committed migrations": change L28–29 to `core_version == 3` and `helpers_version == 7`. Keep `catalog_contract!` and add a `v03_contract!(fixture)` helper asserting:
     - `to_regprocedure('pgflow.start_tasks(text,bigint[],uuid,text,text)')` is not null
     - `to_regprocedure('pgflow.ensure_flow_compiled(text,jsonb,text,jsonb)')` is not null
     - every `pgflow.flows.queue_mode` is `'flow'`
   - "populated pre-upgrade demo data survives": after the existing `migrate_helpers_v06!` assertions, call `UpstreamUpgradeFixture.migrate_core_v03!(fixture)`. Assert versions 3/7, `v03_contract!`, unchanged `runs`/`step_tasks` counts, and that `SELECT count(*) FROM pgflow.step_tasks WHERE queue_name IS NULL` is 0.
   - Forward-only: `Ecto.Migrator.down` on the new migration raises `~r/forward-only/`.
-- [ ] **Step 2: Run** from `demo/`: `MIX_ENV=test mix test test/pgflow_demo/upstream_upgrade_test.exs`. Expected: FAIL; `migrate_core_v03!/1` is undefined.
-- [ ] **Step 3: Implement.**
+- [x] **Step 2: Run** from `demo/`: `MIX_ENV=test mix test test/pgflow_demo/upstream_upgrade_test.exs`. Expected: FAIL; `migrate_core_v03!/1` is undefined.
+- [x] **Step 3: Implement.**
   - Fixture: change `migrate_helpers_v06!/1` to `Ecto.Migrator.run(…, :up, to: 20_260_923_201_943)`. With `all: true` it would now also apply V03. Add `migrate_core_v03!/1` running `:up, all: true`. The `*_upgrade_pgflow_upstream_alignment.exs` wildcard is unaffected because the new file name differs.
   - Migration: write it in the pinned style of `20260923201943_add_pgflow_helpers_v06.exs`. `def up` calls `PgFlow.Migration.up(version: 3)` then `PgFlow.HelpersMigration.up(version: 7)`. `def down` raises `"PgFlow core V03 / helpers V07 upgrade is forward-only; use the documented restore procedure"`. The moduledoc points to `docs/UPGRADING_UPSTREAM_2026_10.md` and `mix pgflow.audit_slugs`. Pin the versions explicitly, rather than using Task 14's unversioned wrapper, so a later bump cannot change replayed history. Get `<ts>` from `date -u +%Y%m%d%H%M%S`.
   - `runtime.exs`: gate on `current_version() >= 3` and `>= 7`, with the message "requires PgFlow core V03 and helpers V07".
   - README: one sentence on the new migration, pointing to the upgrade guide.
-- [ ] **Step 4: Run the demo gates** from `demo/` (database env from E5):
+- [x] **Step 4: Run the demo gates** from `demo/` (database env from E5):
 ```sh
 MIX_ENV=test mix pgflow_demo.test.setup
 MIX_ENV=test mix pgflow.audit_slugs
@@ -1212,7 +1212,7 @@ mix precommit
   - precommit exits 0
 
   If the audit reports a demo slug, rename it in the demo code (never in SQL) and add a test that the flow still compiles.
-- [ ] **Step 5: Commit.**
+- [x] **Step 5: Commit.**
 ```sh
 git add demo/priv/repo/migrations demo/config/runtime.exs demo/test/support/upstream_upgrade_fixture.ex demo/test/pgflow_demo/upstream_upgrade_test.exs demo/README.md
 git commit -m "feat: Upgrade the demo to core V03 and helpers V07"
@@ -1312,7 +1312,7 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 18 | 7081d22 | `MIX_ENV=test mix pgflow.sync_upstream --checkout … --sha baa9e43f… --version 03 --check`; harness `--suite all` | green | Importer printed `pgflow core V03 output is current`. `--suite all` passed, 310 tests, 0 failures: catalog 4, pgTAP 294, TypeScript 12. `AGENTS.md` names `pgflow@0.17.2`. The workflow file triggers on `pull_request` and `workflow_dispatch`, not `push`, so this branch push does not start it. No pull request is opened, and there is no CI run URL to record. |
 | 19 (two commits) | ecdd9f5, 776106c | `PGFLOW_REQUIRE_DB=1 mix test test/pgflow_test.exs`; `mix compile --warnings-as-errors` | green | RED: `upstream_sha/0` was still `94490709…`, and the report map had no `upstream_release` key. GREEN: `test/pgflow_test.exs` 2 tests, 0 failures. `@pgflow_core_version` stays `"0.5.0"`. The install snippet in `README.md` and `mix.exs` `@version` are `0.6.0`. `mix compile --warnings-as-errors` exit 0. |
 | 20 | 7891c0c | `rg -n '94490709\|0\\.17\\.0' docs README.md AGENTS.md` | green | New guide `docs/UPGRADING_UPSTREAM_2026_10.md` covers audit, stop-and-drain, `mix pgflow.setup --upgrade`, deploy, the V03 contract, the step-mode refusal, and forward-only restore. `UPSTREAM_COMPATIBILITY.md` and the README pointer name 0.17.2, core 3, and helpers 7. Remaining `94490709` / `0.17.0` hits are the September guide, the 2026-09-14 plans and brief, and this plan's historical notes. |
-| 21 | | | | |
+| 21 | 7e00dea | `MIX_ENV=test mix test test/pgflow_demo/upstream_upgrade_test.exs`; demo gates in Step 4 | green | RED: after the unversioned September wrapper, core was already 3 and helpers stayed 6. That wrapper is pinned to `Migration.up(version: 2)` so the V02 step stays historical. The fresh-database test uses `v03_contract!` rather than `catalog_contract!`, because `catalog_contract!` still asserts the V02 four-argument claim. GREEN: upgrade file 4 tests, 0 failures. `mix pgflow.audit_slugs --repo PgflowDemo.Repo` printed `no slug findings` (the demo config sets `:pgflow, :repo`, not `:ecto_repos`). Demo suite 90 tests, 0 failures. Verifier executed 29 presets, all passed. Prod compile clean. `mix precommit` exit 0. |
 | 22 | — | full gate, gap review, push | | work-branch URL, CI run URL |
 | 23 | | GoodSkills checks | | GoodSkills branch URL |
 
