@@ -58,9 +58,10 @@ PGFLOW_REQUIRE_DB=1 mix test --only migration
 # Upstream harness: requires psql, git, supabase CLI, node, pnpm, and server pgTAP.
 # Install local pgTAP using test/support/db/install-pgtap.sh.
 # Create a disposable DB using PgFlow.Test.UpstreamHarness.setup_compat_database!/1.
+# Pinned release: pgflow@0.17.2.
 MIX_ENV=test mix run --no-start test/support/upstream/run.exs \
   --checkout /path/to/upstream \
-  --sha 94490709f79ebf366141dd925b047f0c1013e759 \
+  --sha baa9e43f5f9122133deacbc3e8ffc80e284b4f50 \
   --database-url postgres://postgres:postgres@localhost:54323/pgflow_compat_xxx \
   --suite all
 # Set PGFLOW_UPSTREAM_CHECKOUT to include upstream_checkout ExUnit tests.
