@@ -69,7 +69,7 @@ Article/LLM integration is opt-in (`--include-llm`) and never required for CI.
 ## Local production verification
 
 The demo temporarily uses `{:pgflow, path: ".."}` in every Mix environment
-while the 0.6.0 release is being tuned. Production-mode verification must run
+while the 0.7.0 release is being tuned. Production-mode verification must run
 from the demo directory with the parent checkout available:
 
 ```bash

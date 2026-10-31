@@ -1,7 +1,7 @@
 From 356ec8f3df1712ad3bc6b8abcc41643ffbd5b977 Mon Sep 17 00:00:00 2001
 From: Cursor Agent <cursoragent@cursor.com>
 Date: Sat, 31 Oct 2026 00:35:58 +0000
-Subject: [PATCH] docs: Update PgFlow skill for 0.6.0 and upstream 0.17.2
+Subject: [PATCH] docs: Update PgFlow skill for 0.7.0 and upstream 0.17.2
 
 - State the core V03 and helpers V07 stop-and-drain upgrade.
 - Record slug rules, the step-mode refusal, and the worker stamp.
@@ -24,7 +24,7 @@ index 8294d77..77f676a 100644
  
 -- Treat logical flow identity and physical queue identity separately. Queue operations use persisted `(queue_name, message_id)`; current default queue routes are lowercase flow slugs.
 +- Treat logical flow identity and physical queue identity separately. Queue operations use persisted `(queue_name, message_id)`; flow-mode queue routes are lowercase flow slugs, at most 47 characters.
-+- PgFlow 0.6.0 shares a database with TypeScript 0.17.x only in flow mode. Elixir refuses step-mode flows. A routing mismatch is `{:error, {:flow_routing_mismatch, message}}`. Workers are stamped `elixir-<package version>`.
++- PgFlow 0.7.0 shares a database with TypeScript 0.17.x only in flow mode. Elixir refuses step-mode flows. A routing mismatch is `{:error, {:flow_routing_mismatch, message}}`. Workers are stamped `elixir-<package version>`.
 +- Slugs follow upstream `is_valid_slug`. Compile-time slug errors are fixed in code; migrations never rename slugs. Run `mix pgflow.audit_slugs` before `mix pgflow.setup --upgrade`.
  - Do not overlap old and new workers during a schema upgrade. Pause producers, drain, stop all writers, apply the new schema version, verify, and deploy matching callers.
  - Do not expect an applied setup migration to rerun after a dependency bump. Use the host's migration manager; in Ecto-managed applications, generate a new `mix pgflow.setup --upgrade` wrapper.
@@ -44,7 +44,7 @@ index 76d5341..121095e 100644
 -worker bootstrap. Verify `pgflow.escalate_permanently_stalled()` and the
 -15-column `pgflow.step_progress` view after the migration. V05 consumers must
 -not assume a permanently stalled task or run becomes terminal.
-+PgFlow 0.6.0 requires core V03 and helpers V07. Verify `pgflow.escalate_permanently_stalled()` and the 15-column `pgflow.step_progress` view after the migration. Elixir workers stamp `elixir-<package version>` and refuse step-mode flows. A queue-mode mismatch returns `{:error, {:flow_routing_mismatch, message}}`.
++PgFlow 0.7.0 requires core V03 and helpers V07. Verify `pgflow.escalate_permanently_stalled()` and the 15-column `pgflow.step_progress` view after the migration. Elixir workers stamp `elixir-<package version>` and refuse step-mode flows. A queue-mode mismatch returns `{:error, {:flow_routing_mismatch, message}}`.
  
  ## Upstream harness
  
@@ -118,9 +118,9 @@ index 0ef7163..60e8a85 100644
  # Upgrade PgFlow schema
  
 -Use this for an existing installation when a dependency adds a core or helpers migration. PgFlow 0.4.0 aligned with upstream SHA `94490709f79ebf366141dd925b047f0c1013e759` at core V02 + helpers V05; do not call that published npm `0.17.0` compatibility. PgFlow 0.5.0 keeps core V02 and adds helpers V06.
-+Use this for an existing installation when a dependency adds a core or helpers migration. PgFlow 0.6.0 targets upstream pgflow 0.17.2 (`baa9e43f5f9122133deacbc3e8ffc80e284b4f50`): core V03 and helpers V07. PgFlow 0.4.0 stayed on core V02 and helpers V05. PgFlow 0.5.0 stayed on core V02 and added helpers V06. Those earlier releases are not the current schema.
++Use this for an existing installation when a dependency adds a core or helpers migration. PgFlow 0.7.0 targets upstream pgflow 0.17.2 (`baa9e43f5f9122133deacbc3e8ffc80e284b4f50`): core V03 and helpers V07. PgFlow 0.4.0 stayed on core V02 and helpers V05. PgFlow 0.5.0 stayed on core V02 and added helpers V06. Those earlier releases are not the current schema.
 +
-+## pgflow 0.6.0 stop-and-drain
++## pgflow 0.7.0 stop-and-drain
 +
 +Anyone on core V02 and helpers V06 or earlier who will share the database with TypeScript 0.17.x workers follows this order:
 +

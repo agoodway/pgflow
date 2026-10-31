@@ -2,7 +2,7 @@
 
 This release aligns Elixir PgFlow with upstream pgflow 0.17.2 at git SHA
 `baa9e43f5f9122133deacbc3e8ffc80e284b4f50`. The shared database contract is
-core V03 and helpers V07. An Elixir 0.6.0 worker and a TypeScript 0.17.x
+core V03 and helpers V07. An Elixir 0.7.0 worker and a TypeScript 0.17.x
 worker can use one database in flow mode.
 
 The September 2026 alignment (core V02, helpers V05/V06) is the previous
@@ -94,7 +94,7 @@ All paths converge on core V03 + helpers V07:
    `up/0` calls the pinned core (`PgFlow.Migration.up(version: 3)`) and then
    helpers (`PgFlow.HelpersMigration.up(version: 7)`). Do not rerun a stamped setup.
 
-### Consumer migration history (0.6.0 behavior change)
+### Consumer migration history (0.7.0 behavior change)
 
 A bare `PgFlow.Migration.up()` tracks the newest bundled library version, and so
 does a bare `PgFlow.HelpersMigration.up()`. An old setup migration that calls
@@ -109,7 +109,7 @@ the V03 slug rules.
   `up(version: 3)` and `up(version: 7)`.
 - Do not pin helpers below 7 on core 3. Core V03 requires helpers V07, and
   replaying helpers V05 alone re-creates the old four-argument `start_tasks`.
-- 0.6.0 workers refuse to boot (`{:schema_incompatible, ...}`) until the V03/V07
+- 0.7.0 workers refuse to boot (`{:schema_incompatible, ...}`) until the V03/V07
   wrapper has run, so migrate before rolling workers.
 
 Details are in [UPGRADING_UPSTREAM_2026_10.md](UPGRADING_UPSTREAM_2026_10.md).

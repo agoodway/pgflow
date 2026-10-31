@@ -3,7 +3,7 @@
 This guide moves an existing PgFlow Elixir installation from core V02 and
 helpers V06 (or earlier) to core V03 and helpers V07. That schema is the
 pgflow 0.17.2 contract (`baa9e43f5f9122133deacbc3e8ffc80e284b4f50`), so an
-Elixir 0.6.0 worker and a TypeScript 0.17.x worker can share one database in
+Elixir 0.7.0 worker and a TypeScript 0.17.x worker can share one database in
 flow mode.
 
 **There is no expand/contract path.** The upgrade is one transaction. Stop
@@ -18,7 +18,7 @@ guide is the in-place upgrade.
 
 ## Before you start
 
-Upgrade the application dependency to pgflow 0.6.0, then audit slugs before
+Upgrade the application dependency to pgflow 0.7.0, then audit slugs before
 generating the migration:
 
 ```bash
@@ -67,7 +67,7 @@ Take a backup before the outage. `down/0` does not reverse this upgrade.
 
 ### Consumer migration history
 
-Starting with 0.6.0, a bare `PgFlow.Migration.up()` installs the newest core
+Starting with 0.7.0, a bare `PgFlow.Migration.up()` installs the newest core
 version bundled in the library, and a bare `PgFlow.HelpersMigration.up()`
 installs the newest helpers version. An old `setup_pgflow` migration that calls
 them therefore installs V03 and V07 when you replay history from an empty
@@ -75,7 +75,7 @@ database (CI, a new machine, a fresh review environment). Older flow-compile
 migrations that still contain legacy slug literals then fail the V03 slug
 rules.
 
-This is a behavior change in 0.6.0. Before you ship it:
+This is a behavior change in 0.7.0. Before you ship it:
 
 - Pin each existing wrapper to the versions it originally installed, for
   example `PgFlow.Migration.up(version: 1)` and
@@ -141,9 +141,9 @@ exclusive lock. The time grows with the size of `pgflow.runs`. Check
 
 ## Deploy
 
-Migrate first. 0.6.0 workers refuse to boot until the V03/V07 wrapper has run:
+Migrate first. 0.7.0 workers refuse to boot until the V03/V07 wrapper has run:
 the boot schema check returns `{:schema_incompatible, ...}`. Do not roll workers
-onto 0.6.0 before the migration.
+onto 0.7.0 before the migration.
 
 1. Run the migration (above).
 2. Deploy the Elixir release that requires core V03 and helpers V07.

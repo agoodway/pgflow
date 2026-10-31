@@ -53,21 +53,21 @@ defmodule PgFlow.Upstream.HelpersV07UpgradeTest do
       %{rows: [[worker_id]]} = PgFlow.TestRepo.query!("SELECT gen_random_uuid()")
 
       PgFlow.TestRepo.query!(
-        "SELECT pgflow.register_worker($1, 'q', 'elixir:Mod', 'elixir-0.6.0')",
+        "SELECT pgflow.register_worker($1, 'q', 'elixir:Mod', 'elixir-0.7.0')",
         [worker_id]
       )
 
       [started_at, first_heartbeat, version] = worker_row!(worker_id)
 
       PgFlow.TestRepo.query!(
-        "SELECT pgflow.register_worker($1, 'q', 'elixir:Mod', 'elixir-0.6.0')",
+        "SELECT pgflow.register_worker($1, 'q', 'elixir:Mod', 'elixir-0.7.0')",
         [worker_id]
       )
 
       [second_started, second_heartbeat, second_version] = worker_row!(worker_id)
 
-      assert version == "elixir-0.6.0"
-      assert second_version == "elixir-0.6.0"
+      assert version == "elixir-0.7.0"
+      assert second_version == "elixir-0.7.0"
       assert second_started == started_at
       assert DateTime.compare(second_heartbeat, first_heartbeat) != :lt
     end)
@@ -92,7 +92,7 @@ defmodule PgFlow.Upstream.HelpersV07UpgradeTest do
       %{rows: [[worker_id]]} = PgFlow.TestRepo.query!("SELECT gen_random_uuid()")
 
       PgFlow.TestRepo.query!(
-        "SELECT pgflow.register_worker($1, $2, 'elixir:Mod', 'elixir-0.6.0')",
+        "SELECT pgflow.register_worker($1, $2, 'elixir:Mod', 'elixir-0.7.0')",
         [worker_id, queue_name]
       )
 
