@@ -1,81 +1,156 @@
 defmodule PgFlow.Upstream.Bundle do
   @moduledoc """
-  Builds the deterministic V02 core delta from the pinned upstream checkout.
+  Builds a deterministic core SQL delta from a versioned upstream spec.
 
-  The import is deliberately narrow: only the four reviewed migrations are
-  accepted, and every portability change is represented in the manifest.
+  Published versions stay frozen. V02's import rules live in
+  `PgFlow.Upstream.Spec.V02` and are not rebuilt. The next import is core V03.
   """
 
   alias PgFlow.Sql.Splitter
 
-  @pinned_sha "94490709f79ebf366141dd925b047f0c1013e759"
-  @upstream_path "pkgs/core/supabase/migrations"
-  @files [
-    "20260607175525_pgflow_worker_start_mode.sql",
-    "20260904095427_pgflow_task_lifecycle_hardening.sql",
-    "20260907082520_pgflow_remove_legacy_flow_compilation.sql",
-    "20260913093141_pgflow_persist_queue_identity.sql"
-  ]
-  @source_hashes %{
-    "20260607175525_pgflow_worker_start_mode.sql" =>
-      "29c66ed86b85e2ae5693fc49ec410c901bfeebf320cda2a02720dccda233640a",
-    "20260904095427_pgflow_task_lifecycle_hardening.sql" =>
-      "41fb8e26642685f2269aa0bcc9bd4e9a512292bd7f2467f59d3577e1687f2d68",
-    "20260907082520_pgflow_remove_legacy_flow_compilation.sql" =>
-      "bc10af88b655a84f271a5aa5aea79f8ac74680e423293f8be1fac5656b4983b0",
-    "20260913093141_pgflow_persist_queue_identity.sql" =>
-      "156de3b8a73812cdba59ee19af1ec8524834f74209c9cb914a2d575c33fe505a"
-  }
+  @published ~w(01 02)
+  @specs %{"03" => PgFlow.Upstream.Spec.V03}
   @seven_names ~w(flow_slug run_id step_slug input msg_id task_index flow_input)
   @seven_types ["text", "uuid", "text", "jsonb", "bigint", "integer", "jsonb"]
   @eight_names @seven_names ++ ["attempts_count"]
   @eight_types @seven_types ++ ["integer"]
 
-  @doc "Builds V02 SQL and its deterministic provenance manifest."
-  @spec build(Path.t(), String.t()) ::
-          {:ok, %{sql: String.t(), manifest: map()}} | {:error, String.t()}
-  def build(checkout, sha) when is_binary(checkout) and is_binary(sha) do
-    with :ok <- verify_sha(sha),
+  @doc "Core versions whose generated SQL must not be rewritten."
+  @spec published_versions() :: [String.t()]
+  def published_versions, do: @published
+
+  @type bundle :: %{
+          required(:sql) => String.t(),
+          required(:manifest) => map(),
+          optional(:fragment) => String.t()
+        }
+
+  @doc """
+  Builds SQL and a provenance manifest for one core delta version.
+
+  Published versions and unknown versions return `{:error, message}` without
+  reading the checkout.
+
+  `opts` accepts `:v02_sql`, the core V02 script used to prove omission pairs
+  still describe the published SQL. The default is the committed `v02_up.sql`.
+  """
+  @spec build(Path.t(), String.t(), String.t(), keyword()) ::
+          {:ok, bundle()} | {:error, String.t()}
+  def build(checkout, sha, version, opts \\ [])
+      when is_binary(checkout) and is_binary(sha) and is_binary(version) and is_list(opts) do
+    with :ok <- validate_version(version),
+         spec = Map.fetch!(@specs, version),
+         :ok <- verify_sha(sha, spec.pinned_sha()),
          :ok <- verify_checkout_head(checkout, sha),
-         {:ok, sources} <- read_verified_sources(checkout),
-         {:ok, statements} <- transform_sources(sources) do
+         {:ok, sources} <- read_verified_sources(checkout, spec),
+         {:ok, statements, counts, fragment} <- transform_sources(sources, spec, opts) do
       sql = Splitter.join(statements) <> "\n"
-
-      manifest = %{
-        "files" => @files,
-        "output_sha256" => sha256(sql),
-        "removals" => [
-          %{
-            "object" => "pgflow.ensure_workers()",
-            "reason" => "requires Supabase-only net.http_post"
-          }
-        ],
-        "source_sha256" => Map.new(sources, fn {file, source} -> {file, sha256(source)} end),
-        "statement_count" => length(statements),
-        "transformations" => [
-          %{
-            "change" => "SET lock_timeout = '10s' -> SET LOCAL lock_timeout = '10s'",
-            "reason" => "transaction-local setting does not leak into pooled connections"
-          },
-          %{
-            "change" =>
-              "start_tasks installations dispatch on seven- or eight-column step_task_record",
-            "reason" => "preserve the Elixir attempts_count extension"
-          }
-        ],
-        "upstream_path" => @upstream_path,
-        "upstream_repo" => "pgflow-dev/pgflow",
-        "upstream_sha" => @pinned_sha
-      }
-
-      {:ok, %{sql: sql, manifest: manifest}}
+      {:ok, bundle_result(spec, sources, statements, counts, sql, fragment)}
     end
   end
 
-  defp verify_sha(@pinned_sha), do: :ok
+  @doc """
+  Accepts a version that has a loaded spec and is not published.
 
-  defp verify_sha(sha) do
-    {:error, "refusing unpinned upstream SHA #{inspect(sha)}; expected #{@pinned_sha}"}
+  `published` defaults to the frozen core versions. The mix task passes its
+  own copy so the two lists stay wired together.
+  """
+  @spec validate_version(String.t(), [String.t()]) :: :ok | {:error, String.t()}
+  def validate_version(version, published \\ @published)
+      when is_binary(version) and is_list(published) do
+    cond do
+      version in published ->
+        {:error, "refusing to rewrite published core version V#{version}"}
+
+      not match?({:ok, _spec}, Map.fetch(@specs, version)) ->
+        unsupported_version(version)
+
+      not Code.ensure_loaded?(Map.fetch!(@specs, version)) ->
+        unsupported_version(version)
+
+      true ->
+        :ok
+    end
+  end
+
+  @doc """
+  Wraps a `start_tasks` definition so it installs the seven-column body or the
+  eight-column `attempts_count` body, depending on `pgflow.step_task_record`.
+  """
+  @spec shape_dispatch(String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  def shape_dispatch(seven_column_sql) do
+    with {:ok, wrapped, _meta} <- shape_dispatch_parts(seven_column_sql) do
+      {:ok, wrapped}
+    end
+  end
+
+  @doc """
+  Same dispatch as `shape_dispatch/1`, plus the eight-column function body.
+
+  The fragment is that body with the quoted `"pgflow".` qualifier rewritten to
+  `$SCHEMA$.`, which is the helpers placeholder used by the V02 fragment.
+  """
+  @spec shape_dispatch_parts(String.t()) ::
+          {:ok, String.t(), %{fragment: String.t()}} | {:error, String.t()}
+  def shape_dispatch_parts(seven_column_sql) do
+    with {:ok, eight_column_sql} <- add_attempts_count(seven_column_sql) do
+      {:ok, wrap_dispatch(seven_column_sql, eight_column_sql),
+       %{fragment: eight_column_fragment(eight_column_sql)}}
+    end
+  end
+
+  defp wrap_dispatch(seven_column_sql, eight_column_sql) do
+    """
+    DO $pgflow_shape_dispatch$
+    DECLARE
+      attribute_names text[];
+      attribute_types text[];
+    BEGIN
+      SELECT
+        array_agg(attribute.attname ORDER BY attribute.attnum),
+        array_agg(format_type(attribute.atttypid, attribute.atttypmod) ORDER BY attribute.attnum)
+      INTO attribute_names, attribute_types
+      FROM pg_type AS composite
+      JOIN pg_class AS relation ON relation.oid = composite.typrelid
+      JOIN pg_attribute AS attribute ON attribute.attrelid = relation.oid
+      WHERE composite.oid = 'pgflow.step_task_record'::regtype
+        AND attribute.attnum > 0
+        AND NOT attribute.attisdropped;
+
+      IF attribute_names = #{sql_array(@seven_names)}
+         AND attribute_types = #{sql_array(@seven_types)} THEN
+        EXECUTE $pgflow_seven$
+    #{seven_column_sql}
+    $pgflow_seven$;
+      ELSIF attribute_names = #{sql_array(@eight_names)}
+            AND attribute_types = #{sql_array(@eight_types)} THEN
+        EXECUTE $pgflow_eight$
+    #{eight_column_sql}
+    $pgflow_eight$;
+      ELSE
+        RAISE EXCEPTION 'unsupported pgflow.step_task_record layout: names=%, types=%',
+          attribute_names, attribute_types
+          USING HINT = 'Expected the seven-column upstream layout or its eight-column Elixir attempts_count extension.';
+      END IF;
+    END
+    $pgflow_shape_dispatch$
+    """
+    |> String.trim()
+  end
+
+  defp eight_column_fragment(sql) do
+    fragment = String.replace(sql, ~s("pgflow".), "$SCHEMA$.")
+    if String.ends_with?(fragment, "\n"), do: fragment, else: fragment <> "\n"
+  end
+
+  defp unsupported_version(version) do
+    {:error, "unsupported core delta version #{inspect(version)}; expected 03"}
+  end
+
+  defp verify_sha(sha, sha), do: :ok
+
+  defp verify_sha(sha, pinned) do
+    {:error, "refusing unpinned upstream SHA #{inspect(sha)}; expected #{pinned}"}
   end
 
   defp verify_checkout_head(checkout, sha) do
@@ -97,13 +172,15 @@ defmodule PgFlow.Upstream.Bundle do
     end
   end
 
-  defp read_verified_sources(checkout) do
-    Enum.reduce_while(@files, {:ok, []}, fn file, {:ok, sources} ->
-      path = Path.join([checkout, @upstream_path, file])
+  defp read_verified_sources(checkout, spec) do
+    path_root = spec.manifest_notes()["upstream_path"]
+
+    Enum.reduce_while(spec.files(), {:ok, []}, fn file, {:ok, sources} ->
+      path = Path.join([checkout, path_root, file])
 
       case File.read(path) do
         {:ok, source} ->
-          verify_source(file, source, sources)
+          verify_source(spec, file, source, sources)
 
         {:error, reason} ->
           {:halt, {:error, "could not read #{path}: #{:file.format_error(reason)}"}}
@@ -111,106 +188,189 @@ defmodule PgFlow.Upstream.Bundle do
     end)
   end
 
-  defp verify_source(file, source, sources) do
+  defp verify_source(spec, file, source, sources) do
     actual_hash = sha256(source)
-    expected_hash = Map.fetch!(@source_hashes, file)
+    expected_hash = Map.fetch!(spec.source_hashes(), file)
 
     if actual_hash == expected_hash do
       {:cont, {:ok, sources ++ [{file, source}]}}
     else
       {:halt,
        {:error,
-        "source #{file} does not match pinned #{@pinned_sha} bytes: " <>
+        "source #{file} does not match pinned #{spec.pinned_sha()} bytes: " <>
           "expected SHA-256 #{expected_hash}, got #{actual_hash}"}}
     end
   end
 
-  defp transform_sources(sources) do
-    sources
-    |> Enum.flat_map(fn {_file, source} -> Splitter.split(source) end)
-    |> Enum.reduce_while({:ok, []}, fn statement, {:ok, transformed} ->
-      case transform_statement(statement) do
-        :omit -> {:cont, {:ok, transformed}}
-        {:ok, replacement} -> {:cont, {:ok, transformed ++ [replacement]}}
-        {:error, _message} = error -> {:halt, error}
+  defp transform_sources(sources, spec, opts) do
+    rules = spec.rules()
+    {statements, seeded} = prepare_statements(sources, spec)
+
+    with :ok <- verify_omissions(spec, statements, opts) do
+      apply_rules(statements, rules, seeded)
+    end
+  end
+
+  defp prepare_statements(sources, spec) do
+    modes = file_modes(spec)
+
+    Enum.flat_map_reduce(sources, %{}, fn {file, source}, counts ->
+      filter_source(Splitter.split(source), Map.get(modes, file), counts)
+    end)
+  end
+
+  defp filter_source(statements, nil, counts), do: {statements, counts}
+
+  defp filter_source(statements, %{rule: rule, keep: keep}, counts) do
+    kept = Enum.filter(statements, keep)
+    {kept, Map.put(counts, rule, length(kept))}
+  end
+
+  defp file_modes(spec) do
+    if function_exported?(spec, :file_modes, 0), do: spec.file_modes(), else: %{}
+  end
+
+  defp verify_omissions(spec, statements, opts) do
+    if function_exported?(spec, :verify_omissions, 2) do
+      spec.verify_omissions(statements, opts)
+    else
+      :ok
+    end
+  end
+
+  defp apply_rules(statements, rules, seeded) do
+    counts = Map.new(rules, &initial_count(&1, seeded))
+
+    statements
+    |> Enum.reduce_while({:ok, [], counts, nil}, fn statement, {:ok, acc, counts, fragment} ->
+      reduce_statement(statement, rules, acc, counts, fragment)
+    end)
+    |> validate_rule_counts(rules)
+  end
+
+  defp initial_count(rule, seeded), do: {rule.id, Map.get(seeded, rule.id, 0)}
+
+  defp reduce_statement(statement, rules, acc, counts, fragment) do
+    case Enum.find(rules, & &1.match.(statement)) do
+      nil ->
+        {:cont, {:ok, acc ++ [statement], counts, fragment}}
+
+      rule ->
+        counts = Map.update!(counts, rule.id, &(&1 + 1))
+        dispatch_action(rule, rules, statement, acc, counts, fragment)
+    end
+  end
+
+  defp dispatch_action(rule, rules, statement, acc, counts, fragment) do
+    case apply_action(rule, statement) do
+      :omit ->
+        {:cont, {:ok, acc, counts, fragment}}
+
+      {:ok, replacement, %{fragment: next_fragment}} when is_binary(replacement) ->
+        {extra, counts} = appended_sql(rules, rule.id, counts)
+        {:cont, {:ok, acc ++ [replacement | extra], counts, next_fragment}}
+
+      {:ok, replacement} when is_binary(replacement) ->
+        {extra, counts} = appended_sql(rules, rule.id, counts)
+        {:cont, {:ok, acc ++ [replacement | extra], counts, fragment}}
+
+      {:ok, replacements} when is_list(replacements) ->
+        {extra, counts} = appended_sql(rules, rule.id, counts)
+        {:cont, {:ok, acc ++ replacements ++ extra, counts, fragment}}
+
+      {:error, _message} = error ->
+        {:halt, error}
+    end
+  end
+
+  defp appended_sql(rules, rule_id, counts) do
+    Enum.flat_map_reduce(rules, counts, fn
+      %{id: id, action: {:append_after, ^rule_id, sql}}, counts ->
+        {[sql], Map.update!(counts, id, &(&1 + 1))}
+
+      _rule, counts ->
+        {[], counts}
+    end)
+  end
+
+  defp validate_rule_counts({:error, _} = error, _rules), do: error
+
+  defp validate_rule_counts({:ok, statements, counts, fragment}, rules) do
+    case count_error(rules, counts) do
+      nil -> {:ok, statements, counts, fragment}
+      message -> {:error, message}
+    end
+  end
+
+  defp count_error(rules, counts) do
+    Enum.find_value(rules, fn rule ->
+      matched = Map.fetch!(counts, rule.id)
+
+      if matched == rule.expected do
+        nil
+      else
+        "rule #{rule.id} matched #{matched} statements; expected #{rule.expected}"
       end
     end)
   end
 
-  defp transform_statement(statement) do
-    cond do
-      ensure_workers_definition?(statement) ->
-        if statement =~ "net.http_post" do
-          :omit
-        else
-          {:error, "refusing to omit pgflow.ensure_workers(): expected net.http_post dependency"}
-        end
+  defp apply_action(%{action: :omit}, _statement), do: :omit
 
-      statement =~ "net.http_post" ->
-        {:error, "unrecognized net.http_post infrastructure dependency"}
+  defp apply_action(%{action: :reject, reason: reason}, _statement), do: {:error, reason}
 
-      Regex.match?(~r/^SET lock_timeout = '10s'$/m, statement) ->
-        {:ok, Regex.replace(~r/^SET lock_timeout/m, statement, "SET LOCAL lock_timeout")}
+  defp apply_action(%{action: {:replace, fun}}, statement), do: fun.(statement)
 
-      start_tasks_definition?(statement) ->
-        shape_dispatch(statement)
+  defp apply_action(%{action: {:prepend, sql}}, statement) when is_binary(sql) do
+    {:ok, [sql, statement]}
+  end
 
-      true ->
-        {:ok, statement}
+  defp apply_action(%{action: {:append_after, _id, _sql}}, _statement) do
+    {:error, "append_after rules are attached to another rule and must not match statements"}
+  end
+
+  defp bundle_result(spec, sources, statements, counts, sql, fragment) do
+    result = %{sql: sql, manifest: manifest(spec, sources, statements, counts, sql)}
+    if is_binary(fragment), do: Map.put(result, :fragment, fragment), else: result
+  end
+
+  defp manifest(spec, sources, statements, counts, sql) do
+    transformations =
+      Enum.map(spec.rules(), fn rule ->
+        %{
+          "rule" => Atom.to_string(rule.id),
+          "matched" => Map.fetch!(counts, rule.id),
+          "reason" => rule.reason
+        }
+      end)
+
+    spec.manifest_notes()
+    |> Map.merge(%{
+      "files" => manifest_files(spec),
+      "output_sha256" => sha256(sql),
+      "source_sha256" => Map.new(sources, fn {file, source} -> {file, sha256(source)} end),
+      "statement_count" => length(statements),
+      "transformations" => transformations,
+      "upstream_sha" => spec.pinned_sha()
+    })
+  end
+
+  defp manifest_files(spec) do
+    if function_exported?(spec, :file_modes, 0) do
+      modes = spec.file_modes()
+      Enum.map(spec.files(), &manifest_file(&1, modes))
+    else
+      spec.files()
     end
   end
 
-  defp ensure_workers_definition?(statement) do
-    Regex.match?(
-      ~r/CREATE OR REPLACE FUNCTION "pgflow"\."ensure_workers" \(\) RETURNS TABLE/s,
-      statement
-    )
-  end
+  defp manifest_file(file, modes) do
+    mode =
+      case Map.get(modes, file) do
+        %{mode: mode} -> Atom.to_string(mode)
+        nil -> "whole"
+      end
 
-  defp start_tasks_definition?(statement) do
-    Regex.match?(~r/CREATE (?:OR REPLACE )?FUNCTION "pgflow"\."start_tasks" /s, statement)
-  end
-
-  defp shape_dispatch(seven_column_sql) do
-    with {:ok, eight_column_sql} <- add_attempts_count(seven_column_sql) do
-      {:ok,
-       """
-       DO $pgflow_shape_dispatch$
-       DECLARE
-         attribute_names text[];
-         attribute_types text[];
-       BEGIN
-         SELECT
-           array_agg(attribute.attname ORDER BY attribute.attnum),
-           array_agg(format_type(attribute.atttypid, attribute.atttypmod) ORDER BY attribute.attnum)
-         INTO attribute_names, attribute_types
-         FROM pg_type AS composite
-         JOIN pg_class AS relation ON relation.oid = composite.typrelid
-         JOIN pg_attribute AS attribute ON attribute.attrelid = relation.oid
-         WHERE composite.oid = 'pgflow.step_task_record'::regtype
-           AND attribute.attnum > 0
-           AND NOT attribute.attisdropped;
-
-         IF attribute_names = #{sql_array(@seven_names)}
-            AND attribute_types = #{sql_array(@seven_types)} THEN
-           EXECUTE $pgflow_seven$
-       #{seven_column_sql}
-       $pgflow_seven$;
-         ELSIF attribute_names = #{sql_array(@eight_names)}
-               AND attribute_types = #{sql_array(@eight_types)} THEN
-           EXECUTE $pgflow_eight$
-       #{eight_column_sql}
-       $pgflow_eight$;
-         ELSE
-           RAISE EXCEPTION 'unsupported pgflow.step_task_record layout: names=%, types=%',
-             attribute_names, attribute_types
-             USING HINT = 'Expected the seven-column upstream layout or its eight-column Elixir attempts_count extension.';
-         END IF;
-       END
-       $pgflow_shape_dispatch$
-       """
-       |> String.trim()}
-    end
+    %{"mode" => mode, "name" => file}
   end
 
   defp add_attempts_count(sql) do

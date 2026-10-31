@@ -111,7 +111,8 @@ defmodule PgFlow.SchemaAlignmentTest do
       started_at: :utc_datetime_usec,
       deprecated_at: :utc_datetime_usec,
       last_heartbeat_at: :utc_datetime_usec,
-      stopped_at: :utc_datetime_usec
+      stopped_at: :utc_datetime_usec,
+      pgflow_version: :string
     )
   end
 
@@ -122,7 +123,8 @@ defmodule PgFlow.SchemaAlignmentTest do
       opt_base_delay: :integer,
       opt_timeout: :integer,
       created_at: :utc_datetime_usec,
-      flow_type: :string
+      flow_type: :string,
+      queue_mode: :string
     )
   end
 

@@ -4,6 +4,7 @@ defmodule PgFlow.QueriesTest do
   require Logger
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias PgFlow.Flow.Shape
   alias PgFlow.Queries.Flows
   alias PgFlow.Queries.Workers, as: WorkerQueries
   alias PgFlow.TestRepo
@@ -120,6 +121,72 @@ defmodule PgFlow.QueriesTest do
     worker_id = Ecto.UUID.generate()
     {:ok, _} = WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
     worker_id
+  end
+
+  defp in_production(fun) do
+    {:ok, result} =
+      TestRepo.transaction(fn ->
+        TestRepo.query!("SELECT set_config('app.settings.jwt_secret', 'production-secret', true)")
+        fun.()
+      end)
+
+    result
+  end
+
+  defp step_route_map(flow_slug, shape) do
+    Enum.map(shape["steps"], fn step ->
+      %{"stepSlug" => step["slug"], "queueName" => "#{flow_slug}__#{step["slug"]}"}
+    end)
+  end
+
+  defp capture_queries(fun) do
+    handler = "pgflow-query-capture-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    :telemetry.attach(
+      handler,
+      [:pg_flow, :test_repo, :query],
+      fn _event, _measurements, metadata, _config ->
+        send(parent, {:captured_query, metadata.query, metadata.params})
+      end,
+      nil
+    )
+
+    try do
+      fun.()
+      Enum.map(receive_queries([]), fn {query, _params} -> query end)
+    after
+      :telemetry.detach(handler)
+    end
+  end
+
+  defp capture_query_calls(fun) do
+    handler = "pgflow-query-params-capture-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    :telemetry.attach(
+      handler,
+      [:pg_flow, :test_repo, :query],
+      fn _event, _measurements, metadata, _config ->
+        send(parent, {:captured_query, metadata.query, metadata.params})
+      end,
+      nil
+    )
+
+    try do
+      fun.()
+      receive_queries([])
+    after
+      :telemetry.detach(handler)
+    end
+  end
+
+  defp receive_queries(queries) do
+    receive do
+      {:captured_query, query, params} -> receive_queries([{query, params} | queries])
+    after
+      0 -> Enum.reverse(queries)
+    end
   end
 
   defp read_and_start_tasks(flow_slug, worker_id) do
@@ -372,6 +439,28 @@ defmodule PgFlow.QueriesTest do
   # ── start_tasks ────────────────────────────────────────────────────
 
   describe "start_tasks/5" do
+    test "sends the flow-mode step selector as NULL" do
+      flow_slug = compile_flow(SimpleFlow)
+      _run_id = start_flow_run(flow_slug, %{"value" => 42})
+      worker_id = register_worker(flow_slug)
+      queue_name = String.downcase(flow_slug)
+      {:ok, messages} = Flows.read(TestRepo, queue_name, 30, 10)
+      msg_ids = Enum.map(messages, fn [msg_id | _] -> msg_id end)
+
+      queries =
+        capture_queries(fn ->
+          assert {:ok, task_details} =
+                   Flows.start_tasks(TestRepo, flow_slug, msg_ids, worker_id, queue_name)
+
+          assert task_details != []
+        end)
+
+      assert Enum.any?(queries, fn query ->
+               String.contains?(query, "pgflow.start_tasks") and
+                 String.contains?(query, "NULL::text")
+             end)
+    end
+
     test "returns task details for valid msg_ids" do
       flow_slug = compile_flow(SimpleFlow)
       _run_id = start_flow_run(flow_slug, %{"value" => 42})
@@ -439,6 +528,62 @@ defmodule PgFlow.QueriesTest do
 
   # ── register_worker ────────────────────────────────────────────────
 
+  describe "ensure_flow_compiled/3" do
+    test "ensure_flow_compiled sends flow mode and a null route map" do
+      flow_slug = Atom.to_string(SimpleFlow.__pgflow_definition__().slug)
+      shape = Shape.from_definition(SimpleFlow.__pgflow_definition__())
+
+      queries =
+        capture_queries(fn ->
+          assert {:ok, %{status: "compiled"}} =
+                   Flows.ensure_flow_compiled(TestRepo, flow_slug, shape)
+        end)
+
+      assert Enum.any?(queries, fn query ->
+               String.contains?(query, "pgflow.ensure_flow_compiled") and
+                 String.contains?(query, "'flow'") and
+                 String.contains?(query, "NULL::jsonb")
+             end)
+    end
+
+    test "ensure_flow_compiled maps upstream mismatch diffs" do
+      definition = SimpleFlow.__pgflow_definition__()
+      flow_slug = Atom.to_string(definition.slug)
+      shape = Shape.from_definition(definition)
+
+      changed_shape =
+        update_in(shape, ["steps", Access.at(0), "whenUnmet"], fn _ -> "fail" end)
+
+      assert {:ok, %{status: "compiled"}} =
+               Flows.ensure_flow_compiled(TestRepo, flow_slug, shape)
+
+      assert {:error, {:flow_shape_mismatch, diffs}} =
+               in_production(fn ->
+                 Flows.ensure_flow_compiled(TestRepo, flow_slug, changed_shape)
+               end)
+
+      assert is_list(diffs) and diffs != []
+    end
+
+    test "ensure_flow_compiled keeps upstream routing mismatch messages" do
+      definition = SimpleFlow.__pgflow_definition__()
+      flow_slug = Atom.to_string(definition.slug)
+      shape = Shape.from_definition(definition)
+
+      TestRepo.query!(
+        "SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb, 'step', $3::jsonb)",
+        [flow_slug, shape, step_route_map(flow_slug, shape)]
+      )
+
+      assert {:error, {:flow_routing_mismatch, diffs}} =
+               in_production(fn ->
+                 Flows.ensure_flow_compiled(TestRepo, flow_slug, shape)
+               end)
+
+      assert "Queue mode differs: database has 'step', worker expects 'flow'" in diffs
+    end
+  end
+
   describe "register_worker/4" do
     test "registers a new worker" do
       flow_slug = compile_flow(SimpleFlow)
@@ -461,6 +606,35 @@ defmodule PgFlow.QueriesTest do
   end
 
   # ── mark_worker_stopped ────────────────────────────────────────────
+
+  describe "UUID query parameters" do
+    test "are sent as canonical strings with an in-SQL text cast" do
+      flow_slug = compile_flow(SimpleFlow)
+      run_id = start_flow_run(flow_slug, %{"value" => 42})
+      worker_id = Ecto.UUID.generate()
+
+      calls =
+        capture_query_calls(fn ->
+          assert {:ok, nil} =
+                   WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+
+          assert {:ok, _} = WorkerQueries.heartbeat_worker(TestRepo, worker_id)
+          assert {:ok, nil} = WorkerQueries.mark_worker_stopped(TestRepo, worker_id)
+          assert {:ok, _} = Flows.get_run(TestRepo, run_id)
+          assert {:ok, _} = Flows.get_flow_input(TestRepo, run_id)
+        end)
+
+      uuid_calls =
+        Enum.filter(calls, fn {_query, params} -> worker_id in params or run_id in params end)
+
+      assert length(uuid_calls) == 5
+      assert Enum.all?(uuid_calls, fn {query, _params} -> query =~ "::text::uuid" end)
+
+      refute Enum.any?(calls, fn {_query, params} ->
+               Enum.any?(params, &(is_binary(&1) and byte_size(&1) == 16))
+             end)
+    end
+  end
 
   describe "mark_worker_stopped/2" do
     test "sets stopped_at timestamp" do

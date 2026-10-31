@@ -375,4 +375,69 @@ defmodule PgFlow.DSL.ValidationTest do
       end
     end
   end
+
+  describe "slug rules (pgflow 0.17.2)" do
+    test "rejects a double underscore" do
+      assert_raise CompileError, ~r/invalid flow slug :order__flow/, fn ->
+        Validation.validate_slug!(:order__flow, :flow, fake_env())
+      end
+    end
+
+    test "rejects an empty slug" do
+      assert_raise CompileError, ~r/must not be empty/, fn ->
+        Validation.validate_slug!("", :step, fake_env())
+      end
+    end
+
+    test "rejects a slug longer than 128 characters" do
+      slug = String.to_atom(String.duplicate("a", 129))
+
+      assert_raise CompileError, ~r/at most 128/, fn ->
+        Validation.validate_slug!(slug, :step, fake_env())
+      end
+    end
+
+    test "rejects characters outside the slug alphabet" do
+      assert_raise CompileError, ~r/has-dash/, fn ->
+        Validation.validate_slug!(:"has-dash", :step, fake_env())
+      end
+    end
+
+    test "rejects the reserved slug run" do
+      assert_raise CompileError, ~r/invalid job slug :run/, fn ->
+        Validation.validate_slug!(:run, :job, fake_env())
+      end
+    end
+
+    test "rejects a leading underscore" do
+      assert_raise CompileError, ~r/must start with a letter/, fn ->
+        Validation.validate_slug!(:_private, :step, fake_env())
+      end
+    end
+
+    test "rejects a trailing underscore" do
+      assert_raise CompileError, ~r/must end with a letter or digit/, fn ->
+        Validation.validate_slug!(:trailing_, :step, fake_env())
+      end
+    end
+
+    test "rejects a flow slug whose queue name exceeds 47 characters" do
+      slug = String.to_atom(String.duplicate("b", 48))
+
+      assert_raise CompileError, ~r/at most 47 characters/, fn ->
+        Validation.validate_slug!(slug, :flow, fake_env())
+      end
+    end
+
+    test "allows a long step slug that is not a queue name" do
+      slug = String.to_atom(String.duplicate("c", 48))
+      assert :ok = Validation.validate_slug!(slug, :step, fake_env())
+    end
+
+    test "rejects case-insensitive duplicate step slugs" do
+      assert_raise CompileError, ~r/step slugs :fetch and :Fetch collide/, fn ->
+        Validation.validate_step_slugs!([:fetch, :Fetch], :dup_flow, fake_env())
+      end
+    end
+  end
 end

@@ -1,0 +1,75 @@
+{
+  "files": [
+    {
+      "mode": "whole",
+      "name": "20260915074120_pgflow_private_step_queues.sql"
+    },
+    {
+      "mode": "whole",
+      "name": "20260919152659_pgflow_fix_force_skip_multi_queue.sql"
+    },
+    {
+      "mode": "pgflow_ddl_allowlist",
+      "name": "20260920093533_pgflow_telemetry.sql"
+    }
+  ],
+  "output_sha256": "8ccdf129af17b1e59ab3f128bd2f3003a13abd944e5d3d362e6808a4a75c8f5d",
+  "removals": [
+    {
+      "object": "pgflow_telemetry",
+      "reason": "Supabase telemetry schema is out of scope; only the four pgflow DDL statements are imported"
+    }
+  ],
+  "source_sha256": {
+    "20260915074120_pgflow_private_step_queues.sql": "571fc92496fbfcf2906717e234c54c970207b4f29981fe965a1e0a6838d55237",
+    "20260919152659_pgflow_fix_force_skip_multi_queue.sql": "9c37b2cd20b39e4d13ebc40b4910485bab4f9f08ba1f01b9f3159882c81dadba",
+    "20260920093533_pgflow_telemetry.sql": "86b47ecc6aba8014c46ebd1107e4a6208f76896b76fe7cb82d5770fb0fa1e9cd"
+  },
+  "statement_count": 36,
+  "transformations": [
+    {
+      "matched": 0,
+      "reason": "Guard carried over from V02. None of the imported 0.17.2 statements call net.http_post, so a hit fails the build.",
+      "rule": "reject_net_http_post"
+    },
+    {
+      "matched": 1,
+      "reason": "Existing V02 rule. Scopes the lock timeout to the Ecto transaction.",
+      "rule": "set_local_lock_timeout"
+    },
+    {
+      "matched": 1,
+      "reason": "A DO block that runs the same checks as mix pgflow.audit_slugs and raises one check_violation listing every offending flow or step.",
+      "rule": "slug_preflight"
+    },
+    {
+      "matched": 11,
+      "reason": "V02 already applied these statements from the deleted queue-identity migration. The pair table records the spellings that differ.",
+      "rule": "omit_applied_in_v02"
+    },
+    {
+      "matched": 1,
+      "reason": "Already dropped by helpers V05 on upgraded databases.",
+      "rule": "drop_if_exists"
+    },
+    {
+      "matched": 1,
+      "reason": "Emits DROP INDEX IF EXISTS pgflow.idx_runs_started_at so upstream's ascending index wins.",
+      "rule": "replace_desc_runs_index"
+    },
+    {
+      "matched": 1,
+      "reason": "Reuses the V02 dispatch: a DO block inspects pgflow.step_task_record and executes the 7- or 8-column body.",
+      "rule": "step_task_record_dispatch"
+    },
+    {
+      "matched": 4,
+      "reason": "Keep the four pgflow DDL statements from the telemetry migration and exclude the pgflow_telemetry schema.",
+      "rule": "telemetry_pgflow_ddl_allowlist"
+    }
+  ],
+  "upstream_path": "pkgs/core/supabase/migrations",
+  "upstream_release": "0.17.2",
+  "upstream_repo": "pgflow-dev/pgflow",
+  "upstream_sha": "baa9e43f5f9122133deacbc3e8ffc80e284b4f50"
+}

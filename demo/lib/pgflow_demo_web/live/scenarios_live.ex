@@ -6,7 +6,7 @@ defmodule PgflowDemoWeb.ScenariosLive do
   use PgflowDemoWeb, :live_view
 
   alias PgFlow.LiveClient
-  alias PgflowDemo.{ScenarioControls, ScenarioRunner, Scenarios}
+  alias PgflowDemo.{ScenarioChecks, ScenarioControls, ScenarioRunner, Scenarios}
   alias PgflowDemoWeb.Components.ScenarioSource
 
   @run_assign :scenario_run
@@ -27,6 +27,7 @@ defmodule PgflowDemoWeb.ScenariosLive do
       |> assign(:controls_enabled?, controls_enabled?)
       |> assign(:controls_busy?, false)
       |> assign(:release_ready?, false)
+      |> assign(:check_result, nil)
       |> stream(:tasks, [])
 
     {:ok, socket}
@@ -54,7 +55,29 @@ defmodule PgflowDemoWeb.ScenariosLive do
     {:noreply,
      socket
      |> assign(:form, form)
-     |> assign(:form_errors, errors)}
+     |> assign(:form_errors, errors)
+     |> keep_check_result_for(preset)}
+  end
+
+  def handle_event(
+        "run",
+        %{"preset" => preset},
+        %{assigns: %{descriptor: %{kind: :check} = descriptor}} = socket
+      ) do
+    case ScenarioChecks.run(descriptor.id, preset) do
+      {:ok, result} ->
+        {:noreply,
+         socket
+         |> assign(:check_result, result)
+         |> assign(:form_errors, nil)
+         |> assign(:form, to_form(%{"preset" => preset, "input" => "{}"}))}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:check_result, nil)
+         |> assign(:form_errors, format_error(reason))}
+    end
   end
 
   def handle_event("run", %{"preset" => preset} = params, socket) do
@@ -206,7 +229,8 @@ defmodule PgflowDemoWeb.ScenariosLive do
           <h1 class="text-3xl font-bold">Scenario catalogue</h1>
           <p class="text-base-content/70">
             Runnable presets for supported PgFlow feature families. Each scenario persists run state
-            in the database and can be reloaded from the URL.
+            in the database and can be reloaded from the URL. Contract checks run a deterministic
+            check against the demo database and compare its result with the expected outcome.
           </p>
         </header>
 
@@ -217,7 +241,7 @@ defmodule PgflowDemoWeb.ScenariosLive do
                 <h2 class="font-semibold">{scenario.title}</h2>
                 <p class="text-xs font-mono text-base-content/50">{scenario.id}</p>
                 <p class="text-sm text-base-content/70">
-                  {scenario_kind_label(scenario.kind)}
+                  <span id={"scenario-kind-#{scenario.id}"}>{scenario_kind_label(scenario.kind)}</span>
                   <%= if scenario.kind == :walkthrough do %>
                     — {scenario.walkthrough}
                   <% end %>
@@ -252,59 +276,160 @@ defmodule PgflowDemoWeb.ScenariosLive do
           <p class="text-base-content/70">{scenario_description(@descriptor)}</p>
         </header>
 
-        <%= if @descriptor.kind == :executable do %>
-          <section class="rounded-box border border-base-300 p-4 sm:p-6">
-            <h2 class="mb-4 text-lg font-semibold">Run preset</h2>
-            <.form
-              for={@form}
-              id="scenario-form"
-              phx-change="validate"
-              phx-submit="run"
-              class="space-y-4"
-            >
-              <.input
-                field={@form[:preset]}
-                type="select"
-                label="Preset"
-                id="scenario-input"
-                options={preset_options(@descriptor)}
-                disabled={@busy?}
-              />
-              <.input
-                field={@form[:input]}
-                type="textarea"
-                label="Input overrides (JSON)"
-                id="scenario-input-overrides"
-                rows="4"
-                disabled={@busy?}
-              />
-              <div :if={@form_errors} id="scenario-form-errors" class="alert alert-error text-sm">
-                {@form_errors}
-              </div>
-              <button
-                type="submit"
-                id="scenario-run-button"
-                class="btn btn-primary w-full sm:w-auto"
-                disabled={@busy? or (@descriptor.id == "recovery" and not @controls_enabled?)}
-                aria-busy={@busy?}
+        <%= case @descriptor.kind do %>
+          <% :executable -> %>
+            <section class="rounded-box border border-base-300 p-4 sm:p-6">
+              <h2 class="mb-4 text-lg font-semibold">Run preset</h2>
+              <.form
+                for={@form}
+                id="scenario-form"
+                phx-change="validate"
+                phx-submit="run"
+                class="space-y-4"
               >
-                <%= if @busy? do %>
-                  Running…
-                <% else %>
-                  Run scenario
-                <% end %>
-              </button>
-            </.form>
-            <p :if={@descriptor.id == "recovery" and not @controls_enabled?} class="mt-3 text-sm">
-              Recovery is a walkthrough here. Enable the local test-bed profile to run and release a handler.
-            </p>
-          </section>
-        <% else %>
-          <section class="rounded-box border border-base-300 p-4 sm:p-6">
-            <p class="text-base-content/70">{@descriptor.walkthrough}</p>
-            <.link navigate={~p"/"} class="btn btn-outline btn-sm mt-4">Open flow demo</.link>
-          </section>
+                <.input
+                  field={@form[:preset]}
+                  type="select"
+                  label="Preset"
+                  id="scenario-input"
+                  options={preset_options(@descriptor)}
+                  disabled={@busy?}
+                />
+                <.input
+                  field={@form[:input]}
+                  type="textarea"
+                  label="Input overrides (JSON)"
+                  id="scenario-input-overrides"
+                  rows="4"
+                  disabled={@busy?}
+                />
+                <div :if={@form_errors} id="scenario-form-errors" class="alert alert-error text-sm">
+                  {@form_errors}
+                </div>
+                <button
+                  type="submit"
+                  id="scenario-run-button"
+                  class="btn btn-primary w-full sm:w-auto"
+                  disabled={@busy? or (@descriptor.id == "recovery" and not @controls_enabled?)}
+                  aria-busy={@busy?}
+                >
+                  <%= if @busy? do %>
+                    Running…
+                  <% else %>
+                    Run scenario
+                  <% end %>
+                </button>
+              </.form>
+              <p :if={@descriptor.id == "recovery" and not @controls_enabled?} class="mt-3 text-sm">
+                Recovery is a walkthrough here. Enable the local test-bed profile to run and release a handler.
+              </p>
+            </section>
+          <% :check -> %>
+            <section id="scenario-check" class="rounded-box border border-base-300 p-4 sm:p-6">
+              <h2 class="mb-2 text-lg font-semibold">Run check</h2>
+              <p class="mb-4 text-sm text-base-content/70">
+                The check runs once against the demo database and compares its result map with the
+                expected outcome below.
+              </p>
+              <.form
+                for={@form}
+                id="scenario-form"
+                phx-change="validate"
+                phx-submit="run"
+                class="space-y-4"
+              >
+                <.input
+                  field={@form[:preset]}
+                  type="select"
+                  label="Preset"
+                  id="scenario-input"
+                  options={preset_options(@descriptor)}
+                />
+                <div :if={@form_errors} id="scenario-form-errors" class="alert alert-error text-sm">
+                  {@form_errors}
+                </div>
+                <button
+                  type="submit"
+                  id="scenario-check-button"
+                  class="btn btn-primary w-full sm:w-auto"
+                  phx-disable-with="Checking…"
+                >
+                  Run check
+                </button>
+              </.form>
+            </section>
+          <% _walkthrough -> %>
+            <section class="rounded-box border border-base-300 p-4 sm:p-6">
+              <p class="text-base-content/70">{@descriptor.walkthrough}</p>
+              <.link navigate={~p"/"} class="btn btn-outline btn-sm mt-4">Open flow demo</.link>
+            </section>
         <% end %>
+
+        <section
+          :if={@check_result}
+          id="scenario-check-result"
+          data-pass={to_string(@check_result.pass)}
+          class="rounded-box border border-base-300 p-4 sm:p-6 space-y-4"
+        >
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 class="text-lg font-semibold">Check result</h2>
+              <p class="font-mono text-xs text-base-content/60">
+                {@check_result.scenario_id}/{@check_result.preset}
+              </p>
+            </div>
+            <span
+              id="scenario-check-status"
+              class={["badge badge-lg", check_badge_class(@check_result.pass)]}
+            >
+              {if(@check_result.pass, do: "passed", else: "failed")}
+            </span>
+          </div>
+
+          <div
+            :if={@check_result.message}
+            id="scenario-check-message"
+            class="alert alert-error text-sm"
+          >
+            {@check_result.message}
+          </div>
+
+          <div id="scenario-check-assertions" class="space-y-2">
+            <div
+              :for={{key, expected} <- Enum.sort(@check_result.expected)}
+              id={"scenario-check-assertion-#{key}"}
+              data-match={to_string(Map.get(@check_result.actual, key) == expected)}
+              class="rounded-lg border border-base-300 p-3 text-sm"
+            >
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-mono font-semibold">{key}</span>
+                <span class={[
+                  "badge badge-sm",
+                  check_badge_class(Map.get(@check_result.actual, key) == expected)
+                ]}>
+                  {if(Map.get(@check_result.actual, key) == expected, do: "match", else: "mismatch")}
+                </span>
+              </div>
+              <p class="mt-1 break-all font-mono text-xs text-base-content/70">
+                actual: {compact_json(Map.get(@check_result.actual, key))}
+              </p>
+              <p
+                :if={Map.get(@check_result.actual, key) != expected}
+                class="break-all font-mono text-xs text-error"
+              >
+                expected: {compact_json(expected)}
+              </p>
+            </div>
+          </div>
+
+          <details class="text-sm">
+            <summary class="cursor-pointer text-base-content/70">Full check result</summary>
+            <pre
+              id="scenario-check-actual"
+              class="mt-2 overflow-x-auto rounded-lg bg-base-200 p-3 text-xs font-mono"
+            ><%= format_json(@check_result.actual) %></pre>
+          </details>
+        </section>
 
         <section id="scenario-expected" class="rounded-box border border-base-300 p-4 sm:p-6">
           <h2 class="mb-2 text-lg font-semibold">Expected outcome</h2>
@@ -458,6 +583,7 @@ defmodule PgflowDemoWeb.ScenariosLive do
           |> assign(:descriptor, descriptor)
           |> assign(:form, scenario_form(descriptor))
           |> assign(:form_errors, nil)
+          |> assign(:check_result, nil)
 
         if prior_scenario_id && prior_scenario_id != scenario_id do
           socket
@@ -485,7 +611,13 @@ defmodule PgflowDemoWeb.ScenariosLive do
     socket
     |> assign(:live_action, :index)
     |> assign(:descriptor, nil)
+    |> assign(:check_result, nil)
   end
+
+  defp keep_check_result_for(%{assigns: %{check_result: %{preset: preset}}} = socket, preset),
+    do: socket
+
+  defp keep_check_result_for(socket, _preset), do: assign(socket, :check_result, nil)
 
   defp restore_run(socket, run_id, descriptor) when is_binary(run_id) do
     if ScenarioRunner.demo_run?(descriptor.id, run_id) do
@@ -665,6 +797,7 @@ defmodule PgflowDemoWeb.ScenariosLive do
   defp format_error(:invalid_preset_bounds), do: "Preset input is out of allowed bounds"
   defp format_error(:unknown_preset), do: "Unknown preset"
   defp format_error(:walkthrough_only), do: "Walkthrough scenarios cannot be executed here"
+  defp format_error(:not_a_check), do: "This scenario is not a contract check"
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason), do: inspect(reason)
 
@@ -677,9 +810,14 @@ defmodule PgflowDemoWeb.ScenariosLive do
   defp scenario_kind(_), do: :walkthrough
 
   defp scenario_kind_label(:executable), do: "Executable preset"
+  defp scenario_kind_label(:check), do: "Contract check"
   defp scenario_kind_label(:walkthrough), do: "Walkthrough"
 
   defp scenario_description(%{kind: :walkthrough, walkthrough: text}), do: text
+
+  defp scenario_description(%{kind: :check, features: features}) do
+    "Checks the #{Enum.join(features, ", ")} contract against the demo database."
+  end
 
   defp scenario_description(%{features: features}) do
     "Demonstrates #{Enum.join(features, ", ")} with persisted run and task inspection."
@@ -701,6 +839,15 @@ defmodule PgflowDemoWeb.ScenariosLive do
 
   defp terminal_disclaimer?(%{id: id}) when id in ["recovery", "timeout"], do: true
   defp terminal_disclaimer?(_), do: false
+
+  defp check_badge_class(true), do: "badge-success"
+  defp check_badge_class(false), do: "badge-error"
+
+  defp compact_json(value) do
+    Jason.encode!(value)
+  rescue
+    _ -> inspect(value)
+  end
 
   defp format_json(value) do
     Jason.encode!(value, pretty: true)

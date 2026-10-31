@@ -573,4 +573,20 @@ defmodule PgFlow.JobTest do
       end
     end
   end
+
+  describe "slug rules (pgflow 0.17.2)" do
+    test "rejects an invalid job slug" do
+      assert_raise CompileError, ~r/invalid job slug :run: "run" is reserved/, fn ->
+        Code.compile_string("""
+        defmodule SlugReservedJob do
+          use PgFlow.Job
+          @job slug: :run
+          perform do
+            fn input, _ctx -> input end
+          end
+        end
+        """)
+      end
+    end
+  end
 end

@@ -114,6 +114,8 @@ defmodule PgFlow.Job do
     job_attrs = validate_and_extract_attrs!(job_attrs_list, steps, env)
     {slug, flow_opts, cron_expression, cron_input} = extract_job_config(job_attrs, env)
     {step_name, block} = extract_step(steps, slug)
+    Validation.validate_slug!(slug, :job, env)
+    Validation.validate_step_slugs!([step_name], slug, env)
     step_def = build_step_def(step_name, flow_opts)
 
     generate_job_functions(

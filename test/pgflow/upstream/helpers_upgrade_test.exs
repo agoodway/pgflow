@@ -15,9 +15,9 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
     in_fixture(fixture, fn ->
       install_latest!()
 
-      assert core_version() == 2
-      assert helpers_version() == 6
-      assert catalog_contract!()
+      assert core_version() == 3
+      assert helpers_version() == 7
+      assert latest_catalog_contract!()
     end)
   end
 
@@ -43,7 +43,7 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
     in_fixture(fixture, fn ->
       PgFlow.TestRepo.query!("CREATE EXTENSION IF NOT EXISTS pgmq")
 
-      Ecto.Migrator.up(PgFlow.TestRepo, 9_000_000_201, PgFlow.Upstream.CoreOnlyMigration,
+      Ecto.Migrator.up(PgFlow.TestRepo, 9_000_000_102, PgFlow.Upstream.CoreUpgradeMigration,
         log: false
       )
 
@@ -52,8 +52,8 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
 
       Ecto.Migrator.up(
         PgFlow.TestRepo,
-        9_000_000_202,
-        PgFlow.Upstream.HelpersFullChainMigration,
+        9_000_000_106,
+        PgFlow.Upstream.HelpersV06Migration,
         log: false
       )
 
@@ -78,6 +78,8 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
         migrate_core_v02!()
         migrate_helpers_v05!()
         migrate_helpers_v06!()
+        migrate_core_v03!()
+        migrate_helpers_v07!()
         catalog_snapshot!()
       end)
 
@@ -247,6 +249,24 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
     )
   end
 
+  defp migrate_core_v03! do
+    Ecto.Migrator.up(
+      PgFlow.TestRepo,
+      9_000_000_203,
+      PgFlow.Upstream.CoreV03Migration,
+      log: false
+    )
+  end
+
+  defp migrate_helpers_v07! do
+    Ecto.Migrator.up(
+      PgFlow.TestRepo,
+      9_000_000_207,
+      PgFlow.Upstream.HelpersV07Migration,
+      log: false
+    )
+  end
+
   defp in_fixture(fixture, fun) do
     previous = PgFlow.TestRepo.put_dynamic_repo(fixture.repo_name)
 
@@ -268,6 +288,28 @@ defmodule PgFlow.Upstream.HelpersUpgradeTest do
   defp scalar!(sql, params \\ []) do
     %{rows: [[value]]} = PgFlow.TestRepo.query!(sql, params)
     value
+  end
+
+  defp latest_catalog_contract! do
+    assert start_tasks_signatures() == [[false, true]]
+
+    assert scalar!(
+             "SELECT to_regprocedure('pgflow.start_tasks(text,bigint[],uuid,text,text)') IS NOT NULL"
+           )
+
+    assert scalar!(
+             "SELECT to_regprocedure('pgflow.ensure_flow_compiled(text,jsonb,text,jsonb)') IS NOT NULL"
+           )
+
+    refute scalar!(
+             "SELECT to_regprocedure('pgflow.ensure_flow_compiled(text,jsonb)') IS NOT NULL"
+           )
+
+    assert scalar!(
+             "SELECT to_regprocedure('pgflow.register_worker(uuid,text,text,text)') IS NOT NULL"
+           )
+
+    true
   end
 
   defp catalog_contract! do

@@ -5,8 +5,8 @@ defmodule PgFlow.Migrations.Versions.V06Test do
   @up_path "priv/pgflow_helpers/sql/versions/v06/v06_up.sql"
   @down_path "priv/pgflow_helpers/sql/versions/v06/v06_down.sql"
 
-  test "v06 is the current helpers version" do
-    assert PgFlow.HelpersMigration.current_version() == 6
+  test "v06 remains in the helpers migration chain" do
+    assert PgFlow.HelpersMigration.current_version() >= 6
   end
 
   test "migration preserves schema substitution and statement boundaries" do

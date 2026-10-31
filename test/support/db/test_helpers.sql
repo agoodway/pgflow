@@ -126,7 +126,8 @@ as $$
            flow_slug,
            (SELECT msg_ids FROM ids),
            (SELECT wid FROM w),
-           lower(flow_slug)
+           lower(flow_slug),
+           NULL::text
          );
 $$;
 

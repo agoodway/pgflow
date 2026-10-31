@@ -19,6 +19,7 @@ defmodule PgFlow.Schema.Worker do
     field(:deprecated_at, :utc_datetime_usec)
     field(:last_heartbeat_at, :utc_datetime_usec)
     field(:stopped_at, :utc_datetime_usec)
+    field(:pgflow_version, :string)
   end
 
   @doc false
@@ -31,7 +32,8 @@ defmodule PgFlow.Schema.Worker do
       :started_at,
       :deprecated_at,
       :last_heartbeat_at,
-      :stopped_at
+      :stopped_at,
+      :pgflow_version
     ])
     |> validate_required([
       :worker_id,

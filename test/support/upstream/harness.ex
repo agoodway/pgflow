@@ -1,9 +1,11 @@
 defmodule PgFlow.Test.UpstreamHarness do
   @moduledoc false
 
+  alias PgFlow.Sql.Splitter
   alias PgFlow.Test.{UpstreamFixture, UpstreamInterop}
 
-  @pinned_sha "94490709f79ebf366141dd925b047f0c1013e759"
+  @pinned_sha "baa9e43f5f9122133deacbc3e8ffc80e284b4f50"
+  @pgflow_ddl_statement ~r/^\s*(CREATE (UNIQUE )?INDEX|ALTER TABLE)\s.*"pgflow"\./s
   @manifest_path Path.expand("manifest.json", __DIR__)
   @support_dir __DIR__
 
@@ -55,7 +57,8 @@ defmodule PgFlow.Test.UpstreamHarness do
           failures: non_neg_integer()
         }
   def tap_result(output, exit_status) do
-    assertions = Regex.scan(~r/^\s*(?:not )?ok\b.*$/m, output)
+    # Require a test number so psql's `ok` column header is not an assertion.
+    assertions = Regex.scan(~r/^\s*(?:not )?ok\s+\d+\b.*$/m, output)
     failed = Enum.count(assertions, fn [line] -> Regex.match?(~r/^\s*not ok\b/, line) end)
     plans = Regex.scan(~r/^\s*1\.\.(\d+)/m, output)
     planned = Enum.reduce(plans, 0, fn [_, count], total -> total + String.to_integer(count) end)
@@ -73,6 +76,21 @@ defmodule PgFlow.Test.UpstreamHarness do
         Regex.match?(~r/(?:^\s*Bail out!|# Looks like you failed)/m, output)
 
     %{tests: tests, failures: max(failed, if(invalid?, do: 1, else: 0))}
+  end
+
+  @doc """
+  Keeps only top-level index and table DDL aimed at the `"pgflow"` schema.
+
+  Telemetry migrations also create `pgflow_telemetry` objects and schedule
+  `cron` / `pg_net` jobs. Those statements are dropped so a plain Postgres
+  replay can still apply the `pgflow` indexes and columns.
+  """
+  @spec pgflow_ddl_only_sql(String.t()) :: String.t()
+  def pgflow_ddl_only_sql(sql) when is_binary(sql) do
+    sql
+    |> Splitter.split()
+    |> Enum.filter(&pgflow_ddl_statement?/1)
+    |> Enum.map_join("", &(&1 <> ";\n"))
   end
 
   @doc "Rejects upstream revisions other than the recorded pin."
@@ -343,14 +361,27 @@ defmodule PgFlow.Test.UpstreamHarness do
   end
 
   defp run_single_suite(:pgtap, checkout, database_url) do
-    lifecycle_files = manifest()["harness"]["pgtap_lifecycle_files"]
-    prune_files = manifest()["harness"]["pgtap_prune_files"]
+    harness = manifest()["harness"]
+    lifecycle_files = harness["pgtap_lifecycle_files"]
+    divergent_files = Enum.map(harness["known_divergences"] || [], & &1["file"])
+    parity_files = (harness["pgtap_parity_files"] || []) -- divergent_files
+    prune_files = harness["pgtap_prune_files"]
     admin_url = admin_url_for(database_url)
 
     with :ok <- install_elixir_adaptations!(database_url),
          :ok <- install_pgtap!(database_url),
+         :ok <- relax_prune_overload!(database_url),
+         # pg_prove does not start in the tests directory, so `\i _shared/...`
+         # cannot see the shared pruning helper. psql does, with that directory
+         # as its working directory.
          {:ok, lifecycle_result} <-
-           run_pgtap_profile!(checkout, database_url, lifecycle_files, "plain_postgres"),
+           run_pgtap_profile!(
+             checkout,
+             database_url,
+             lifecycle_files ++ parity_files,
+             "plain_postgres",
+             runner: :psql
+           ),
          {:ok, prune_url} <- create_temporary_database!(admin_url, "pgflow_compat_prune_"),
          {:ok, prune_result} <-
            run_prune_pgtap_profile!(checkout, prune_url, prune_files, admin_url) do
@@ -418,7 +449,7 @@ defmodule PgFlow.Test.UpstreamHarness do
     drop_database!(admin_url, database_from_url(prune_url))
   end
 
-  defp run_pgtap_profile!(checkout, database_url, files, profile_name, opts \\ []) do
+  defp run_pgtap_profile!(checkout, database_url, files, profile_name, opts) do
     tests_dir = Path.join(checkout, "pkgs/core/supabase/tests")
 
     {output, status} =
@@ -512,6 +543,25 @@ defmodule PgFlow.Test.UpstreamHarness do
     end
   end
 
+  defp decode_script_json(output) do
+    case extract_json_line(output) do
+      nil -> :error
+      json -> Jason.decode(json)
+    end
+  end
+
+  defp extract_json_line(output) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.reverse()
+    |> Enum.find(&String.starts_with?(&1, "{"))
+  end
+
+  defp script_output_excerpt(output) do
+    output = String.trim(output)
+    if String.length(output) <= 800, do: output, else: String.slice(output, -800, 800)
+  end
+
   defp run_node_script!(script, checkout, database_url, extra_args \\ []) do
     script_path = Path.join(@support_dir, script)
 
@@ -528,7 +578,7 @@ defmodule PgFlow.Test.UpstreamHarness do
            stderr_to_stdout: true
          ) do
       {output, 0} ->
-        case Jason.decode(output) do
+        case decode_script_json(output) do
           {:ok, %{"tests" => tests, "failures" => failures} = decoded} ->
             {:ok,
              %{
@@ -545,8 +595,7 @@ defmodule PgFlow.Test.UpstreamHarness do
         end
 
       {output, status} ->
-        {:error,
-         "#{script} failed (exit #{status}): #{String.slice(String.trim(output), 0, 500)}"}
+        {:error, "#{script} failed (exit #{status}): #{script_output_excerpt(output)}"}
     end
   end
 
@@ -557,6 +606,8 @@ defmodule PgFlow.Test.UpstreamHarness do
     with {:ok, conn} <- connect(database_url),
          :ok <- exec!(conn, "CREATE EXTENSION IF NOT EXISTS pgmq"),
          :ok <- install_realtime_shim!(conn),
+         :ok <- install_plain_postgres_pgmq!(conn),
+         :ok <- install_local_jwt_default!(conn),
          :ok <- maybe_load_seed!(database_url, checkout) do
       GenServer.stop(conn)
       :ok
@@ -583,6 +634,126 @@ defmodule PgFlow.Test.UpstreamHarness do
     else
       {:error, "missing upstream seed.sql at #{seed_path}"}
     end
+  end
+
+  # The image's pgmq 1.5.1 raises 42P01 when drop_queue runs again after the
+  # queue tables are gone (`ALTER EXTENSION ... DROP TABLE` has no existence
+  # check). Upstream pgTAP expects the idempotent false return from current
+  # pgmq. This replaces only that function on the fixture database.
+  defp install_plain_postgres_pgmq!(conn) do
+    exec!(conn, """
+    CREATE OR REPLACE FUNCTION pgmq.drop_queue(queue_name text)
+    RETURNS boolean
+    LANGUAGE plpgsql
+    AS $pgflow_drop_queue$
+    DECLARE
+      qtable text := pgmq.format_table_name(queue_name, 'q');
+      qtable_seq text := qtable || '_msg_id_seq';
+      fq_qtable text := 'pgmq.' || qtable;
+      atable text := pgmq.format_table_name(queue_name, 'a');
+      fq_atable text := 'pgmq.' || atable;
+      partitioned boolean;
+    BEGIN
+      EXECUTE FORMAT(
+        'SELECT is_partitioned FROM pgmq.meta WHERE queue_name = %L',
+        queue_name
+      ) INTO partitioned;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_name = qtable AND table_schema = 'pgmq'
+      ) THEN
+        RAISE NOTICE 'pgmq queue `%` does not exist', queue_name;
+        RETURN FALSE;
+      END IF;
+
+      IF pgmq._extension_exists('pgmq') THEN
+        EXECUTE FORMAT('ALTER EXTENSION pgmq DROP TABLE pgmq.%I', qtable);
+        EXECUTE FORMAT('ALTER EXTENSION pgmq DROP SEQUENCE pgmq.%I', qtable_seq);
+        EXECUTE FORMAT('ALTER EXTENSION pgmq DROP TABLE pgmq.%I', atable);
+      END IF;
+
+      EXECUTE FORMAT('DROP TABLE IF EXISTS pgmq.%I', qtable);
+      EXECUTE FORMAT('DROP TABLE IF EXISTS pgmq.%I', atable);
+
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_name = 'meta' AND table_schema = 'pgmq'
+      ) THEN
+        EXECUTE FORMAT('DELETE FROM pgmq.meta WHERE queue_name = %L', queue_name);
+      END IF;
+
+      IF partitioned THEN
+        EXECUTE FORMAT(
+          'DELETE FROM %I.part_config WHERE parent_table IN (%L, %L)',
+          pgmq._get_pg_partman_schema(), fq_qtable, fq_atable
+        );
+      END IF;
+
+      RETURN TRUE;
+    END;
+    $pgflow_drop_queue$
+    """)
+  end
+
+  # Elixir's filtered helper defaults the second argument, so a one-argument
+  # call is ambiguous once an upstream test installs the void overload.
+  # Dropping only that default lets the test's snippet own the one-argument
+  # call. Callers that pass both arguments still reach the Elixir function.
+  defp relax_prune_overload!(database_url) do
+    with {:ok, conn} <- connect(database_url) do
+      result = recreate_prune_without_default(conn)
+      GenServer.stop(conn)
+      result
+    end
+  end
+
+  defp recreate_prune_without_default(conn) do
+    sql =
+      "SELECT pg_get_functiondef('pgflow.prune_data_older_than(interval,text[])'::regprocedure)"
+
+    case Postgrex.query(conn, sql, []) do
+      {:ok, %{rows: [[definition]]}} when is_binary(definition) ->
+        replace_prune_definition(conn, definition)
+
+      {:error, error} ->
+        {:error, Exception.message(error)}
+    end
+  end
+
+  defp replace_prune_definition(conn, definition) do
+    without_default = String.replace(definition, " DEFAULT NULL::text[]", "")
+
+    if without_default == definition do
+      {:error, "could not remove the prune_data_older_than text[] default"}
+    else
+      drop_and_create_prune(conn, without_default)
+    end
+  end
+
+  defp drop_and_create_prune(conn, definition) do
+    with :ok <- exec!(conn, "DROP FUNCTION pgflow.prune_data_older_than(interval, text[])") do
+      exec!(conn, definition)
+    end
+  end
+
+  # Supabase local sets this jwt secret on the database, so is_local() is true
+  # unless a test overrides it. Plain Postgres has no such default, and the
+  # step-mode pgTAP files rely on local recompilation without setting it.
+  defp install_local_jwt_default!(conn) do
+    exec!(conn, """
+    DO $pgflow_jwt$
+    BEGIN
+      EXECUTE format(
+        'ALTER DATABASE %I SET "app.settings.jwt_secret" TO %L',
+        current_database(),
+        'super-secret-jwt-token-with-at-least-32-characters-long'
+      );
+    END
+    $pgflow_jwt$
+    """)
   end
 
   defp install_realtime_shim!(conn) do
@@ -655,6 +826,21 @@ defmodule PgFlow.Test.UpstreamHarness do
     end)
   end
 
+  defp apply_migration_file(database_url, path, file, "pgflow_ddl_only") do
+    sql = path |> File.read!() |> pgflow_ddl_only_sql()
+    temp = Path.join(System.tmp_dir!(), "pgflow_ddl_only_#{:erlang.phash2({path, sql})}.sql")
+    File.write!(temp, sql)
+
+    result =
+      case run_psql_file!(database_url, temp) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, "failed applying #{file}: #{reason}"}}
+      end
+
+    File.rm(temp)
+    result
+  end
+
   defp apply_migration_file(database_url, path, file, mode) do
     opts =
       if mode == "adapt_without_cron",
@@ -667,64 +853,80 @@ defmodule PgFlow.Test.UpstreamHarness do
     end
   end
 
+  defp pgflow_ddl_statement?(statement) do
+    statement
+    |> strip_leading_sql_comments()
+    |> then(&Regex.match?(@pgflow_ddl_statement, &1))
+  end
+
+  # Upstream migrations prefix each statement with a `-- Create ...` comment.
+  # The keep-rule is about the DDL verb, so those comments are ignored for matching
+  # and kept in the replayed text.
+  defp strip_leading_sql_comments(statement) do
+    statement
+    |> String.replace(~r/\A(?:[ \t]*--[^\n]*\n|[ \t]*\/\*.*?\*\/\s*)+/s, "")
+    |> String.trim_leading()
+  end
+
   defp validate_target_catalog!(database_url) do
-    target = manifest()["target"]
-
     with {:ok, conn} <- connect(database_url) do
-      checks = [
-        fn ->
-          if query_scalar!(
-               conn,
-               "SELECT to_regprocedure('pgflow.start_tasks(text,bigint[],uuid,text)') IS NOT NULL"
-             ) do
-            :ok
-          else
-            {:error, "missing four-argument start_tasks"}
-          end
-        end,
-        fn ->
-          if query_scalar!(
-               conn,
-               "SELECT to_regprocedure('pgflow.start_tasks(text,bigint[],uuid)') IS NULL"
-             ) do
-            :ok
-          else
-            {:error, "obsolete three-argument start_tasks still present"}
-          end
-        end,
-        fn ->
-          if query_scalar!(
-               conn,
-               "SELECT to_regprocedure('pgflow.ensure_flow_compiled(text,jsonb)') IS NOT NULL"
-             ) do
-            :ok
-          else
-            {:error, "missing ensure_flow_compiled(text,jsonb)"}
-          end
-        end,
-        fn ->
-          fields =
-            query_rows!(conn, """
-            SELECT attname
-            FROM pg_attribute
-            WHERE attrelid = (SELECT typrelid FROM pg_type WHERE oid = 'pgflow.step_task_record'::regtype)
-              AND attnum > 0 AND NOT attisdropped
-            ORDER BY attnum
-            """)
-
-          if List.flatten(fields) == target["record_fields"] do
-            :ok
-          else
-            {:error, "unexpected step_task_record fields: #{inspect(fields)}"}
-          end
-        end
-      ]
-
-      result =
-        Enum.reduce_while(checks, :ok, &run_catalog_check/2)
-
+      result = Enum.reduce_while(catalog_checks(conn), :ok, &run_catalog_check/2)
       GenServer.stop(conn)
       result
+    end
+  end
+
+  defp catalog_checks(conn) do
+    target = manifest()["target"]
+
+    signature_checks(conn, [target["claim_signature"], target["compile_signature"]], :present) ++
+      signature_checks(
+        conn,
+        [
+          "pgflow.start_tasks(text,bigint[],uuid,text)",
+          "pgflow.start_tasks(text,bigint[],uuid)",
+          "pgflow.ensure_flow_compiled(text,jsonb)"
+        ],
+        :absent
+      ) ++ [fn -> record_layout_check(conn, target["record_fields"]) end]
+  end
+
+  defp signature_checks(conn, signatures, expectation) do
+    Enum.map(signatures, fn signature ->
+      fn -> signature_check(conn, signature, expectation) end
+    end)
+  end
+
+  defp signature_check(conn, signature, :present) do
+    if query_scalar!(conn, "SELECT to_regprocedure($1) IS NOT NULL", [signature]) do
+      :ok
+    else
+      {:error, "missing #{signature}"}
+    end
+  end
+
+  defp signature_check(conn, signature, :absent) do
+    if query_scalar!(conn, "SELECT to_regprocedure($1) IS NULL", [signature]) do
+      :ok
+    else
+      {:error, "obsolete #{signature} still present"}
+    end
+  end
+
+  defp record_layout_check(conn, expected_fields) do
+    fields =
+      query_rows!(conn, """
+      SELECT attname
+      FROM pg_attribute
+      WHERE attrelid = (SELECT typrelid FROM pg_type WHERE oid = 'pgflow.step_task_record'::regtype)
+        AND attnum > 0 AND NOT attisdropped
+      ORDER BY attnum
+      """)
+
+    if List.flatten(fields) == expected_fields do
+      :ok
+    else
+      {:error, "unexpected step_task_record fields: #{inspect(fields)}"}
     end
   end
 
@@ -1027,11 +1229,11 @@ defmodule PgFlow.Test.UpstreamHarness do
         log: false
       )
 
-      Ecto.Migrator.up(PgFlow.TestRepo, 9_000_000_305, PgFlow.Upstream.HelpersUpgradeMigration,
+      Ecto.Migrator.up(PgFlow.TestRepo, 9_000_000_307, PgFlow.Upstream.HelpersFullChainMigration,
         log: false
       )
 
-      %{fixture | versions: %{core: 2, helpers: 5}}
+      %{fixture | versions: %{core: 3, helpers: 7}}
     after
       PgFlow.TestRepo.put_dynamic_repo(previous)
     end

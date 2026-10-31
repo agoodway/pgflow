@@ -4,9 +4,24 @@ defmodule PgFlow.Upstream.OperationalRoutesTest do
   """
   use PgFlow.IntegrationCase, async: false
 
+  alias PgFlow.Flow.Shape
   alias PgFlow.Queries.{Flows, Pgmq}
   alias PgFlow.{Runs, Workers}
   alias PgFlow.Signal.Notify
+
+  defmodule StepModeRouteFlow do
+    use PgFlow.Flow
+
+    @flow slug: :step_mode_route_flow, max_attempts: 3, timeout: 60
+
+    step :process do
+      fn input, _ctx -> input end
+    end
+
+    step :deliver, depends_on: [:process] do
+      fn input, _ctx -> input end
+    end
+  end
 
   @moduletag :integration
   @shared_msg_id 9_007_199_254_740_993
@@ -247,6 +262,103 @@ defmodule PgFlow.Upstream.OperationalRoutesTest do
     end
   end
 
+  describe "compiled step-mode routes" do
+    test "recover_stalled_tasks requeues on the step queue and not the flow queue" do
+      slug = "step_mode_recovery"
+      compile_step_mode!(slug)
+
+      step_queue = "#{slug}__process"
+      assert queue_exists?(step_queue)
+      refute queue_exists?(slug)
+
+      run_id = start_flow_run(slug, %{})
+      msg_id = task_message_id(run_id, "process")
+      assert message_exists?(step_queue, msg_id)
+
+      worker_id = Ecto.UUID.generate()
+
+      {:ok, _} =
+        PgFlow.Queries.Workers.register_worker(TestRepo, worker_id, step_queue, "elixir:test")
+
+      TestRepo.query!(
+        "SELECT * FROM pgflow.start_tasks($1::text, $2::bigint[], $3::uuid, $4::text, $5::text)",
+        [slug, [msg_id], Ecto.UUID.dump!(worker_id), step_queue, "process"]
+      )
+
+      TestRepo.query!(
+        """
+        UPDATE pgflow.step_tasks
+        SET queued_at = now() - interval '2 hours',
+            started_at = now() - interval '1 hour'
+        WHERE run_id = $1 AND step_slug = 'process'
+        """,
+        [Ecto.UUID.dump!(run_id)]
+      )
+
+      TestRepo.query!(
+        "UPDATE #{canonical_queue_table("q", step_queue)} SET vt = now() + interval '1 hour' WHERE msg_id = $1",
+        [msg_id]
+      )
+
+      assert %{rows: [[1, 1]]} = TestRepo.query!("SELECT * FROM pgflow.recover_stalled_tasks(0)")
+
+      assert %{rows: [["queued"]]} =
+               TestRepo.query!(
+                 "SELECT status FROM pgflow.step_tasks WHERE run_id = $1 AND step_slug = 'process'",
+                 [Ecto.UUID.dump!(run_id)]
+               )
+
+      assert visible_in_queue?(step_queue, msg_id)
+      assert message_exists?(step_queue, msg_id)
+      refute queue_exists?(slug)
+    end
+
+    test "prune_data_older_than deletes an old completed run and its routed messages" do
+      slug = "step_mode_prune"
+      compile_step_mode!(slug)
+
+      process_queue = "#{slug}__process"
+      deliver_queue = "#{slug}__deliver"
+      assert queue_exists?(process_queue)
+      assert queue_exists?(deliver_queue)
+      refute queue_exists?(slug)
+
+      run_id = start_flow_run(slug, %{})
+      process_msg = task_message_id(run_id, "process")
+      deliver_msg = send_routed_message!(deliver_queue, run_id, "deliver")
+
+      TestRepo.query!("SELECT pgmq.archive($1::text, $2::bigint)", [process_queue, process_msg])
+      TestRepo.query!("SELECT pgmq.archive($1::text, $2::bigint)", [deliver_queue, deliver_msg])
+      backdate_archive!(process_queue)
+      backdate_archive!(deliver_queue)
+
+      TestRepo.query!(
+        """
+        UPDATE pgflow.runs
+        SET started_at = now() - interval '48 hours',
+            completed_at = now() - interval '48 hours',
+            status = 'completed',
+            remaining_steps = 0
+        WHERE run_id = $1
+        """,
+        [Ecto.UUID.dump!(run_id)]
+      )
+
+      assert %{rows: [[1 | _]]} =
+               TestRepo.query!(
+                 "SELECT * FROM pgflow.prune_data_older_than(make_interval(hours => $1), $2::text[])",
+                 [24, [slug]]
+               )
+
+      assert {:error, :not_found} = Runs.get(TestRepo, run_id)
+      refute archived_message?(process_queue, process_msg)
+      refute archived_message?(deliver_queue, deliver_msg)
+      refute message_exists?(process_queue, process_msg)
+      refute message_exists?(deliver_queue, deliver_msg)
+      refute queue_exists?(slug)
+    end
+  end
+
   describe "worker health and notify" do
     test "worker filters use flow identity when queue name differs in case" do
       flow_slug = "MixedCaseWorker"
@@ -302,6 +414,72 @@ defmodule PgFlow.Upstream.OperationalRoutesTest do
         :ok
       end
     end
+  end
+
+  defp compile_step_mode!(slug) do
+    shape = Shape.from_definition(StepModeRouteFlow.__pgflow_definition__())
+
+    routes =
+      Enum.map(shape["steps"], fn step ->
+        %{"stepSlug" => step["slug"], "queueName" => "#{slug}__#{step["slug"]}"}
+      end)
+
+    %{rows: [[result]]} =
+      TestRepo.query!(
+        "SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb, 'step', $3::jsonb)",
+        [slug, shape, routes]
+      )
+
+    assert result["status"] == "compiled"
+
+    assert %{rows: [["step"]]} =
+             TestRepo.query!("SELECT queue_mode FROM pgflow.flows WHERE flow_slug = $1", [slug])
+  end
+
+  defp send_routed_message!(queue_name, run_id, step_slug) do
+    %{rows: [[msg_id]]} =
+      TestRepo.query!("SELECT pgmq.send($1::text, $2::jsonb)", [
+        queue_name,
+        %{"run_id" => run_id, "step_slug" => step_slug}
+      ])
+
+    TestRepo.query!(
+      """
+      UPDATE pgflow.step_tasks
+      SET message_id = $1, queue_name = $2, status = 'completed'
+      WHERE run_id = $3 AND step_slug = $4
+      """,
+      [msg_id, queue_name, Ecto.UUID.dump!(run_id), step_slug]
+    )
+
+    msg_id
+  end
+
+  defp backdate_archive!(queue_name) do
+    TestRepo.query!("""
+    UPDATE pgmq.#{archive_table_name!(queue_name)}
+    SET archived_at = now() - interval '48 hours'
+    """)
+  end
+
+  defp archived_message?(queue_name, msg_id) do
+    %{rows: [[count]]} =
+      TestRepo.query!(
+        "SELECT count(*) FROM pgmq.#{archive_table_name!(queue_name)} WHERE msg_id = $1",
+        [msg_id]
+      )
+
+    count == 1
+  end
+
+  defp archive_table_name!(queue_name) do
+    %{rows: [[quoted]]} =
+      TestRepo.query!(
+        "SELECT quote_ident(pgmq.format_table_name($1::text, 'a'))",
+        [queue_name]
+      )
+
+    quoted
   end
 
   defp ensure_queue!(queue_name) do

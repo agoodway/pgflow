@@ -7,9 +7,10 @@
     "helpers_version": 4
   },
   "target": {
-    "core_version": 2,
-    "helpers_version": 5,
-    "upstream_sha": "94490709f79ebf366141dd925b047f0c1013e759",
+    "core_version": 3,
+    "helpers_version": 7,
+    "upstream_sha": "baa9e43f5f9122133deacbc3e8ffc80e284b4f50",
+    "upstream_release": "0.17.2",
     "task_statuses": [
       "cancelled",
       "completed",
@@ -18,8 +19,9 @@
       "skipped",
       "started"
     ],
-    "claim_signature": "pgflow.start_tasks(text,bigint[],uuid,text)",
-    "compile_signature": "pgflow.ensure_flow_compiled(text,jsonb)",
+    "claim_signature": "pgflow.start_tasks(text,bigint[],uuid,text,text)",
+    "compile_signature": "pgflow.ensure_flow_compiled(text,jsonb,text,jsonb)",
+    "register_worker_signature": "pgflow.register_worker(uuid,text,text,text)",
     "record_fields": [
       "flow_slug",
       "run_id",
@@ -60,18 +62,58 @@
           "file": "20260607175525_pgflow_worker_start_mode.sql",
           "mode": "adapt_without_cron",
           "reason": "strip ensure_workers body while keeping worker_functions schema changes on plain Postgres"
+        },
+        {
+          "file": "20260920093533_pgflow_telemetry.sql",
+          "mode": "pgflow_ddl_only",
+          "reason": "keep pgflow indexes and workers.pgflow_version; skip pgflow_telemetry, pg_cron, and pg_net"
+        },
+        {
+          "file": "20261001194538_pgflow_telemetry_endpoint_fix.sql",
+          "mode": "skip",
+          "reason": "pgflow_telemetry-only migration; Elixir does not install that schema"
         }
       ],
       "extra_columns": [
         {"schema": "pgflow", "table": "flows", "column": "flow_type"},
         {"schema": "pgflow", "table": "pgflow_version", "column": "placeholder"},
-        {"schema": "pgflow", "table": "extensions_version", "column": "placeholder"}
+        {"schema": "pgflow", "table": "extensions_version", "column": "placeholder"},
+        {"schema": "pgflow", "table": "step_progress", "column": "flow_slug"},
+        {"schema": "pgflow", "table": "step_progress", "column": "run_completed_at"},
+        {"schema": "pgflow", "table": "step_progress", "column": "run_failed_at"},
+        {"schema": "pgflow", "table": "step_progress", "column": "run_id"},
+        {"schema": "pgflow", "table": "step_progress", "column": "run_input"},
+        {"schema": "pgflow", "table": "step_progress", "column": "run_started_at"},
+        {"schema": "pgflow", "table": "step_progress", "column": "run_status"},
+        {"schema": "pgflow", "table": "step_progress", "column": "skip_reason"},
+        {"schema": "pgflow", "table": "step_progress", "column": "step_completed_at"},
+        {"schema": "pgflow", "table": "step_progress", "column": "step_failed_at"},
+        {"schema": "pgflow", "table": "step_progress", "column": "step_output"},
+        {"schema": "pgflow", "table": "step_progress", "column": "step_skipped_at"},
+        {"schema": "pgflow", "table": "step_progress", "column": "step_slug"},
+        {"schema": "pgflow", "table": "step_progress", "column": "step_started_at"},
+        {"schema": "pgflow", "table": "step_progress", "column": "step_status"}
       ],
       "extra_type_attributes": [
         {"schema": "pgflow", "type": "step_task_record", "attribute": "attempts_count"},
         {"schema": "pgflow", "type": "flows", "attribute": "flow_type"},
         {"schema": "pgflow", "type": "pgflow_version", "attribute": "placeholder"},
-        {"schema": "pgflow", "type": "extensions_version", "attribute": "placeholder"}
+        {"schema": "pgflow", "type": "extensions_version", "attribute": "placeholder"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "flow_slug"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "run_completed_at"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "run_failed_at"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "run_id"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "run_input"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "run_started_at"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "run_status"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "skip_reason"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "step_completed_at"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "step_failed_at"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "step_output"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "step_skipped_at"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "step_slug"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "step_started_at"},
+        {"schema": "pgflow", "type": "step_progress", "attribute": "step_status"}
       ],
       "helper_overridden_functions": [
         "start_tasks",
@@ -79,6 +121,7 @@
         "prune_data_older_than"
       ],
       "extra_functions": [
+        "escalate_permanently_stalled",
         "flow_exists",
         "get_flow_input",
         "get_step_output",
@@ -103,6 +146,37 @@
       "maintenance/prune_completed_flows.test.sql",
       "maintenance/prune_uses_task_snapshots.test.sql"
     ],
+    "pgtap_parity_files": [
+      "is_valid_slug.test.sql",
+      "ensure_flow_compiled/auto_recompiles_when_local.test.sql",
+      "ensure_flow_compiled/compiles_missing_flow.test.sql",
+      "ensure_flow_compiled/concurrent_compilation_race.test.sql",
+      "ensure_flow_compiled/fails_mismatch_when_not_local.test.sql",
+      "ensure_flow_compiled/signature.test.sql",
+      "ensure_flow_compiled/verifies_matching_shape.test.sql",
+      "queue_mode/delete_and_prune_routes.test.sql",
+      "queue_mode/naming_restrictions.test.sql",
+      "queue_mode/owned_route_requires_listed_queue.test.sql",
+      "queue_mode/queue_name_resolution.test.sql",
+      "queue_mode/route_map_verification.test.sql",
+      "queue_mode/start_tasks_step_selector.test.sql",
+      "queue_mode/step_mode_provisioning.test.sql",
+      "queue_mode/step_worker_batch_safety.test.sql",
+      "queue_mode/two_step_slice.test.sql",
+      "queue_mode/worker_route_coverage.test.sql",
+      "_cascade_force_skip_steps/archives_task_messages_for_skipped_steps.test.sql",
+      "_cascade_force_skip_steps/archives_task_messages_from_all_private_queues.test.sql",
+      "_cascade_force_skip_steps/broadcast_order.test.sql",
+      "_cascade_force_skip_steps/cascade_through_multiple_levels.test.sql",
+      "_cascade_force_skip_steps/cascade_to_single_dependent.test.sql",
+      "_cascade_force_skip_steps/does_not_archive_preexisting_skipped_step_messages.test.sql",
+      "_cascade_force_skip_steps/idempotent_second_call.test.sql",
+      "_cascade_force_skip_steps/multi_dependency_partial_skip.test.sql",
+      "_cascade_force_skip_steps/single_step_skip.test.sql",
+      "_cascade_force_skip_steps/skipped_event_payload.test.sql",
+      "delete_flow_and_data/drops_queues_by_routes.test.sql"
+    ],
+    "known_divergences": [],
     "pgtap_profiles": {
       "plain_postgres": {
         "realtime": "shim",

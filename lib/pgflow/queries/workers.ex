@@ -30,8 +30,12 @@ defmodule PgFlow.Queries.Workers do
   @spec register_worker(Ecto.Repo.t(), String.t(), String.t(), String.t()) ::
           {:ok, nil} | {:error, term()}
   def register_worker(repo, worker_id, queue_name, function_name) do
-    execute_rpc(repo, "register_worker", [parse_uuid(worker_id), queue_name, function_name],
+    execute_rpc(
+      repo,
+      "register_worker",
+      [parse_uuid(worker_id), queue_name, function_name, PgFlow.Version.worker_stamp()],
       schema: @pgflow_schema,
+      uuid_params: [1],
       mode: :void
     )
   end
@@ -56,6 +60,7 @@ defmodule PgFlow.Queries.Workers do
   def mark_worker_stopped(repo, worker_id) do
     execute_rpc(repo, "mark_worker_stopped", [parse_uuid(worker_id)],
       schema: @pgflow_schema,
+      uuid_params: [1],
       mode: :void
     )
   end
@@ -72,7 +77,7 @@ defmodule PgFlow.Queries.Workers do
     sql = """
     UPDATE pgflow.workers
     SET last_heartbeat_at = NOW()
-    WHERE worker_id = $1::uuid
+    WHERE worker_id = $1::text::uuid
     RETURNING (deprecated_at IS NOT NULL) AS deprecated
     """
 

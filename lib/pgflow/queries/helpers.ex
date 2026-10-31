@@ -26,6 +26,8 @@ defmodule PgFlow.Queries.Helpers do
 
     * `:schema` - (required) The PostgreSQL schema containing the function
     * `:mode` - Result handling mode: `:list`, `:single`, `:count`, `:void`, `:raw`
+    * `:uuid_params` - 1-based parameter positions holding canonical UUID strings;
+      each is cast in SQL via `$n::text::uuid` so logs show readable IDs
 
   ## Returns
 
@@ -41,7 +43,7 @@ defmodule PgFlow.Queries.Helpers do
   def execute_rpc(repo, function_name, params, opts \\ []) do
     schema = Keyword.fetch!(opts, :schema)
     mode = Keyword.get(opts, :mode, :list)
-    placeholders = build_placeholders(params)
+    placeholders = build_placeholders(params, Keyword.get(opts, :uuid_params, []))
     query = "SELECT * FROM #{schema}.#{function_name}(#{placeholders})"
 
     case repo.query(query, params) do
@@ -53,11 +55,13 @@ defmodule PgFlow.Queries.Helpers do
     end
   end
 
-  defp build_placeholders([]), do: ""
+  defp build_placeholders([], _uuid_params), do: ""
 
-  defp build_placeholders(params) do
+  defp build_placeholders(params, uuid_params) do
     1..length(params)
-    |> Enum.map_join(", ", &"$#{&1}")
+    |> Enum.map_join(", ", fn
+      position -> if position in uuid_params, do: "$#{position}::text::uuid", else: "$#{position}"
+    end)
   end
 
   defp handle_result(_rows, _columns, :void), do: {:ok, nil}
@@ -103,14 +107,18 @@ defmodule PgFlow.Queries.Helpers do
   # ===================
 
   @doc """
-  Parses a UUID string to binary format for database queries.
+  Normalizes a UUID to its canonical string form for database queries.
+
+  Queries bind the result to a `$n::text::uuid` parameter so query logs show
+  readable IDs instead of raw 16-byte binaries. Input that is not a valid UUID
+  is returned unchanged and rejected by the database cast.
   """
   @spec parse_uuid(nil | String.t() | binary()) :: nil | binary()
   def parse_uuid(nil), do: nil
 
   def parse_uuid(uuid) when is_binary(uuid) do
-    case Ecto.UUID.dump(uuid) do
-      {:ok, binary} -> binary
+    case Ecto.UUID.cast(uuid) do
+      {:ok, canonical} -> canonical
       :error -> uuid
     end
   end

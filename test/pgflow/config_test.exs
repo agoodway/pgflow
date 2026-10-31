@@ -8,6 +8,46 @@ defmodule PgFlow.ConfigTest do
     def __adapter__, do: Ecto.Adapters.Postgres
   end
 
+  defmodule ConfigSampleFlow do
+    use PgFlow.Flow
+
+    @flow queue: :config_sample_flow
+
+    step :a do
+      fn input, _ctx -> input end
+    end
+  end
+
+  defmodule ConfigOtherFlow do
+    use PgFlow.Flow
+
+    @flow queue: :config_other_flow
+
+    step :a do
+      fn input, _ctx -> input end
+    end
+  end
+
+  defmodule ConfigThirdFlow do
+    use PgFlow.Flow
+
+    @flow queue: :config_third_flow
+
+    step :a do
+      fn input, _ctx -> input end
+    end
+  end
+
+  defmodule ConfigSampleJob do
+    use PgFlow.Job
+
+    @job slug: :config_sample_job
+
+    perform do
+      fn input, _ctx -> input end
+    end
+  end
+
   describe "validate!/1 with valid config" do
     test "accepts config with only required :repo option" do
       config = Config.validate!(repo: ValidTestRepo)
@@ -39,8 +79,8 @@ defmodule PgFlow.ConfigTest do
       config =
         Config.validate!(
           repo: ValidTestRepo,
-          flows: [SomeFlow, AnotherFlow],
-          jobs: [SomeJob],
+          flows: [ConfigSampleFlow, ConfigOtherFlow],
+          jobs: [ConfigSampleJob],
           max_concurrency: 20,
           batch_size: 15,
           signal_strategy: :notify,
@@ -53,8 +93,8 @@ defmodule PgFlow.ConfigTest do
         )
 
       assert config[:repo] == ValidTestRepo
-      assert config[:flows] == [SomeFlow, AnotherFlow]
-      assert config[:jobs] == [SomeJob]
+      assert config[:flows] == [ConfigSampleFlow, ConfigOtherFlow]
+      assert config[:jobs] == [ConfigSampleJob]
       assert config[:max_concurrency] == 20
       assert config[:batch_size] == 15
       assert config[:signal_strategy] == :notify
@@ -456,15 +496,19 @@ defmodule PgFlow.ConfigTest do
     end
 
     test "accepts flows with single module" do
-      config = Config.validate!(repo: ValidTestRepo, flows: [SomeFlow])
+      config = Config.validate!(repo: ValidTestRepo, flows: [ConfigSampleFlow])
 
-      assert config[:flows] == [SomeFlow]
+      assert config[:flows] == [ConfigSampleFlow]
     end
 
     test "accepts flows with multiple modules" do
-      config = Config.validate!(repo: ValidTestRepo, flows: [Flow1, Flow2, Flow3])
+      config =
+        Config.validate!(
+          repo: ValidTestRepo,
+          flows: [ConfigSampleFlow, ConfigOtherFlow, ConfigThirdFlow]
+        )
 
-      assert config[:flows] == [Flow1, Flow2, Flow3]
+      assert config[:flows] == [ConfigSampleFlow, ConfigOtherFlow, ConfigThirdFlow]
     end
 
     test "accepts minimum valid values for pos_integer fields and zero for non_neg_integer fields" do
@@ -601,6 +645,55 @@ defmodule PgFlow.ConfigTest do
       config = Config.validate!(repo: ValidTestRepo, notify_fallback_interval: 600_000)
 
       assert config[:notify_fallback_interval] == 600_000
+    end
+  end
+
+  describe "validate!/1 queue identity" do
+    defmodule OrdersLowerFlow do
+      use PgFlow.Flow
+
+      @flow queue: :orders
+
+      step :a do
+        fn _input, _ctx -> %{} end
+      end
+    end
+
+    defmodule OrdersUpperFlow do
+      use PgFlow.Flow
+
+      @flow queue: :Orders
+
+      step :a do
+        fn _input, _ctx -> %{} end
+      end
+    end
+
+    test "rejects flows that share a PGMQ queue name" do
+      assert_raise ArgumentError, ~r/flows :orders and :Orders share PGMQ queue "orders"/, fn ->
+        PgFlow.Config.validate!(repo: PgFlow.TestRepo, flows: [OrdersLowerFlow, OrdersUpperFlow])
+      end
+    end
+
+    test "accepts a module listed twice" do
+      assert PgFlow.Config.validate!(
+               repo: PgFlow.TestRepo,
+               flows: [OrdersLowerFlow, OrdersLowerFlow]
+             )
+    end
+
+    test "accepts a module listed in flows and jobs" do
+      assert PgFlow.Config.validate!(
+               repo: PgFlow.TestRepo,
+               flows: [OrdersLowerFlow],
+               jobs: [OrdersLowerFlow]
+             )
+    end
+
+    test "names a non-flow entry" do
+      assert_raise ArgumentError, ~r/Enum is not a PgFlow flow or job module/, fn ->
+        PgFlow.Config.validate!(repo: PgFlow.TestRepo, flows: [Enum])
+      end
     end
   end
 end
