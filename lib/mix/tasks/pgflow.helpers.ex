@@ -2,6 +2,16 @@ defmodule Mix.Tasks.Pgflow.Helpers do
   @moduledoc false
 
   @doc false
+  @spec start_repo(module()) :: :ok
+  def start_repo(repo) do
+    case repo.start_link() do
+      {:ok, _} -> :ok
+      {:error, {:already_started, _}} -> :ok
+      {:error, error} -> raise "Failed to start repo: #{inspect(error)}"
+    end
+  end
+
+  @doc false
   def resolve_repo(nil) do
     app = Mix.Project.config()[:app]
 

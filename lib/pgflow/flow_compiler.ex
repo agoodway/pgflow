@@ -7,7 +7,7 @@ defmodule PgFlow.FlowCompiler do
   SQL is intended to be run inside Ecto migrations.
 
   **Note:** Normal worker startup verifies definitions through
-  `PgFlow.Worker.Bootstrap.prepare/2` and upstream `ensure_flow_compiled/2`.
+  `PgFlow.Worker.Bootstrap.prepare/2` and upstream `ensure_flow_compiled/4`.
   Generated migrations remain an explicit Elixir compatibility extension; they
   do not replace startup verification.
 

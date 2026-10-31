@@ -1,7 +1,7 @@
 defmodule PgFlow.Flow.Shape do
   @moduledoc """
   Serializes compiled flow definitions into the upstream camelCase JSON shape
-  consumed by `pgflow.ensure_flow_compiled/2`, `_create_flow_from_shape/2`, and
+  consumed by `pgflow.ensure_flow_compiled/4`, `_create_flow_from_shape/2`, and
   `_compare_flow_shapes/2`.
 
   Defaults and option naming live here so callers share one upstream-compatible

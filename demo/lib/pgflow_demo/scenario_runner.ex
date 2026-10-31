@@ -67,6 +67,7 @@ defmodule PgflowDemo.ScenarioRunner do
   end
 
   defp ensure_executable(%{kind: :executable}), do: :ok
+  defp ensure_executable(%{kind: :check}), do: {:error, :check_only}
   defp ensure_executable(_), do: {:error, :walkthrough_only}
 
   defp build_input(scenario_id, preset_key, input) do

@@ -7,7 +7,7 @@ defmodule PgFlow.Worker.TaskRow do
 
   ## Shape
 
-  Queue-aware `pgflow.start_tasks/4` returns eight columns:
+  Queue-aware `pgflow.start_tasks/5` returns eight columns:
 
       [flow_slug, run_id, step_slug, input, msg_id, task_index, flow_input, attempts_count]
 

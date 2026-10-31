@@ -53,6 +53,16 @@ defmodule PgFlow.Worker.BootstrapTest do
     end
   end
 
+  defmodule BootstrapLockRaceFlow do
+    use PgFlow.Flow
+
+    @flow slug: :bootstrap_lock_race_flow, max_attempts: 3, timeout: 60
+
+    step :process do
+      fn input, _ctx -> %{value: input["value"]} end
+    end
+  end
+
   setup do
     :ok = Sandbox.checkout(TestRepo)
     :ok = Sandbox.mode(TestRepo, {:shared, self()})
@@ -102,9 +112,23 @@ defmodule PgFlow.Worker.BootstrapTest do
         |> Jason.decode!()
         |> Map.fetch!("target")
 
-      for key <- ["claim_signature", "compile_signature"] do
+      for signature <- [
+            target["claim_signature"],
+            target["compile_signature"],
+            target["register_worker_signature"]
+          ] do
         assert %{rows: [[true]]} =
-                 TestRepo.query!("SELECT to_regprocedure($1::text) IS NOT NULL", [target[key]])
+                 TestRepo.query!("SELECT to_regprocedure($1::text) IS NOT NULL", [signature])
+      end
+
+      for signature <- [
+            "pgflow.start_tasks(text,bigint[],uuid,text)",
+            "pgflow.start_tasks(text,bigint[],uuid)",
+            "pgflow.ensure_flow_compiled(text,jsonb)",
+            "pgflow.register_worker(uuid,text,text)"
+          ] do
+        assert %{rows: [[false]]} =
+                 TestRepo.query!("SELECT to_regprocedure($1::text) IS NOT NULL", [signature])
       end
 
       assert %{rows: rows} =
@@ -140,12 +164,12 @@ defmodule PgFlow.Worker.BootstrapTest do
         "CREATE FUNCTION pgflow.start_tasks(text,bigint[],uuid) RETURNS SETOF pgflow.step_task_record LANGUAGE SQL AS 'SELECT * FROM pgflow.start_tasks($1,$2,$3,lower($1))'"
       )
 
-      assert {:error, {:schema_incompatible, :start_tasks_legacy}} =
+      assert {:error, {:schema_incompatible, :start_tasks_legacy_3arg}} =
                Bootstrap.prepare(TestRepo, BootstrapCompileFlow.__pgflow_definition__())
     end
 
-    test "rejects missing four argument claim" do
-      TestRepo.query!("DROP FUNCTION pgflow.start_tasks(text,bigint[],uuid,text)")
+    test "rejects missing five argument claim" do
+      TestRepo.query!("DROP FUNCTION pgflow.start_tasks(text,bigint[],uuid,text,text)")
 
       assert {:error, {:schema_incompatible, :start_tasks}} =
                Bootstrap.prepare(TestRepo, BootstrapCompileFlow.__pgflow_definition__())
@@ -294,7 +318,9 @@ defmodule PgFlow.Worker.BootstrapTest do
     test "returns schema error when ensure_flow_compiled is missing" do
       definition = BootstrapCompileFlow.__pgflow_definition__()
 
-      TestRepo.query!("DROP FUNCTION IF EXISTS pgflow.ensure_flow_compiled(text, jsonb)")
+      TestRepo.query!(
+        "DROP FUNCTION IF EXISTS pgflow.ensure_flow_compiled(text, jsonb, text, jsonb)"
+      )
 
       try do
         assert {:error, {:schema_incompatible, :ensure_flow_compiled}} =
@@ -311,6 +337,114 @@ defmodule PgFlow.Worker.BootstrapTest do
 
       assert {:error, %DBConnection.ConnectionError{}} =
                Bootstrap.prepare(UnavailableBootstrapRepo, definition)
+    end
+  end
+
+  describe "Flows.queue_mode/2" do
+    test "returns the stored mode after compile and nil for an unknown slug" do
+      definition = BootstrapCompileFlow.__pgflow_definition__()
+      shape = Shape.from_definition(definition)
+
+      assert {:ok, %{status: "compiled"}} =
+               Flows.ensure_flow_compiled(TestRepo, "bootstrap_compile_flow", shape)
+
+      assert {:ok, "flow"} = Flows.queue_mode(TestRepo, "bootstrap_compile_flow")
+      assert {:ok, nil} = Flows.queue_mode(TestRepo, "missing_queue_mode_flow")
+    end
+  end
+
+  describe "step-mode refusal" do
+    test "refuses a step-mode flow before compilation and leaves the mode unchanged" do
+      definition = BootstrapCompileFlow.__pgflow_definition__()
+      slug = "bootstrap_compile_flow"
+      shape = Shape.from_definition(definition)
+
+      TestRepo.query!(
+        "SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb, 'step', $3::jsonb)",
+        [slug, shape, step_route_map(slug, shape)]
+      )
+
+      set_local_mode!()
+      assert %{rows: [[true]]} = TestRepo.query!("SELECT pgflow.is_local()")
+
+      assert {:error, {:unsupported_queue_mode, ^slug, "step"}} =
+               Bootstrap.prepare(TestRepo, definition)
+
+      assert %{rows: [["step"]]} =
+               TestRepo.query!("SELECT queue_mode FROM pgflow.flows WHERE flow_slug = $1", [slug])
+
+      assert worker_function_count("elixir:PgFlow.Worker.BootstrapTest.BootstrapCompileFlow") == 0
+    end
+  end
+
+  describe "step-mode refusal under concurrent compilation" do
+    test "waits for a concurrent step-mode compile and refuses it without deleting it" do
+      definition = BootstrapLockRaceFlow.__pgflow_definition__()
+      slug = "bootstrap_lock_race_flow"
+      shape = Shape.from_definition(definition)
+
+      :ok = Sandbox.checkin(TestRepo)
+      Sandbox.mode(TestRepo, :auto)
+      ensure_v02_compilation_schema!()
+      TestRepo.query!("SELECT pgflow.delete_flow_and_data($1)", [slug])
+      on_exit(fn -> TestRepo.query!("SELECT pgflow.delete_flow_and_data($1)", [slug]) end)
+
+      {:ok, conn} = Postgrex.start_link(external_conn_opts())
+      test_pid = self()
+
+      holder =
+        Task.async(fn ->
+          Postgrex.transaction(conn, fn tx ->
+            Postgrex.query!(tx, "SELECT pg_advisory_xact_lock(1, hashtext(lower($1::text)))", [
+              slug
+            ])
+
+            Postgrex.query!(
+              tx,
+              "SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb, 'step', $3::jsonb)",
+              [slug, shape, step_route_map(slug, shape)]
+            )
+
+            send(test_pid, :holder_locked)
+
+            receive do
+              :commit -> :committed
+            end
+          end)
+        end)
+
+      assert_receive :holder_locked, 5_000
+
+      bootstrap =
+        Task.async(fn ->
+          TestRepo.transaction(fn ->
+            set_local_mode!()
+            send(test_pid, {:is_local, TestRepo.query!("SELECT pgflow.is_local()").rows})
+            send(test_pid, {:prepared, Bootstrap.prepare(TestRepo, definition)})
+          end)
+        end)
+
+      assert_receive {:is_local, [[true]]}, 5_000
+      assert :ok = wait_until(fn -> advisory_lock_waiters() > 0 end, timeout_ms: 5_000)
+      refute_received {:prepared, _}
+
+      send(holder.pid, :commit)
+      assert {:ok, :committed} = Task.await(holder, 5_000)
+
+      assert_receive {:prepared, result}, 5_000
+      Task.await(bootstrap, 5_000)
+      assert {:error, {:unsupported_queue_mode, ^slug, "step"}} = result
+
+      assert %{rows: [["step"]]} =
+               TestRepo.query!("SELECT queue_mode FROM pgflow.flows WHERE flow_slug = $1", [slug])
+
+      assert %{rows: [[1]]} =
+               TestRepo.query!("SELECT count(*) FROM pgflow.steps WHERE flow_slug = $1", [slug])
+
+      assert worker_function_count("elixir:PgFlow.Worker.BootstrapTest.BootstrapLockRaceFlow") ==
+               0
+
+      GenServer.stop(conn)
     end
   end
 
@@ -520,6 +654,12 @@ defmodule PgFlow.Worker.BootstrapTest do
     status
   end
 
+  defp step_route_map(flow_slug, shape) do
+    Enum.map(shape["steps"], fn step ->
+      %{"stepSlug" => step["slug"], "queueName" => "#{flow_slug}__#{step["slug"]}"}
+    end)
+  end
+
   defp worker_function_count(function_name) do
     %{rows: [[count]]} =
       TestRepo.query!(
@@ -540,7 +680,7 @@ defmodule PgFlow.Worker.BootstrapTest do
   defp ensure_v02_compilation_schema! do
     {:ok, %{rows: [[exists?]]}} =
       TestRepo.query(
-        "SELECT to_regprocedure('pgflow.ensure_flow_compiled(text,jsonb)') IS NOT NULL"
+        "SELECT to_regprocedure('pgflow.ensure_flow_compiled(text,jsonb,text,jsonb)') IS NOT NULL"
       )
 
     if exists? do
@@ -551,13 +691,13 @@ defmodule PgFlow.Worker.BootstrapTest do
   end
 
   defp apply_core_v02_sql! do
-    sql_path = Path.join(:code.priv_dir(:pgflow), "pgflow_core/sql/versions/v02/v02_up.sql")
+    sql_path = Path.join(:code.priv_dir(:pgflow), "pgflow_core/sql/versions/v03/v03_up.sql")
 
     sql_path
     |> File.read!()
     |> String.split("--SPLIT--")
     |> Enum.filter(fn chunk ->
-      String.contains?(chunk, ~s(CREATE OR REPLACE FUNCTION "pgflow"."ensure_flow_compiled"))
+      String.contains?(chunk, ~s(CREATE FUNCTION "pgflow"."ensure_flow_compiled"))
     end)
     |> List.last()
     |> case do
@@ -578,6 +718,20 @@ defmodule PgFlow.Worker.BootstrapTest do
     TestRepo.query!(
       "SET LOCAL app.settings.jwt_secret = 'super-secret-jwt-token-with-at-least-32-characters-long'"
     )
+  end
+
+  defp external_conn_opts do
+    TestRepo.config()
+    |> Keyword.take([:hostname, :port, :username, :password, :database])
+  end
+
+  defp advisory_lock_waiters do
+    %{rows: [[count]]} =
+      TestRepo.query!(
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND classid = 1 AND objsubid = 2"
+      )
+
+    count
   end
 
   defp wait_until(fun, opts) do

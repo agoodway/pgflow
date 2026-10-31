@@ -242,7 +242,7 @@ defmodule PgFlow.Client do
   Recompiles a flow definition at runtime.
 
   Elixir workers verify definitions through
-  `PgFlow.Worker.Bootstrap.prepare/2` and upstream `ensure_flow_compiled/2`.
+  `PgFlow.Worker.Bootstrap.prepare/2` and upstream `ensure_flow_compiled/4`.
   This API remains for explicit runtime management and per-tenant automations
   where callers intentionally perform destructive recompilation.
 

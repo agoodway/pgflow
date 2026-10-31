@@ -176,6 +176,7 @@ defmodule PgFlow.Config do
       {:ok, config} ->
         RepoValidator.validate_repo!(config[:repo])
         validate_intervals!(config)
+        validate_queue_identity!(config)
         validate_worker_options!(config)
         config
 
@@ -232,5 +233,36 @@ defmodule PgFlow.Config do
 
       WorkerOptions.validate!(opts)
     end)
+  end
+
+  defp validate_queue_identity!(config) do
+    collision =
+      (List.wrap(config[:flows]) ++ List.wrap(config[:jobs]))
+      |> Enum.uniq()
+      |> Enum.map(fn module ->
+        slug = flow_slug!(module)
+        {slug, PgFlow.Slug.queue_name(slug)}
+      end)
+      |> Enum.group_by(&elem(&1, 1), &elem(&1, 0))
+      |> Enum.find(fn {_queue, slugs} -> length(slugs) > 1 end)
+
+    case collision do
+      nil ->
+        :ok
+
+      {queue, [first, second | _]} ->
+        raise ArgumentError,
+              "flows #{inspect(first)} and #{inspect(second)} share PGMQ queue #{inspect(queue)}; " <>
+                "pgflow 0.17.2 rejects case-insensitive flow slug collisions"
+    end
+  end
+
+  defp flow_slug!(module) when is_atom(module) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :__pgflow_slug__, 0) do
+      module.__pgflow_slug__()
+    else
+      raise ArgumentError,
+            "#{inspect(module)} is not a PgFlow flow or job module (missing __pgflow_slug__/0)"
+    end
   end
 end

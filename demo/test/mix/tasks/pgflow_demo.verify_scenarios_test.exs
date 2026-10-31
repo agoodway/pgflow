@@ -60,6 +60,28 @@ defmodule Mix.Tasks.PgflowDemo.VerifyScenariosTest do
     end
   end
 
+  describe "verify_check/3" do
+    test "passes check presets and reports mismatches" do
+      result = VerifyScenarios.verify_check("step_mode_guard", "typescript_owned_flow")
+      assert result.pass
+      assert result.actual["bootstrap_result"] == "refused"
+
+      result =
+        VerifyScenarios.verify_check("slug_rules", "mixed_case",
+          expected: %{"flow_queue_name" => "OrderFlow"}
+        )
+
+      refute result.pass
+      assert result.message =~ "flow_queue_name"
+    end
+
+    test "reports unknown check presets as failures" do
+      result = VerifyScenarios.verify_check("slug_rules", "missing")
+      refute result.pass
+      assert result.message =~ "unknown_preset"
+    end
+  end
+
   describe "run/1" do
     test "passes all executable presets and skips walkthrough scenarios" do
       run_count_before = run_count()
@@ -70,7 +92,15 @@ defmodule Mix.Tasks.PgflowDemo.VerifyScenariosTest do
       assert report.run_history_preserved
       assert run_count() >= run_count_before + report.executed_count
       assert report.executed_count > 0
+      assert report.checked_count > 0
       assert Enum.all?(report.results, & &1.pass)
+
+      checked_ids = report.results |> Enum.map(& &1.scenario_id) |> MapSet.new()
+
+      assert MapSet.subset?(
+               MapSet.new(~w(slug_rules schema_contract step_mode_guard)),
+               checked_ids
+             )
 
       walkthrough_ids = report.walkthrough |> Enum.map(& &1.scenario_id) |> MapSet.new()
       assert "article" in walkthrough_ids

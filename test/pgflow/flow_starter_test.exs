@@ -2,6 +2,7 @@ defmodule PgFlow.FlowStarterTest do
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias PgFlow.Flow.Shape
   alias PgFlow.{FlowStarter, WorkerSupervisor}
   alias PgFlow.TestRepo
 
@@ -105,7 +106,7 @@ defmodule PgFlow.FlowStarterTest do
 
     @tag :destructive_schema
     test "missing claim protocol is a permanent startup failure" do
-      TestRepo.query!("DROP FUNCTION pgflow.start_tasks(text,bigint[],uuid,text)")
+      TestRepo.query!("DROP FUNCTION pgflow.start_tasks(text,bigint[],uuid,text,text)")
       FlowStarter.retry_now(ShapeMismatchFlow)
 
       assert wait_until(fn ->
@@ -129,6 +130,84 @@ defmodule PgFlow.FlowStarterTest do
     test "healthy? is false when bootstrap fails permanently" do
       assert FlowStarter.ready?()
       refute FlowStarter.healthy?()
+    end
+  end
+
+  describe "permanent failure (step-mode flow)" do
+    @describetag :integration
+
+    defmodule StepModeFlow do
+      use PgFlow.Flow
+
+      @flow slug: :flow_starter_step_mode, max_attempts: 3, timeout: 60
+
+      step :process do
+        fn input, _ctx -> %{value: input["value"]} end
+      end
+    end
+
+    setup do
+      :ok = Sandbox.checkout(TestRepo)
+      :ok = Sandbox.mode(TestRepo, {:shared, self()})
+      TestRepo.query!("SELECT pgflow_tests.reset_db()")
+      :persistent_term.put({PgFlow, :repo}, TestRepo)
+
+      definition = StepModeFlow.__pgflow_definition__()
+      shape = Shape.from_definition(definition)
+      slug = "flow_starter_step_mode"
+
+      TestRepo.query!(
+        "SELECT pgflow.ensure_flow_compiled($1::text, $2::jsonb, 'step', $3::jsonb)",
+        [slug, shape, [%{"stepSlug" => "process", "queueName" => "#{slug}__process"}]]
+      )
+
+      worker_config = [
+        repo: TestRepo,
+        max_concurrency: 2,
+        batch_size: 2,
+        signal_strategy: :polling,
+        min_poll_interval: 50,
+        max_poll_interval: 50,
+        notify_fallback_interval: 30_000,
+        heartbeat_interval: 10_000
+      ]
+
+      start_supervised!({Task.Supervisor, name: PgFlow.TaskSupervisor})
+      start_supervised!({WorkerSupervisor, worker_config})
+
+      on_exit(fn ->
+        :persistent_term.erase({PgFlow, :repo})
+        Sandbox.mode(TestRepo, :manual)
+      end)
+
+      :ok
+    end
+
+    test "refuses step mode permanently and does not retry" do
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          starter_pid =
+            start_supervised!({FlowStarter, repo: TestRepo, flows: [StepModeFlow], jobs: []})
+
+          Sandbox.allow(TestRepo, self(), starter_pid)
+          wait_for_failed_permanent(StepModeFlow)
+        end)
+
+      ms = FlowStarter.module_status(StepModeFlow)
+      assert ms.status == :failed_permanent
+      assert ms.last_error.class == :permanent
+      assert ms.last_error.phase == :worker
+
+      assert {:unsupported_queue_mode, "flow_starter_step_mode", "step"} = ms.last_error.reason
+
+      refute Map.has_key?(:sys.get_state(FlowStarter).timers, StepModeFlow)
+      assert log =~ "flow_starter_step_mode"
+      assert log =~ "docs/UPGRADING_UPSTREAM_2026_10.md"
+
+      assert %{rows: [["step"]]} =
+               TestRepo.query!(
+                 "SELECT queue_mode FROM pgflow.flows WHERE flow_slug = 'flow_starter_step_mode'"
+               )
     end
   end
 
@@ -248,12 +327,14 @@ defmodule PgFlow.FlowStarterTest do
       # Instead probe the waiter-cleanup path by injecting a fake waiter and
       # a :DOWN message directly.
       fake_pid = spawn(fn -> :ok end)
-      Process.sleep(20)
+      fake_monitor = Process.monitor(fake_pid)
+      assert_receive {:DOWN, ^fake_monitor, :process, ^fake_pid, _}
       # Process is dead; the cleanup handler must tolerate :DOWN for a ref
       # not present in waiters without crashing.
       fake_ref = Process.monitor(fake_pid)
       send(FlowStarter, {:DOWN, fake_ref, :process, fake_pid, :normal})
-      Process.sleep(20)
+      # Mailbox order guarantees the :DOWN was handled once this call returns.
+      _ = :sys.get_state(FlowStarter)
 
       # FlowStarter is still alive → no crash from unexpected :DOWN.
       assert Process.alive?(Process.whereis(FlowStarter))
@@ -272,7 +353,8 @@ defmodule PgFlow.FlowStarterTest do
       # Inject a stale message directly. Without the generation guard this
       # would invoke run_module_attempt and bump the attempts counter.
       send(FlowStarter, {:attempt, NotAFlow, stale_gen})
-      Process.sleep(30)
+      # Mailbox order guarantees the stale message was handled once this call returns.
+      _ = :sys.get_state(FlowStarter)
 
       # Stale message must be ignored — state unchanged.
       after_state = FlowStarter.module_status(NotAFlow)

@@ -1,8 +1,9 @@
 ExUnit.start()
-Ecto.Adapters.SQL.Sandbox.mode(PgflowDemo.Repo, :manual)
 
-# PgFlow workers poll during application startup; auto mode avoids ownership noise
-# for integration scenario tests. Per-case DataCase sandboxes still work via checkout.
+# `mix test` starts the app, and its PgFlow workers begin polling before this
+# file runs. Switching the sandbox to :manual here would revoke connections those
+# pollers hold mid-query, so the pool stays in :auto. Per-case DataCase
+# sandboxes still work via explicit checkout.
 {:ok, _} = Application.ensure_all_started(:pgflow_demo)
 Ecto.Adapters.SQL.Sandbox.mode(PgflowDemo.Repo, :auto)
 

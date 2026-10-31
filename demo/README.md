@@ -38,9 +38,15 @@ pgflow setup, flow/job compilation, and dashboard upgrades. Do **not** regenerat
 duplicate setup or definition migrations on existing databases. The committed
 `upgrade_pgflow_upstream_alignment` wrapper advances core V02, helpers V05, and
 dashboard V04; `add_pgflow_helpers_v06` then adds stalled-task escalation and
-the `pgflow.step_progress` view.
+the `pgflow.step_progress` view. `upgrade_pgflow_core_v03_helpers_v07` moves an
+existing database to core V03 and helpers V07. Follow
+[the stop-and-drain guide](../docs/UPGRADING_UPSTREAM_2026_10.md) before that
+migration.
 
-On fresh databases, `mix ecto.migrate` replays the full chain. On existing
+On fresh databases, `mix ecto.migrate` replays the full chain. The earliest
+`setup_pgflow` migration calls a bare `up()`, so it installs the latest core and
+helpers versions, and the later pinned wrappers (V02, V05, V06, V03/V07) are
+then no-ops. On existing
 installations, Ecto runs only the pending migrations.
 
 - Demo app: http://localhost:4022
@@ -48,9 +54,11 @@ installations, Ecto runs only the pending migrations.
 
 ## Scenario verification (release gate)
 
-Executable scenarios are documented in [docs/SCENARIOS.md](docs/SCENARIOS.md).
-Baseline verification uses the same `ScenarioRunner` as the LiveView UI and
-requires no network or LLM credentials:
+Executable and check scenarios are documented in [docs/SCENARIOS.md](docs/SCENARIOS.md).
+Baseline verification uses the same `ScenarioRunner` and `ScenarioChecks` as
+the LiveView UI and requires no network or LLM credentials. Check scenarios
+(`slug_rules`, `schema_contract`, `step_mode_guard`) cover the pgflow 0.17.2
+slug rules, schema contract, and the Elixir refusal of step-mode flows:
 
 ```bash
 MIX_ENV=test mix pgflow_demo.verify_scenarios
@@ -61,15 +69,15 @@ Article/LLM integration is opt-in (`--include-llm`) and never required for CI.
 ## Local production verification
 
 The demo temporarily uses `{:pgflow, path: ".."}` in every Mix environment
-while the 0.5.0 release is being tuned. Production-mode verification must run
+while the 0.6.0 release is being tuned. Production-mode verification must run
 from the demo directory with the parent checkout available:
 
 ```bash
 MIX_ENV=prod mix compile --warnings-as-errors
 ```
 
-Production refuses to boot unless its PgFlow dependency includes core V02 and
-helpers V06. The demo-only Docker context contains no parent checkout, so its
+Production refuses to boot unless its PgFlow dependency includes core V03 and
+helpers V07. The demo-only Docker context contains no parent checkout, so its
 image build cannot resolve the temporary path dependency. Include the parent
 checkout in that context or return to a Hex dependency after publication.
 

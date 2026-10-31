@@ -135,8 +135,28 @@ defmodule PgflowDemo.UpstreamUpgradeFixture do
   @doc false
   def migrate_helpers_v06!(fixture) do
     with_fixture_repo(fixture, fn ->
+      Ecto.Migrator.run(PgflowDemo.Repo, @migrations_path, :up, to: 20_260_923_201_943)
+    end)
+  end
+
+  @spec migrate_core_v03!(t()) :: :ok
+  @doc false
+  def migrate_core_v03!(fixture) do
+    with_fixture_repo(fixture, fn ->
       Ecto.Migrator.run(PgflowDemo.Repo, @migrations_path, :up, all: true)
     end)
+  end
+
+  @spec core_v03_migration_version!() :: integer()
+  @doc false
+  def core_v03_migration_version! do
+    migration_version!("*_upgrade_pgflow_core_v03_helpers_v07.exs")
+  end
+
+  @spec core_v03_migration_module() :: module()
+  @doc false
+  def core_v03_migration_module do
+    migration_module!("*_upgrade_pgflow_core_v03_helpers_v07.exs")
   end
 
   defp run_migrations!(fixture, target) do
@@ -216,24 +236,35 @@ defmodule PgflowDemo.UpstreamUpgradeFixture do
   @spec upgrade_migration_version!() :: integer()
   @doc false
   def upgrade_migration_version! do
-    Path.wildcard(Path.join(@migrations_path, "*_upgrade_pgflow_upstream_alignment.exs"))
-    |> List.first()
+    migration_version!("*_upgrade_pgflow_upstream_alignment.exs")
+  end
+
+  @spec upgrade_migration_module() :: module()
+  @doc false
+  def upgrade_migration_module do
+    migration_module!("*_upgrade_pgflow_upstream_alignment.exs")
+  end
+
+  defp migration_version!(pattern) do
+    pattern
+    |> migration_path!()
     |> Path.basename()
     |> String.split("_")
     |> List.first()
     |> String.to_integer()
   end
 
-  @spec upgrade_migration_module() :: module()
-  @doc false
-  def upgrade_migration_module do
-    case Path.wildcard(Path.join(@migrations_path, "*_upgrade_pgflow_upstream_alignment.exs")) do
-      [path | _] ->
-        [{module, _}] = Code.compile_file(path)
-        module
+  defp migration_module!(pattern) do
+    [{module, _}] =
+      ignoring_module_conflicts(fn -> pattern |> migration_path!() |> Code.compile_file() end)
 
-      [] ->
-        raise "missing upgrade_pgflow_upstream_alignment migration"
+    module
+  end
+
+  defp migration_path!(pattern) do
+    case Path.wildcard(Path.join(@migrations_path, pattern)) do
+      [path | _] -> path
+      [] -> raise "missing #{pattern} migration"
     end
   end
 
@@ -243,9 +274,22 @@ defmodule PgflowDemo.UpstreamUpgradeFixture do
     previous = PgflowDemo.Repo.put_dynamic_repo(fixture.repo_name)
 
     try do
-      fun.()
+      ignoring_module_conflicts(fun)
     after
       PgflowDemo.Repo.put_dynamic_repo(previous)
+    end
+  end
+
+  # Ecto.Migrator recompiles migration files on every run, and fixtures replay the
+  # same migrations against several databases, so module redefinition is expected.
+  defp ignoring_module_conflicts(fun) do
+    ignore_conflicts? = Code.get_compiler_option(:ignore_module_conflict)
+    Code.put_compiler_option(:ignore_module_conflict, true)
+
+    try do
+      fun.()
+    after
+      Code.put_compiler_option(:ignore_module_conflict, ignore_conflicts?)
     end
   end
 

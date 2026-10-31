@@ -24,7 +24,7 @@ defmodule Mix.Tasks.Pgflow.Gen.HelpersMigration do
     * `get_step_output(uuid, text)` - Get step output
 
   ### Write Functions
-    * `register_worker(uuid, text, text)` - Register or heartbeat a worker
+    * `register_worker(uuid, text, text, text)` - Register or heartbeat a worker
     * `mark_worker_stopped(uuid)` - Mark worker as stopped
     * `recover_stalled_tasks(double precision)` - Recover stalled tasks
 
@@ -83,7 +83,7 @@ defmodule Mix.Tasks.Pgflow.Gen.HelpersMigration do
       use Ecto.Migration
 
       def up do
-        PgFlow.HelpersMigration.up()
+        PgFlow.HelpersMigration.up(version: #{PgFlow.HelpersMigration.current_version()})
       end
 
       def down do

@@ -298,6 +298,8 @@ defmodule PgFlow.Flow do
     end)
 
     {slug, flow_opts, cron_expression, cron_input} = extract_flow_config(flow_attrs, env)
+    Validation.validate_slug!(slug, :flow, env)
+    Validation.validate_step_slugs!(Enum.map(steps, &elem(&1, 0)), slug, env)
 
     # Generate handler functions for each step
     handler_clauses = generate_handler_clauses(steps)

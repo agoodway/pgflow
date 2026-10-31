@@ -18,6 +18,7 @@ defmodule PgFlow.Schema.Flow do
     field(:opt_timeout, :integer)
     field(:created_at, :utc_datetime_usec)
     field(:flow_type, :string)
+    field(:queue_mode, :string)
 
     has_many(:steps, PgFlow.Schema.Step, foreign_key: :flow_slug, references: :flow_slug)
     has_many(:runs, PgFlow.Schema.Run, foreign_key: :flow_slug, references: :flow_slug)
@@ -26,7 +27,14 @@ defmodule PgFlow.Schema.Flow do
   @doc false
   def changeset(flow, attrs) do
     flow
-    |> cast(attrs, [:flow_slug, :opt_max_attempts, :opt_base_delay, :opt_timeout, :flow_type])
+    |> cast(attrs, [
+      :flow_slug,
+      :opt_max_attempts,
+      :opt_base_delay,
+      :opt_timeout,
+      :flow_type,
+      :queue_mode
+    ])
     |> validate_required([
       :flow_slug,
       :opt_max_attempts,

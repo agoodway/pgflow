@@ -1,6 +1,7 @@
 defmodule PgFlow do
   @pgflow_core_version "0.5.0"
-  @upstream_sha "94490709f79ebf366141dd925b047f0c1013e759"
+  @upstream_sha "baa9e43f5f9122133deacbc3e8ffc80e284b4f50"
+  @upstream_release "0.17.2"
 
   @moduledoc """
   PgFlow is an Elixir implementation of the pgflow workflow engine.
@@ -12,9 +13,10 @@ defmodule PgFlow do
 
   `PgFlow.core_version/0` returns the legacy semantic version string
   `"#{@pgflow_core_version}"` shared with early pgflow releases. It is **not**
-  the upstream npm package version and does not imply upstream `0.17.0` has
-  shipped. For the pinned upstream database contract use `PgFlow.upstream_sha/0`
-  and `PgFlow.compatibility_report/0`. See `docs/UPSTREAM_COMPATIBILITY.md`.
+  the upstream npm package version. The schema contract is pgflow
+  `#{@upstream_release}`. For the pinned upstream database contract use
+  `PgFlow.upstream_sha/0` and `PgFlow.compatibility_report/0`. See
+  `docs/UPSTREAM_COMPATIBILITY.md`.
 
   ## Quick Start
 
@@ -469,8 +471,7 @@ defmodule PgFlow do
   @doc """
   Returns the pinned upstream pgflow git SHA this release aligns with.
 
-  Compatibility is defined against this commit, not against an unreleased npm
-  version such as upstream `0.17.0`.
+  The schema contract is pgflow `#{@upstream_release}` at this commit.
   """
   @spec upstream_sha() :: String.t()
   def upstream_sha, do: @upstream_sha
@@ -486,6 +487,7 @@ defmodule PgFlow do
   @spec compatibility_report() :: %{
           core_version_string: String.t(),
           upstream_sha: String.t(),
+          upstream_release: String.t(),
           bundled_core_version: non_neg_integer(),
           bundled_helpers_version: non_neg_integer()
         }
@@ -493,6 +495,7 @@ defmodule PgFlow do
     %{
       core_version_string: @pgflow_core_version,
       upstream_sha: @upstream_sha,
+      upstream_release: @upstream_release,
       bundled_core_version: PgFlow.Migration.current_version(),
       bundled_helpers_version: PgFlow.HelpersMigration.current_version()
     }
