@@ -53,7 +53,7 @@ Before writing code in any task, load and follow `elixir-phoenix-guide:elixir-es
   - `PgFlow.WorkerOptions.resolve(global :: keyword(), module(), overrides :: keyword()) :: %{max_concurrency: pos_integer(), batch_size: pos_integer()}`: applies the precedence; reads `Keyword.get(global, :worker_options, %{})`.
   - Config key `worker_options: %{module() => keyword()}`, default `%{}`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `test/pgflow/worker_options_test.exs` (`async: true`):
 - `"validate!/1 accepts max_concurrency and batch_size"`: `assert WorkerOptions.validate!(max_concurrency: 4, batch_size: 2) == [max_concurrency: 4, batch_size: 2]`.
@@ -68,21 +68,21 @@ Before writing code in any task, load and follow `elixir-phoenix-guide:elixir-es
 - `"rejects a module that is not a listed flow or job"`: `assert_raise ArgumentError, ~r/worker_options.*not listed in :flows or :jobs/`.
 - `"rejects invalid per-worker keys"`: `%{SimpleFlow => [timeout: 5]}` raises `ArgumentError`.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `mix test test/pgflow/worker_options_test.exs test/pgflow/config_test.exs`
 Expected: FAIL (`PgFlow.WorkerOptions` undefined; unknown option `:worker_options`).
 
-- [ ] **Step 3: Implement `PgFlow.WorkerOptions` and the config key**
+- [x] **Step 3: Implement `PgFlow.WorkerOptions` and the config key**
 
 Use a NimbleOptions schema for the two keys inside `WorkerOptions` and re-raise its errors as `ArgumentError`. In `PgFlow.Config`, add `worker_options: [type: {:map, :atom, :keyword_list}, default: %{}, doc: ...]`, and after NimbleOptions validation call a private `validate_worker_options!(config)` that checks every key is in `config[:flows] ++ config[:jobs]` and runs `WorkerOptions.validate!/1` on every value. Add the option to the moduledoc list.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `mix test test/pgflow/worker_options_test.exs test/pgflow/config_test.exs`
 Expected: PASS
 
-- [ ] **Step 5: Leave changes uncommitted**
+- [x] **Step 5: Leave changes uncommitted**
 
 Suggested message: `feat: Add per-worker option validation and resolution`
 
@@ -103,7 +103,7 @@ Suggested message: `feat: Add per-worker option validation and resolution`
   - `PgFlow.Worker.Server.check(pid()) :: map()` with exactly the keys in the spec's `check_worker/1` result except `:module` and `:pid`: `lifecycle`, `max_concurrency`, `batch_size`, `configured_max_concurrency`, `configured_batch_size`, `active`.
   - Server state keys `:configured_max_concurrency` and `:configured_batch_size`, set in `init/1` from the start config's `max_concurrency`/`batch_size`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 New integration file, `@moduletag :integration`, setup copied from `test/pgflow/flow_starter_test.exs` lines 55-92 (sandbox shared mode, `pgflow_tests.reset_db()`, `{Task.Supervisor, name: PgFlow.TaskSupervisor}`, `{WorkerSupervisor, worker_config}`) plus the persistent-term snapshot/restore from Global Constraints, with `worker_config` including `max_concurrency: 8, batch_size: 8` and `worker_options: %{PgFlow.TestFlows.SimpleFlow => [max_concurrency: 3]}`. Compile `SimpleFlow` the way `server_test.exs`'s `compile_flow/1` does. Tests:
 - `"configured worker_options set the worker's limits"`: `{:ok, pid} = WorkerSupervisor.start_worker(SimpleFlow)`; `assert %{max_concurrency: 3, batch_size: 8, configured_max_concurrency: 3, configured_batch_size: 8} = Server.check(pid)`.
@@ -116,24 +116,24 @@ New integration file, `@moduletag :integration`, setup copied from `test/pgflow/
 - `"invalid start options raise"`: `assert_raise ArgumentError` for `max_concurrency: 0` and for the typo `max_concurency: 4`.
 - `"repo: still works"`: `start_worker(SimpleFlow, repo: TestRepo)` returns `{:ok, pid}` (the `FlowStarter` call shape).
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `mix test test/pgflow/worker/worker_options_supervision_test.exs`
 Expected: FAIL (`Server.check/1` undefined; options ignored).
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 - `start_worker/2`: `{worker_opts, rest} = WorkerOptions.split(opts)`; raise `ArgumentError` when `rest` has any key other than `:repo`; `WorkerOptions.validate!(worker_opts)`; then run the find-or-start under `:global.trans({{__MODULE__, flow_module}, self()}, fn -> ... end, [node()])` (the requester id must be `self()`, or same-flow callers share the lock). For an existing worker, compare only the keys present in `worker_opts` against `Server.check/1`'s `configured_max_concurrency`/`configured_batch_size`; any mismatch returns `{:error, {:conflicting_worker_options, pid}}`.
 - `do_start_worker`: child spec start is `{__MODULE__, :start_worker_process, [flow_module, repo, worker_opts]}` so DynamicSupervisor restarts reuse the same overrides.
 - `start_worker_process/3`: build `worker_config` as today, but take `max_concurrency`/`batch_size` from `WorkerOptions.resolve(config, flow_module, overrides)`.
 - `Server`: set the two `configured_*` state fields in `init/1`; add `check/1` (`GenServer.call(pid, :check)`) and its `handle_call(:check, ...)` reply (`active: map_size(state.active_tasks)`, `lifecycle: Lifecycle.current(state.lifecycle)`).
 
-- [ ] **Step 4: Run tests to verify they pass, plus the existing worker and starter suites**
+- [x] **Step 4: Run tests to verify they pass, plus the existing worker and starter suites**
 
 Run: `mix test test/pgflow/worker/worker_options_supervision_test.exs test/pgflow/worker/server_test.exs test/pgflow/flow_starter_test.exs`
 Expected: PASS
 
-- [ ] **Step 5: Leave changes uncommitted**
+- [x] **Step 5: Leave changes uncommitted**
 
 Suggested message: `feat: Start workers with per-worker options`
 
@@ -149,7 +149,7 @@ Suggested message: `feat: Start workers with per-worker options`
 - Consumes: `Server.check/1` and the `configured_*` state (Task 2).
 - Produces: `PgFlow.Worker.Server.scale(pid(), keyword()) :: {:ok, map()} | {:error, :not_running}`. `opts` is already validated by the caller (Task 4). The success map is the same shape as `check/1`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Integration file, `@moduletag :integration`, using `server_test.exs`'s setup and its `start_worker/3` helper pattern (copy the private helper; it builds the worker config map directly) plus a gated fixture flow `PgFlow.Test.GatedFlow` defined in the test module (one root step following the gated-handler pattern in Global Constraints) and compiled with the same `compile_flow/1` approach. In every test, start the flow runs **before** starting the worker so the worker's initial poll finds them. Tests:
 - `"scaling up starts queued tasks immediately"` (run for `signal_strategy: :polling` with `min_poll_interval`/`max_poll_interval: 60_000`, and for `:notify` with `notify_fallback_interval: 600_000`, so neither a scheduled poll nor the fallback can explain the result): worker `max_concurrency: 1`, 3 runs; receive one `:task_started`; `{:ok, %{max_concurrency: 3}} = Server.scale(pid, max_concurrency: 3)`; `assert_receive {:task_started, _, _}` twice within 1_000ms; release all; all runs complete.
@@ -157,23 +157,23 @@ Integration file, `@moduletag :integration`, using `server_test.exs`'s setup and
 - `"scale changes batch_size"`: `{:ok, %{batch_size: 2, configured_batch_size: 10}} = Server.scale(pid, batch_size: 2)`.
 - `"a stopping worker refuses to scale"`: one run; receive `:task_started`; `spawn(fn -> Server.stop(pid) end)`; wait (WaitHelpers) until `Server.check(pid).lifecycle == :stopping`; `assert {:error, :not_running} = Server.scale(pid, max_concurrency: 5)`; `check(pid).max_concurrency` unchanged; release the task.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `mix test test/pgflow/worker/scaling_test.exs`
 Expected: FAIL (`Server.scale/2` undefined).
 
-- [ ] **Step 3: Implement `Server.scale/2`**
+- [x] **Step 3: Implement `Server.scale/2`**
 
 `handle_call({:scale, opts}, ...)`: when `Lifecycle.can_accept_work?/1` is false reply `{:error, :not_running}`; otherwise merge `opts` into `max_concurrency`/`batch_size`, and when the new `max_concurrency` exceeds `map_size(state.active_tasks)` `send(self(), :poll_now)` (works for both strategies; `:poll_now` already cancels the pending poll timer). Reply `{:ok, check_map(state)}`; reuse the private builder behind `check/1`. `poll_and_dispatch/1` already bounds claims by `min(available_slots, batch_size)`; do not change it.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Remove the `@tag :skip` on Task 2's `"only supplied keys are compared"` test, then run:
 
 Run: `mix test test/pgflow/worker/scaling_test.exs test/pgflow/worker/server_test.exs test/pgflow/worker/worker_options_supervision_test.exs`
 Expected: PASS
 
-- [ ] **Step 5: Leave changes uncommitted**
+- [x] **Step 5: Leave changes uncommitted**
 
 Suggested message: `feat: Scale a running worker's concurrency`
 
@@ -192,7 +192,7 @@ Suggested message: `feat: Scale a running worker's concurrency`
   - `PgFlow.scale_worker(module(), keyword()) :: {:ok, map()} | {:error, :not_found | :not_running}`; raises `ArgumentError` on invalid options before looking up the worker (Oban validates first). The `{:ok, map}` carries the same keys as `check_worker/1`, including `module:` and `pid:`.
   - `PgFlow.check_worker(module()) :: map() | nil`; the map adds `module:` and `pid:` to `Server.check/1`'s keys.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Integration file with the Task 2 setup (`WorkerSupervisor` started, `worker_options: %{SimpleFlow => [max_concurrency: 3]}`, persistent-term snapshot/restore). Tests, named after Oban's (`test/oban_test.exs`, `describe "scale_queue/2"` and `"check_queue/2"`):
 - `"validating options"`: `assert_raise ArgumentError` for `scale_worker(SimpleFlow, [])`, `max_concurrency: -1`, `max_concurrency: 0`, `batch_size: nil`, `paused: true`.
@@ -202,21 +202,21 @@ Integration file with the Task 2 setup (`WorkerSupervisor` started, `worker_opti
 - `"scaling resets to configuration after a restart"`: scale to 6, `Process.exit(pid, :kill)`, wait for the restarted pid, `assert %{max_concurrency: 3} = PgFlow.check_worker(SimpleFlow)`.
 - `"worker options leave the persisted flow definition unchanged"`: read `pgflow.flows`/`pgflow.steps` rows (`opt_max_attempts`, `opt_base_delay`, `opt_timeout`, `opt_start_delay`) for the compiled flow before starting; start with `worker_options` and scale; read again and assert equal; the worker's lifecycle is `:running` (bootstrap verified the shape).
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `mix test test/pgflow/worker/public_scaling_test.exs`
 Expected: FAIL (`PgFlow.scale_worker/2` undefined).
 
-- [ ] **Step 3: Implement the public functions**
+- [x] **Step 3: Implement the public functions**
 
 `PgFlow.scale_worker/2` calls `WorkerOptions.validate_scale!/1`, then `WorkerSupervisor.scale_worker/2`, which returns `{:error, :not_found}` when `find_worker/1` is nil, else `Server.scale/2` with its success map merged with `%{module: m, pid: pid}`. `check_worker/1` returns nil or `Map.merge(Server.check(pid), %{module: m, pid: pid})`. A worker that exits between lookup and call returns `{:error, :not_found}` / `nil`: catch only `:exit` reasons `:noproc`, `{:noproc, _}`, `:normal`, `{:normal, _}`, `{:shutdown, _}`; let `{:timeout, _}` and every other exit propagate. Docs follow `lib/pgflow.ex`'s existing style, with examples mirroring Oban's `scale_queue` docs: scale up, scale down while tasks finish, runtime-only reset.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `mix test test/pgflow/worker/public_scaling_test.exs`
 Expected: PASS
 
-- [ ] **Step 5: Leave changes uncommitted**
+- [x] **Step 5: Leave changes uncommitted**
 
 Suggested message: `feat: Add PgFlow.scale_worker/2 and check_worker/1`
 
@@ -230,15 +230,15 @@ Suggested message: `feat: Add PgFlow.scale_worker/2 and check_worker/1`
 - Modify: `docs/ELIXIR_VS_SUPABASE.md` (table row: per-worker concurrency = TS `EdgeWorker.start(flow, { maxConcurrent })`)
 - Modify: `mix.exs` (`@version "0.6.0"`)
 
-- [ ] **Step 1: Update docs and version as listed**
+- [x] **Step 1: Update docs and version as listed**
 
 The README scaling section states the four contract points: local only, runtime only (resets on restart), scale-down never interrupts active tasks, scale-up polls immediately.
 
-- [ ] **Step 2: Run the full suite and quality checks**
+- [x] **Step 2: Run the full suite and quality checks**
 
 Run: `docker compose -f test/support/db/compose.yaml up -d && PGFLOW_REQUIRE_DB=1 mix test && mix quality && mix doctor`
 Expected: all tests pass; quality and doctor clean for the changed modules.
 
-- [ ] **Step 3: Hand off**
+- [x] **Step 3: Hand off**
 
 Leave everything uncommitted. Report the suggested messages from Tasks 1-5 (this task: `docs: Document per-worker options and runtime scaling`), and ask Chase before any commit, tag, push or `mix hex.publish`.
