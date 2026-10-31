@@ -1,37 +1,52 @@
 # Upstream Compatibility
 
-This release aligns Elixir PgFlow with upstream pgflow at git SHA
-`94490709f79ebf366141dd925b047f0c1013e759`. Upstream package manifests may
-still read `0.16.0`; queue-identity work targets an unreleased `0.17.0`
-changeset. **Do not claim npm `0.17.0` compatibility until upstream publishes
-it.** Report compatibility against the pinned SHA instead.
+This release aligns Elixir PgFlow with upstream pgflow 0.17.2 at git SHA
+`baa9e43f5f9122133deacbc3e8ffc80e284b4f50`. The shared database contract is
+core V03 and helpers V07. An Elixir 0.6.0 worker and a TypeScript 0.17.x
+worker can use one database in flow mode.
+
+The September 2026 alignment (core V02, helpers V05/V06) is the previous
+release. Its procedure stays in
+[UPGRADING_UPSTREAM_2026_09.md](UPGRADING_UPSTREAM_2026_09.md). Moving a
+database that is already on that release to 0.17.2 is
+[UPGRADING_UPSTREAM_2026_10.md](UPGRADING_UPSTREAM_2026_10.md).
 
 ## Version reporting
 
 | API | Meaning |
 | --- | --- |
-| `PgFlow.core_version/0` | Legacy semantic string (`"0.5.0"`). Stable for existing callers. |
-| `PgFlow.upstream_sha/0` | Pinned upstream git commit for SQL semantics. |
-| `PgFlow.compatibility_report/0` | SHA plus bundled core/helpers integer floors. |
-| `PgFlow.Migration.current_version/0` | Bundled core EctoEvolver version (currently `2`). |
-| `PgFlow.HelpersMigration.current_version/0` | Bundled helpers EctoEvolver version (currently `5`). |
+| `PgFlow.core_version/0` | Legacy semantic string (`"0.5.0"`). It does not track the package version. |
+| `PgFlow.upstream_sha/0` | Pinned upstream git commit for the schema contract. |
+| `PgFlow.compatibility_report/0` | Release `0.17.2`, that SHA, and bundled core/helpers integer floors. |
+| `PgFlow.Migration.current_version/0` | Bundled core EctoEvolver version (currently `3`). |
+| `PgFlow.HelpersMigration.current_version/0` | Bundled helpers EctoEvolver version (currently `7`). |
 
 Run `mix pgflow.check_schema` before deploying workers. It verifies signatures,
 queue constraints, helper record layout, and installed version floors.
+`mix pgflow.audit_slugs` is the read-only slug check; the V03 migration repeats
+it and aborts on any finding.
 
 ## Shared contract
 
-Both Elixir and pinned TypeScript workers must see:
+Both Elixir and TypeScript 0.17.x workers must see:
 
-- Four-argument claim: `pgflow.start_tasks(text,bigint[],uuid,text)` — the sole
-  final overload; returns real `attempts_count` from `UPDATE ... RETURNING`.
-- No three-argument claim overload.
-- Startup compilation: `pgflow.ensure_flow_compiled(text,jsonb)`.
+- Five-argument claim: `pgflow.start_tasks(text, bigint[], uuid, text, text)`.
+  Flow-mode callers pass `NULL` for the step slug. The three-argument and
+  four-argument overloads are gone.
+- Startup compilation: `pgflow.ensure_flow_compiled(text, jsonb, text, jsonb)`.
+  Elixir passes queue mode `'flow'` and a null route map.
+- Worker registration: `pgflow.register_worker(uuid, text, text, text)`.
+  Elixir stores `elixir-<package version>` in `workers.pgflow_version`.
 - Eight-field `step_task_record`:
   `flow_slug, run_id, step_slug, input, msg_id, task_index, flow_input, attempts_count`.
 - Task statuses: `queued`, `started`, `completed`, `failed`, `skipped`, `cancelled`.
-- Queue identity: persisted `queue_name` on `steps` and `step_tasks` with
-  `queue_name_is_valid` checks; message identity `(queue_name, message_id)`.
+- Flow mode: one queue per flow, `lower(flow_slug)`, at most 47 characters.
+- `flows.queue_mode`. Elixir serves `'flow'` only.
+- Ascending `idx_runs_started_at`.
+
+A worker that expects a different queue mode or route map gets
+`{:error, {:flow_routing_mismatch, message}}`. `message` is the upstream text,
+unchanged.
 
 ## Documented Elixir overlays
 
@@ -39,49 +54,49 @@ These are intentional and recorded in the compatibility harness manifest:
 
 | Overlay | Reason |
 | --- | --- |
-| `flows.flow_type` column + check | Distinguish jobs from multi-step flows in Elixir APIs/dashboard. |
+| `flows.flow_type` column + check | Distinguish jobs from multi-step flows in Elixir APIs. |
 | `attempts_count` on `step_task_record` | Real handler attempt count; preserved through claim. |
-| Helper RPC functions | `register_worker`, `flow_exists`, `get_flow_input`, `get_step_output`, queue-aware `recover_stalled_tasks`, filtered `prune_data_older_than/2`. |
+| `step_progress` view | Elixir-only read model. Upstream 0.17.2 has no such view. |
+| Helper RPC functions | `register_worker`, `flow_exists`, `get_flow_input`, `get_step_output`, `escalate_permanently_stalled`, queue-aware `recover_stalled_tasks`, filtered `prune_data_older_than/2`. |
 | `realtime` schema shim | No-op `realtime.send/4` on plain Postgres; Elixir broadcasts via Phoenix.PubSub. Never replaces a real Supabase `realtime.send`. |
-| Omitted `ensure_workers()` | Requires Supabase `net.http_post`; Elixir registers workers via OTP. |
+| Omitted `ensure_workers()` and `pgflow_telemetry` | They require Supabase `net.http_post`. Elixir registers workers via OTP. |
 | `SET LOCAL lock_timeout` | Keeps the imported timeout within the wrapper transaction. |
-| Seven/eight-column claim dispatch | Generated core supports the upstream record and the helper record with `attempts_count`. |
-| EctoEvolver tracking views | `pgflow_version`, `extensions_version` placeholder columns. |
 
 ## Behavior corrections (not copied from upstream)
 
 | Area | Elixir behavior |
 | --- | --- |
-| JSON scalar preservation | Elixir preserves valid JSON scalars (`false`, `0`, `""`) through handlers. Pinned TypeScript at `@94490709` coerces falsy output via `output \|\| null` — documented as **unresolved** in the harness manifest. |
-| `is_local()` | The database JWT GUC matching the Supabase local default enables destructive recompilation. An unset GUC does not; `MIX_ENV=dev` alone grants no permission to delete history. See the upgrade guide. |
-| External waits / per-step queues | **Not in this release.** No signal store, manual tasks, or PR #6 integration. |
+| JSON scalar preservation | Elixir preserves valid JSON scalars (`false`, `0`, `""`) through handlers. The pinned TypeScript 0.17.2 worker still coerces falsy output. That difference stays unresolved. |
+| Step mode | Refused at boot, before compilation, even when `is_local()` is true. TypeScript step-mode workers are a separate deployment. |
+| `is_local()` | The database JWT GUC matching the Supabase local default enables destructive recompilation. An unset GUC does not; `MIX_ENV=dev` alone grants no permission to delete history. |
+| External waits | Not in this release. No signal store or manual tasks. |
 | Cron scheduling | Elixir-only deployment operation via `pg_cron`; not invoked on every worker heartbeat. |
 | SQL-owned archival | Queue operations respect persisted `(queue_name, message_id)`; pruning uses task snapshots. |
 
 ## Startup-only upstream vs retained Elixir APIs
 
-Upstream `ensure_flow_compiled/2` owns definition verification at worker start.
+Upstream `ensure_flow_compiled/4` owns definition verification at worker start.
 Elixir retains compatibility APIs (`FlowCompiler`, `JobCompiler`, generated flow/job
-migrations) so existing consumer migrations keep working. Destructive runtime upsert
-is deprecated in favor of startup compilation — see upgrade guide.
+migrations) so existing consumer migrations keep working. Changing stored
+timeout, max attempts, or base delay still needs an explicit database change;
+verification preserves those columns.
 
 ## Installation routes
 
-All paths converge on core V02 + helpers V05:
+All paths converge on core V03 + helpers V07:
 
 1. **Fresh install** — extensions → pgmq → `mix pgflow.setup` → `mix ecto.migrate`.
-2. **Existing V01 + helpers V04** — coordinated upgrade (see upgrade guide).
-3. **Core-only legacy** — apply helpers via new wrapper; do not rerun stamped setup.
+2. **Existing V02 + helpers ≤V06** — stop-and-drain upgrade (see the October guide).
+3. **Core-only legacy** — apply helpers via a new wrapper; do not rerun a stamped setup.
 
 ## Cross-language evidence
 
-The harness (`test/support/upstream/run.exs`) records profile results against
-the pinned SHA. The demo provides consumer acceptance. JSON falsy parity with
-pinned TypeScript remains unresolved — do not claim universal JSON parity.
+The harness (`test/support/upstream/run.exs`) runs catalog, pgTAP, and
+TypeScript profiles against the pinned SHA. The demo is the consumer
+acceptance bed. JSON falsy parity with TypeScript 0.17.2 remains unresolved.
 
-The GitHub workflow is intended verification and has not yet been demonstrated
-to pass on GitHub. Local reports must distinguish passes, unresolved upstream
-behavior, and explicitly skipped cases.
+The GitHub workflow runs on pull request and `workflow_dispatch`. A branch
+push alone does not start it.
 
 ## Permissions
 
@@ -91,4 +106,4 @@ schema usage, function execution, and the DML used by workers. Startup also runs
 `ensure_flow_compiled` and potentially `pgmq.create` under the application role;
 grant their required queue-creation privileges or pre-provision definitions and
 verify startup under the restricted role. Queue tables live under `pgmq.q_*`;
-workers pass the canonical lowercase queue name to `start_tasks/4`.
+flow-mode workers pass the canonical lowercase queue name to `start_tasks/5`.
