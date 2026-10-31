@@ -103,7 +103,7 @@ Production compile is a build check only — it does not start the app or run mi
 | Pin | SHA |
 |-----|-----|
 | Elixir baseline / worktree | `9dbaaafdbf9ef5fcdfb2c10df8edea3577b07846` |
-| Upstream compatibility pin | `94490709f79ebf366141dd925b047f0c1013e759` |
+| Upstream compatibility pin | `baa9e43f5f9122133deacbc3e8ffc80e284b4f50` |
 
 The workflow is configured to verify the demo on `pgflow_demo_test`; a passing
 GitHub run has not yet been observed. Each preset checks persisted step statuses;
