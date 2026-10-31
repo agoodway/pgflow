@@ -37,6 +37,68 @@ defmodule PgFlow.Upstream.InteroperabilityTest do
     end
   end
 
+  @pgtap_parity_files [
+    "is_valid_slug.test.sql",
+    "ensure_flow_compiled/auto_recompiles_when_local.test.sql",
+    "ensure_flow_compiled/compiles_missing_flow.test.sql",
+    "ensure_flow_compiled/concurrent_compilation_race.test.sql",
+    "ensure_flow_compiled/fails_mismatch_when_not_local.test.sql",
+    "ensure_flow_compiled/signature.test.sql",
+    "ensure_flow_compiled/verifies_matching_shape.test.sql",
+    "queue_mode/delete_and_prune_routes.test.sql",
+    "queue_mode/naming_restrictions.test.sql",
+    "queue_mode/owned_route_requires_listed_queue.test.sql",
+    "queue_mode/queue_name_resolution.test.sql",
+    "queue_mode/route_map_verification.test.sql",
+    "queue_mode/start_tasks_step_selector.test.sql",
+    "queue_mode/step_mode_provisioning.test.sql",
+    "queue_mode/step_worker_batch_safety.test.sql",
+    "queue_mode/two_step_slice.test.sql",
+    "queue_mode/worker_route_coverage.test.sql",
+    "_cascade_force_skip_steps/archives_task_messages_for_skipped_steps.test.sql",
+    "_cascade_force_skip_steps/archives_task_messages_from_all_private_queues.test.sql",
+    "_cascade_force_skip_steps/broadcast_order.test.sql",
+    "_cascade_force_skip_steps/cascade_through_multiple_levels.test.sql",
+    "_cascade_force_skip_steps/cascade_to_single_dependent.test.sql",
+    "_cascade_force_skip_steps/does_not_archive_preexisting_skipped_step_messages.test.sql",
+    "_cascade_force_skip_steps/idempotent_second_call.test.sql",
+    "_cascade_force_skip_steps/multi_dependency_partial_skip.test.sql",
+    "_cascade_force_skip_steps/single_step_skip.test.sql",
+    "_cascade_force_skip_steps/skipped_event_payload.test.sql",
+    "delete_flow_and_data/drops_queues_by_routes.test.sql"
+  ]
+
+  describe "pgTAP parity manifest" do
+    @tag :upstream_checkout
+    test "lists the 0.17.2 parity files and only Supabase divergences" do
+      checkout = System.fetch_env!("PGFLOW_UPSTREAM_CHECKOUT")
+
+      harness =
+        "test/support/upstream/manifest.json"
+        |> File.read!()
+        |> Jason.decode!()
+        |> Map.fetch!("harness")
+
+      assert harness["pgtap_parity_files"] == @pgtap_parity_files
+
+      tests_dir = Path.join(checkout, "pkgs/core/supabase/tests")
+
+      Enum.each(@pgtap_parity_files, fn relative ->
+        assert File.exists?(Path.join(tests_dir, relative)), "missing #{relative}"
+      end)
+
+      assert is_list(harness["known_divergences"])
+
+      Enum.each(harness["known_divergences"], fn entry ->
+        assert is_binary(entry["file"])
+        assert is_binary(entry["reason"])
+
+        assert entry["reason"] =~ ~r/realtime|pg_net|vault|edge function/,
+               "divergence reason must name a Supabase-only dependency: #{entry["reason"]}"
+      end)
+    end
+  end
+
   describe "cross-language execution" do
     @describetag :upstream_checkout
 

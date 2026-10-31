@@ -57,7 +57,8 @@ defmodule PgFlow.Test.UpstreamHarness do
           failures: non_neg_integer()
         }
   def tap_result(output, exit_status) do
-    assertions = Regex.scan(~r/^\s*(?:not )?ok\b.*$/m, output)
+    # Require a test number so psql's `ok` column header is not an assertion.
+    assertions = Regex.scan(~r/^\s*(?:not )?ok\s+\d+\b.*$/m, output)
     failed = Enum.count(assertions, fn [line] -> Regex.match?(~r/^\s*not ok\b/, line) end)
     plans = Regex.scan(~r/^\s*1\.\.(\d+)/m, output)
     planned = Enum.reduce(plans, 0, fn [_, count], total -> total + String.to_integer(count) end)
@@ -360,14 +361,27 @@ defmodule PgFlow.Test.UpstreamHarness do
   end
 
   defp run_single_suite(:pgtap, checkout, database_url) do
-    lifecycle_files = manifest()["harness"]["pgtap_lifecycle_files"]
-    prune_files = manifest()["harness"]["pgtap_prune_files"]
+    harness = manifest()["harness"]
+    lifecycle_files = harness["pgtap_lifecycle_files"]
+    divergent_files = Enum.map(harness["known_divergences"] || [], & &1["file"])
+    parity_files = (harness["pgtap_parity_files"] || []) -- divergent_files
+    prune_files = harness["pgtap_prune_files"]
     admin_url = admin_url_for(database_url)
 
     with :ok <- install_elixir_adaptations!(database_url),
          :ok <- install_pgtap!(database_url),
+         :ok <- relax_prune_overload!(database_url),
+         # pg_prove does not start in the tests directory, so `\i _shared/...`
+         # cannot see the shared pruning helper. psql does, with that directory
+         # as its working directory.
          {:ok, lifecycle_result} <-
-           run_pgtap_profile!(checkout, database_url, lifecycle_files, "plain_postgres"),
+           run_pgtap_profile!(
+             checkout,
+             database_url,
+             lifecycle_files ++ parity_files,
+             "plain_postgres",
+             runner: :psql
+           ),
          {:ok, prune_url} <- create_temporary_database!(admin_url, "pgflow_compat_prune_"),
          {:ok, prune_result} <-
            run_prune_pgtap_profile!(checkout, prune_url, prune_files, admin_url) do
@@ -435,7 +449,7 @@ defmodule PgFlow.Test.UpstreamHarness do
     drop_database!(admin_url, database_from_url(prune_url))
   end
 
-  defp run_pgtap_profile!(checkout, database_url, files, profile_name, opts \\ []) do
+  defp run_pgtap_profile!(checkout, database_url, files, profile_name, opts) do
     tests_dir = Path.join(checkout, "pkgs/core/supabase/tests")
 
     {output, status} =
@@ -574,6 +588,8 @@ defmodule PgFlow.Test.UpstreamHarness do
     with {:ok, conn} <- connect(database_url),
          :ok <- exec!(conn, "CREATE EXTENSION IF NOT EXISTS pgmq"),
          :ok <- install_realtime_shim!(conn),
+         :ok <- install_plain_postgres_pgmq!(conn),
+         :ok <- install_local_jwt_default!(conn),
          :ok <- maybe_load_seed!(database_url, checkout) do
       GenServer.stop(conn)
       :ok
@@ -600,6 +616,126 @@ defmodule PgFlow.Test.UpstreamHarness do
     else
       {:error, "missing upstream seed.sql at #{seed_path}"}
     end
+  end
+
+  # The image's pgmq 1.5.1 raises 42P01 when drop_queue runs again after the
+  # queue tables are gone (`ALTER EXTENSION ... DROP TABLE` has no existence
+  # check). Upstream pgTAP expects the idempotent false return from current
+  # pgmq. This replaces only that function on the fixture database.
+  defp install_plain_postgres_pgmq!(conn) do
+    exec!(conn, """
+    CREATE OR REPLACE FUNCTION pgmq.drop_queue(queue_name text)
+    RETURNS boolean
+    LANGUAGE plpgsql
+    AS $pgflow_drop_queue$
+    DECLARE
+      qtable text := pgmq.format_table_name(queue_name, 'q');
+      qtable_seq text := qtable || '_msg_id_seq';
+      fq_qtable text := 'pgmq.' || qtable;
+      atable text := pgmq.format_table_name(queue_name, 'a');
+      fq_atable text := 'pgmq.' || atable;
+      partitioned boolean;
+    BEGIN
+      EXECUTE FORMAT(
+        'SELECT is_partitioned FROM pgmq.meta WHERE queue_name = %L',
+        queue_name
+      ) INTO partitioned;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_name = qtable AND table_schema = 'pgmq'
+      ) THEN
+        RAISE NOTICE 'pgmq queue `%` does not exist', queue_name;
+        RETURN FALSE;
+      END IF;
+
+      IF pgmq._extension_exists('pgmq') THEN
+        EXECUTE FORMAT('ALTER EXTENSION pgmq DROP TABLE pgmq.%I', qtable);
+        EXECUTE FORMAT('ALTER EXTENSION pgmq DROP SEQUENCE pgmq.%I', qtable_seq);
+        EXECUTE FORMAT('ALTER EXTENSION pgmq DROP TABLE pgmq.%I', atable);
+      END IF;
+
+      EXECUTE FORMAT('DROP TABLE IF EXISTS pgmq.%I', qtable);
+      EXECUTE FORMAT('DROP TABLE IF EXISTS pgmq.%I', atable);
+
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_name = 'meta' AND table_schema = 'pgmq'
+      ) THEN
+        EXECUTE FORMAT('DELETE FROM pgmq.meta WHERE queue_name = %L', queue_name);
+      END IF;
+
+      IF partitioned THEN
+        EXECUTE FORMAT(
+          'DELETE FROM %I.part_config WHERE parent_table IN (%L, %L)',
+          pgmq._get_pg_partman_schema(), fq_qtable, fq_atable
+        );
+      END IF;
+
+      RETURN TRUE;
+    END;
+    $pgflow_drop_queue$
+    """)
+  end
+
+  # Elixir's filtered helper defaults the second argument, so a one-argument
+  # call is ambiguous once an upstream test installs the void overload.
+  # Dropping only that default lets the test's snippet own the one-argument
+  # call. Callers that pass both arguments still reach the Elixir function.
+  defp relax_prune_overload!(database_url) do
+    with {:ok, conn} <- connect(database_url) do
+      result = recreate_prune_without_default(conn)
+      GenServer.stop(conn)
+      result
+    end
+  end
+
+  defp recreate_prune_without_default(conn) do
+    sql =
+      "SELECT pg_get_functiondef('pgflow.prune_data_older_than(interval,text[])'::regprocedure)"
+
+    case Postgrex.query(conn, sql, []) do
+      {:ok, %{rows: [[definition]]}} when is_binary(definition) ->
+        replace_prune_definition(conn, definition)
+
+      {:error, error} ->
+        {:error, Exception.message(error)}
+    end
+  end
+
+  defp replace_prune_definition(conn, definition) do
+    without_default = String.replace(definition, " DEFAULT NULL::text[]", "")
+
+    if without_default == definition do
+      {:error, "could not remove the prune_data_older_than text[] default"}
+    else
+      drop_and_create_prune(conn, without_default)
+    end
+  end
+
+  defp drop_and_create_prune(conn, definition) do
+    with :ok <- exec!(conn, "DROP FUNCTION pgflow.prune_data_older_than(interval, text[])") do
+      exec!(conn, definition)
+    end
+  end
+
+  # Supabase local sets this jwt secret on the database, so is_local() is true
+  # unless a test overrides it. Plain Postgres has no such default, and the
+  # step-mode pgTAP files rely on local recompilation without setting it.
+  defp install_local_jwt_default!(conn) do
+    exec!(conn, """
+    DO $pgflow_jwt$
+    BEGIN
+      EXECUTE format(
+        'ALTER DATABASE %I SET "app.settings.jwt_secret" TO %L',
+        current_database(),
+        'super-secret-jwt-token-with-at-least-32-characters-long'
+      );
+    END
+    $pgflow_jwt$
+    """)
   end
 
   defp install_realtime_shim!(conn) do
@@ -1075,11 +1211,11 @@ defmodule PgFlow.Test.UpstreamHarness do
         log: false
       )
 
-      Ecto.Migrator.up(PgFlow.TestRepo, 9_000_000_305, PgFlow.Upstream.HelpersUpgradeMigration,
+      Ecto.Migrator.up(PgFlow.TestRepo, 9_000_000_307, PgFlow.Upstream.HelpersFullChainMigration,
         log: false
       )
 
-      %{fixture | versions: %{core: 2, helpers: 5}}
+      %{fixture | versions: %{core: 3, helpers: 7}}
     after
       PgFlow.TestRepo.put_dynamic_repo(previous)
     end
