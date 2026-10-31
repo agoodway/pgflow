@@ -1109,15 +1109,15 @@ git commit -m "test: Run mixed TypeScript and Elixir workers on one flow"
 - Modify: `.github/workflows/upstream-compatibility.yml` (`PGFLOW_UPSTREAM_SHA` at L28)
 - Modify: `AGENTS.md` (pinned SHA, L61–64)
 
-- [ ] **Step 1:** Set `PGFLOW_UPSTREAM_SHA: baa9e43f5f9122133deacbc3e8ffc80e284b4f50`. After "Install Elixir dependencies", add this step:
+- [x] **Step 1:** Set `PGFLOW_UPSTREAM_SHA: baa9e43f5f9122133deacbc3e8ffc80e284b4f50`. After "Install Elixir dependencies", add this step:
 ```yaml
       - name: Check generated core V03 is current
         run: mix pgflow.sync_upstream --checkout "$PGFLOW_UPSTREAM_CHECKOUT" --sha "$PGFLOW_UPSTREAM_SHA" --version 03 --check
 ```
   Leave the OTP/Elixir versions and action pins unchanged.
-- [ ] **Step 2:** Update the SHA and release name in `AGENTS.md` L61–64. Keep its wording style.
-- [ ] **Step 3: Verify locally** with the E6 importer-check row and `--suite all` on a new compat database. Expected: `pgflow core V03 output is current`; harness exit 0. The workflow runs only on push, after Task 22.
-- [ ] **Step 4: Commit.**
+- [x] **Step 2:** Update the SHA and release name in `AGENTS.md` L61–64. Keep its wording style.
+- [x] **Step 3: Verify locally** with the E6 importer-check row and `--suite all` on a new compat database. Expected: `pgflow core V03 output is current`; harness exit 0. The workflow runs only on push, after Task 22.
+- [x] **Step 4: Commit.**
 ```sh
 git add .github/workflows/upstream-compatibility.yml AGENTS.md
 git commit -m "chore: Pin upstream compatibility CI to pgflow 0.17.2"
@@ -1309,7 +1309,7 @@ Operator decisions recorded for Chase (defaults from the run brief; override if 
 | 15 | c25750e | `PGFLOW_REQUIRE_DB=1 mix test --only migration`; `PGFLOW_REQUIRE_DB=1 mix test`; `mix quality` | green | Historical upgrades were already pinned: core V01→V02 uses `up(version: 2)`, helpers V04→V06 use versions 5 and 6, and the fixture baseline is core 1 / helpers 4. `CoreOnlyMigration` and `HelpersFullChainMigration` stay unversioned because they mean the current install. `mix quality` was red on an ExDNA clone of repo startup, Credo nesting in the catalog check, and `PgFlow.Slug` docs at 0%. Those are fixed. Migration suite: 51 tests, 0 failures. Default suite: 1082 tests, 0 failures (93 excluded). `mix quality` exit 0. |
 | 16 | e235880 | `PGFLOW_UPSTREAM_CHECKOUT=… PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/interoperability_test.exs:73`; harness `--suite catalog` and `--suite pgtap`; `mix quality` | green | RED: `pgtap_parity_files` was nil. GREEN: manifest test 1, 0 failures. Catalog passed, 4 tests, 0 failures. pgTAP passed, 294 tests, 0 failures, which is the lifecycle set plus the 28 parity files plus the prune profile. `known_divergences` stays empty. Compat databases install core 3 and helpers 7. Overlays record `escalate_permanently_stalled` and the Elixir-only `step_progress` view. The parity files run through psql in the tests directory so `\i _shared/prune_data_older_than.sql.raw` resolves; pg_prove's working directory does not. Plain Postgres adaptations, not schema changes: the database jwt secret matches Supabase local so `is_local()` is true; `pgmq.drop_queue` returns false when the queue is already gone because image pgmq 1.5.1 raises `42P01`; the fixture drops the default on `prune_data_older_than(interval, text[])` so the test's one-argument snippet is not ambiguous. `mix quality` exit 0. |
 | 17 | dc5b52c | `PGFLOW_UPSTREAM_CHECKOUT=… PGFLOW_REQUIRE_DB=1 mix test test/pgflow/upstream/interoperability_test.exs:116`; harness `--suite typescript` | green | RED: `UndefinedFunctionError` for `run_mixed_workers!/2`. The rest of that file also failed until `pkgs/{dsl,core,edge-worker}/dist/index.js` was rebuilt with `pnpm nx run-many --target=build --projects=dsl,core,edge-worker`. GREEN: the mixed-worker test, 1 test, 0 failures. Both compiles returned `compiled` or `verified`. Twenty runs completed, two `last_worker_id`s, versions `0.17.2` and `elixir-0.5.0` (the package is still 0.5.0 until Task 19), `max_attempts` 1. The TypeScript flow sets `maxAttempts` 1, `baseDelay` 1, and `timeout` 30 so they match Elixir's DSL defaults and startup does not warn. `--suite typescript` on a new compat database passed, 12 tests, 0 failures, 1 unresolved falsy probe, 2 skipped, exit 0. No TypeScript step-mode worker. Claim logs stay on stderr; the harness reads the last JSON object so those lines do not break the result. |
-| 18 | | | | |
+| 18 | 7081d22 | `MIX_ENV=test mix pgflow.sync_upstream --checkout … --sha baa9e43f… --version 03 --check`; harness `--suite all` | green | Importer printed `pgflow core V03 output is current`. `--suite all` passed, 310 tests, 0 failures: catalog 4, pgTAP 294, TypeScript 12. `AGENTS.md` names `pgflow@0.17.2`. The workflow file triggers on `pull_request` and `workflow_dispatch`, not `push`, so this branch push does not start it. No pull request is opened, and there is no CI run URL to record. |
 | 19 (two commits) | | | | |
 | 20 | | | | |
 | 21 | | | | |
