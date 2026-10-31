@@ -9,6 +9,15 @@ defmodule PgFlow.Signal.Notify do
   Built on `Postgrex.Notifications` which is the purpose-built solution for
   PostgreSQL LISTEN/NOTIFY. Notifications are delivered asynchronously via
   messages to the process that called `listen/2`.
+
+  pgmq keeps `pgmq.notify_insert_throttle` UNLOGGED, so crash recovery
+  empties it, and so does Neon whenever a compute restarts. A queue whose
+  throttle row is missing sends no NOTIFY, and its workers fall back to their
+  slow poll. Every `:throttle_reconcile_interval_ms` this process runs
+  `PgFlow.Queries.Pgmq.restore_notify_throttle_rows/3` for the queues its
+  workers listen on: one statement that restores missing rows, writes nothing
+  when every row is present, and never changes a trigger or locks a queue
+  table.
   """
 
   use GenServer
@@ -20,6 +29,7 @@ defmodule PgFlow.Signal.Notify do
   @min_pgmq_version "1.8.0"
   @registration_retry_base_ms 1_000
   @registration_retry_max_ms 30_000
+  @default_throttle_reconcile_interval_ms 30_000
 
   @type worker_entry :: %{
           worker_pid: pid(),
@@ -30,6 +40,7 @@ defmodule PgFlow.Signal.Notify do
   @type state :: %{
           repo: module(),
           notify_throttle_ms: non_neg_integer(),
+          throttle_reconcile_interval_ms: pos_integer(),
           conn: pid() | nil,
           workers: %{String.t() => worker_entry()},
           channels: %{String.t() => String.t()}
@@ -44,6 +55,9 @@ defmodule PgFlow.Signal.Notify do
 
     * `:repo` - (required) The Ecto repository module
     * `:notify_throttle_ms` - (optional) Throttle interval for pgmq notifications (default: 250)
+    * `:throttle_reconcile_interval_ms` - (optional) Milliseconds between
+      checks that restore missing `pgmq.notify_insert_throttle` rows
+      (default: #{@default_throttle_reconcile_interval_ms})
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -88,6 +102,9 @@ defmodule PgFlow.Signal.Notify do
     repo = Keyword.fetch!(opts, :repo)
     throttle_ms = Keyword.get(opts, :notify_throttle_ms, 250)
 
+    reconcile_ms =
+      Keyword.get(opts, :throttle_reconcile_interval_ms, @default_throttle_reconcile_interval_ms)
+
     verify_pgmq_version!(repo)
 
     # Start the Postgrex.Notifications connection
@@ -101,11 +118,13 @@ defmodule PgFlow.Signal.Notify do
         state = %{
           repo: repo,
           notify_throttle_ms: throttle_ms,
+          throttle_reconcile_interval_ms: reconcile_ms,
           conn: conn,
           workers: %{},
           channels: %{}
         }
 
+        schedule_throttle_reconcile(reconcile_ms)
         {:ok, state}
 
       {:error, reason} ->
@@ -191,11 +210,43 @@ defmodule PgFlow.Signal.Notify do
     end
   end
 
+  def handle_info(:reconcile_throttle, state) do
+    reconcile_throttle_rows(state)
+    schedule_throttle_reconcile(state.throttle_reconcile_interval_ms)
+    {:noreply, state}
+  end
+
   def handle_info(_message, state) do
     {:noreply, state}
   end
 
   # Private helpers
+
+  defp schedule_throttle_reconcile(interval_ms),
+    do: Process.send_after(self(), :reconcile_throttle, interval_ms)
+
+  # Restores missing throttle rows for the queues of registered workers and
+  # logs each queue whose notifications were silent. Failures are logged and
+  # retried on the next tick.
+  defp reconcile_throttle_rows(state) do
+    queue_names = state.workers |> Map.keys() |> Enum.map(&canonical_queue_name/1)
+
+    case Pgmq.restore_notify_throttle_rows(state.repo, queue_names, state.notify_throttle_ms) do
+      {:ok, []} ->
+        :ok
+
+      {:ok, restored} ->
+        Logger.warning(
+          "Signal.Notify: restored missing pgmq.notify_insert_throttle rows for " <>
+            "#{Enum.join(restored, ", ")}; these queues sent no NOTIFY until now"
+        )
+
+      {:error, reason} ->
+        Logger.warning(
+          "Signal.Notify: failed to check pgmq.notify_insert_throttle rows: #{inspect(reason)}"
+        )
+    end
+  end
 
   defp register_worker_binding(state, flow_slug, worker_pid) do
     if Process.alive?(worker_pid) do

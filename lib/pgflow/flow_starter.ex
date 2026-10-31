@@ -11,7 +11,7 @@ defmodule PgFlow.FlowStarter do
 
     1. `:registry` — `PgFlow.FlowRegistry.register/1`
     2. `:worker` — `PgFlow.WorkerSupervisor.start_worker/2`
-    3. `:notify_db` — `PgFlow.Queries.Pgmq.enable_notify_insert/3` (`:notify` mode only)
+    3. `:notify_db` — `PgFlow.Queries.Pgmq.enable_notify_insert/4` (`:notify` mode only)
     4. `:notify_register` — `PgFlow.Signal.Notify.register_worker/2` (`:notify` mode only)
 
   All four operations are idempotent, so retries are safe.
@@ -103,6 +103,8 @@ defmodule PgFlow.FlowStarter do
             repo: module(),
             signal_strategy: :polling | :notify,
             notify_throttle_ms: non_neg_integer(),
+            notify_trigger: PgmqQueries.notify_trigger(),
+            notify_lock_timeout_ms: pos_integer(),
             backoff: backoff_opts(),
             modules: %{optional(module()) => PgFlow.FlowStarter.ModuleState.t()},
             timers: %{optional(module()) => {reference(), non_neg_integer()}},
@@ -116,6 +118,8 @@ defmodule PgFlow.FlowStarter do
       :repo,
       :signal_strategy,
       :notify_throttle_ms,
+      :notify_trigger,
+      :notify_lock_timeout_ms,
       :backoff,
       :modules,
       # timers: %{module => {timer_ref, generation}} — generation guards against
@@ -210,6 +214,8 @@ defmodule PgFlow.FlowStarter do
       repo: repo,
       signal_strategy: Keyword.get(opts, :signal_strategy, :polling),
       notify_throttle_ms: Keyword.get(opts, :notify_throttle_ms, 250),
+      notify_trigger: Keyword.get(opts, :notify_trigger, :deferred),
+      notify_lock_timeout_ms: Keyword.get(opts, :notify_lock_timeout_ms, 2_000),
       backoff: backoff,
       modules: modules,
       timers: %{},
@@ -418,9 +424,13 @@ defmodule PgFlow.FlowStarter do
   defp maybe_run_notify_phases(ms, _state, _worker_pid), do: {:ok, ms}
 
   # Phase 3 — pgmq enable_notify_insert. Returns tuples; deterministic SQL
-  # faults are permanent, connection-layer hiccups are transient.
+  # faults are permanent, connection-layer hiccups are transient, and so is
+  # `lock_not_available` from the install's bounded `lock_timeout` wait.
   defp run_notify_db(ms, state, queue_name) do
-    case PgmqQueries.enable_notify_insert(state.repo, queue_name, state.notify_throttle_ms) do
+    case PgmqQueries.enable_notify_insert(state.repo, queue_name, state.notify_throttle_ms,
+           trigger: state.notify_trigger,
+           lock_timeout: state.notify_lock_timeout_ms
+         ) do
       :ok -> {:ok, ms}
       {:error, reason} -> {:error, classify_db_error(reason), reason, :notify_db}
     end

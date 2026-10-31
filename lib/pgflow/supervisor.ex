@@ -73,7 +73,9 @@ defmodule PgFlow.Supervisor do
          flows: flows,
          jobs: jobs,
          signal_strategy: signal_strategy,
-         notify_throttle_ms: notify_throttle_ms}
+         notify_throttle_ms: notify_throttle_ms,
+         notify_trigger: Keyword.fetch!(config, :notify_trigger),
+         notify_lock_timeout_ms: Keyword.fetch!(config, :notify_lock_timeout_ms)}
       ])
 
     # Use :rest_for_one so if TaskSupervisor crashes, WorkerSupervisor

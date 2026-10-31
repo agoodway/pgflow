@@ -18,10 +18,13 @@ defmodule PgFlow.Config do
     * `:max_poll_interval` (optional) - Maximum milliseconds between polls (slowest rate during backoff). Default: `5000`. Max: `300_000` (5 minutes).
     * `:notify_fallback_interval` (optional) - Milliseconds between fallback polls when using `:notify` strategy. Default: `30000`. Max: `600_000` (10 minutes).
     * `:notify_throttle_ms` (optional) - Throttle interval for pgmq LISTEN/NOTIFY trigger. Default: `250`.
+    * `:notify_trigger` (optional) - `:deferred` recreates pgmq's notify trigger `DEFERRABLE INITIALLY DEFERRED` when workers boot with `signal_strategy: :notify`; `:pgmq_default` keeps the immediate trigger pgmq creates. Default: `:deferred`.
+    * `:notify_lock_timeout_ms` (optional) - Milliseconds the `:deferred` trigger install waits for the queue table lock before failing and retrying with backoff. Default: `2000`.
     * `:recovery_interval` (optional) - Milliseconds between stalled task recovery sweeps. Default: `15_000`.
     * `:stale_threshold` (optional) - Buffer in seconds added beyond a task's effective (step or flow) `opt_timeout` before it is considered stalled. Default: `60`.
     * `:attach_default_logger` (optional) - Whether to attach the default telemetry logger. Default: `false`.
     * `:pubsub` (optional) - Phoenix.PubSub module for broadcasting telemetry events to LiveViews. Default: `nil` (disabled).
+    * `:worker_options` (optional) - Map of flow or job module to per-worker option keywords (`:max_concurrency`, `:batch_size`). Keys must be listed in `:flows` or `:jobs`; an entry applies whether `PgFlow.FlowStarter` or `PgFlow.start_worker/2` starts that module's worker, and `start_worker/2` options override it. Default: `%{}`.
 
   ## Interval Constraints
 
@@ -42,6 +45,7 @@ defmodule PgFlow.Config do
   """
 
   alias PgFlow.Config.RepoValidator
+  alias PgFlow.WorkerOptions
 
   # Maximum allowed values for interval configurations
   @max_poll_interval_limit 300_000
@@ -109,6 +113,18 @@ defmodule PgFlow.Config do
       default: 250,
       doc: "Throttle interval in ms for pgmq LISTEN/NOTIFY trigger (0 = every insert notifies)"
     ],
+    notify_trigger: [
+      type: {:in, [:deferred, :pgmq_default]},
+      default: :deferred,
+      doc:
+        "Notify trigger installed in :notify mode: :deferred (DEFERRABLE INITIALLY DEFERRED, runs at commit) or :pgmq_default (pgmq's immediate trigger)"
+    ],
+    notify_lock_timeout_ms: [
+      type: :pos_integer,
+      default: 2_000,
+      doc:
+        "Milliseconds the :deferred notify trigger install waits for the queue table lock before failing; FlowStarter retries with backoff"
+    ],
     recovery_interval: [
       type: :pos_integer,
       default: 15_000,
@@ -131,6 +147,12 @@ defmodule PgFlow.Config do
       default: nil,
       doc:
         "Phoenix.PubSub module for broadcasting telemetry events. When set, attaches the telemetry-to-PubSub bridge."
+    ],
+    worker_options: [
+      type: {:map, :atom, :keyword_list},
+      default: %{},
+      doc:
+        "Map of flow or job module to per-worker option keywords (:max_concurrency, :batch_size)"
     ]
   ]
 
@@ -154,6 +176,7 @@ defmodule PgFlow.Config do
       {:ok, config} ->
         RepoValidator.validate_repo!(config[:repo])
         validate_intervals!(config)
+        validate_worker_options!(config)
         config
 
       {:error, error} ->
@@ -196,5 +219,18 @@ defmodule PgFlow.Config do
     end
 
     :ok
+  end
+
+  defp validate_worker_options!(config) do
+    allowed = config[:flows] ++ config[:jobs]
+
+    Enum.each(config[:worker_options], fn {module, opts} ->
+      if module not in allowed do
+        raise ArgumentError,
+              "worker_options key #{inspect(module)} is not listed in :flows or :jobs"
+      end
+
+      WorkerOptions.validate!(opts)
+    end)
   end
 end

@@ -48,7 +48,7 @@ Add `pgflow` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:pgflow, "~> 0.5.0"}
+    {:pgflow, "~> 0.6.0"}
   ]
 end
 ```
@@ -58,6 +58,40 @@ Then fetch dependencies:
 ```bash
 mix deps.get
 ```
+
+### Upgrading to 0.6
+
+- `PgFlow.start_worker/2` now raises `ArgumentError` for any option other than
+  `:repo`, `:max_concurrency`, and `:batch_size`, and for invalid values. Earlier
+  releases ignored unknown options. It returns
+  `{:error, {:conflicting_worker_options, pid}}` when a worker is already running
+  with different configured limits.
+- With `signal_strategy: :notify`, the first boot after the upgrade recreates
+  each flow queue's pgmq notify trigger as `DEFERRABLE INITIALLY DEFERRED`, so a
+  long producer transaction no longer blocks other producers on the same queue.
+  Later boots that find the deferred trigger only reconcile the queue's
+  throttle row, with no DDL. A trigger failure now fails the producer's COMMIT
+  instead of its INSERT, and a transaction that sends to a queue and then drops
+  or purges it must first run
+  `SET CONSTRAINTS pgmq.trigger_notify_queue_insert_listeners IMMEDIATE`
+  (`PgFlow.Queries.Pgmq.flush_notify_events/1`; `PgFlow.delete_flow/1` does
+  this itself). Set `notify_trigger: :pgmq_default` to keep pgmq's immediate
+  trigger, on every node, and `notify_lock_timeout_ms` (default `2000`) to bound
+  how long a boot waits for the queue table lock. See the Notify section of
+  [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- `mix pgflow.check_schema` now prints warnings, without failing, for flow
+  queue notify triggers that are not deferred (for example after
+  `ALTER EXTENSION pgmq UPDATE`), that have no `pgmq.notify_insert_throttle`
+  row, or that sit on partitioned queues pgmq cannot notify for. Pass
+  `--notify-trigger pgmq_default` when the app uses `notify_trigger: :pgmq_default`.
+- `PgFlow.Signal.Notify` restores missing `pgmq.notify_insert_throttle` rows
+  every 30 seconds. pgmq keeps that table UNLOGGED, so crash recovery and Neon
+  compute restarts empty it and silence notifications until a row is restored.
+- New: `PgFlow.scale_worker/2` and `PgFlow.check_worker/2` for local runtime
+  scaling, and the `worker_options` config map for per-flow or per-job
+  `max_concurrency` and `batch_size`. Both calls take `:timeout` (default
+  `5_000` ms, or `:infinity`); on expiry the caller exits with
+  `{:timeout, {GenServer, :call, _}}`.
 
 ## Quick Start
 
@@ -157,10 +191,16 @@ back up and follow the [upgrade guidance](docs/UPGRADING_UPSTREAM_2026_09.md).
 # config/config.exs
 config :my_app, MyApp.PgFlow,
   repo: MyApp.Repo,
-  flows: [MyApp.Flows.ProcessOrder],
+  flows: [MyApp.Flows.ProcessOrder, MyApp.Flows.Import],
+  jobs: [MyApp.Jobs.SendEmail],
   heartbeat_interval: 10_000,           # refresh persisted worker health (maximum: 20s)
-  signal_strategy: :notify              # use LISTEN/NOTIFY for low-latency (requires pgmq 1.8+)
+  signal_strategy: :notify,             # use LISTEN/NOTIFY for low-latency (requires pgmq 1.8+)
+  worker_options: %{
+    MyApp.Flows.Import => [max_concurrency: 4, batch_size: 2]
+  }
 ```
+
+Per-worker `max_concurrency` and `batch_size` override the global defaults for specific flows or jobs. Keys must appear in `:flows` or `:jobs`; an entry applies to that module's worker whether `PgFlow.FlowStarter` or `PgFlow.start_worker/2` starts it. `PgFlow.start_worker/2` accepts the same options and takes precedence over `worker_options`; a module started only at runtime (not listed in `:flows` or `:jobs`) takes its overrides from that call.
 
 All options have sensible defaults — only `repo` is required. See `PgFlow.Config` for the full list (concurrency, batch size, poll intervals, recovery, etc.).
 
@@ -178,6 +218,24 @@ def start(_type, _args) do
   Supervisor.start_link(children, opts)
 end
 ```
+
+### Scaling workers at runtime
+
+`PgFlow.scale_worker/2` and `PgFlow.check_worker/2` adjust a running worker on **this node only** (similar to Oban's `scale_queue/2` / `check_queue/2`):
+
+```elixir
+{:ok, _} = PgFlow.start_worker(MyApp.Flows.Import)
+{:ok, status} = PgFlow.scale_worker(MyApp.Flows.Import, max_concurrency: 6)
+PgFlow.check_worker(MyApp.Flows.Import)
+```
+
+Contract:
+
+- **Local only** — affects the worker process on this BEAM node, not remote nodes or TypeScript edge workers.
+- **Runtime only** — limits live in memory; a crash or supervisor restart restores values from config / `worker_options` / `start_worker/2`, not the last scaled values.
+- **Scale-down** — never interrupts active task handlers; running tasks finish, then new claims respect the lower limit.
+- **Scale-up** — triggers an immediate poll so queued work can start without waiting for the next scheduled poll or notify fallback.
+- **Timeout** — both accept `timeout:` (default `5_000` ms) for the call to the worker. When it elapses the caller exits; a timed-out scale may already have been applied.
 
 ### 5. Trigger a Flow
 
@@ -335,6 +393,16 @@ reported by `PgFlow.upstream_sha/0`. Matching workers share the database protoco
 Pinned TypeScript coerces falsy handler output (`false`, `0`, `""`) to null;
 Elixir preserves those values. See [UPSTREAM_COMPATIBILITY.md](docs/UPSTREAM_COMPATIBILITY.md)
 for the tested profiles and limitations.
+
+Worker tuning and notifications are runtime-only and do not touch the shared
+schema. `worker_options`, `PgFlow.start_worker/2`, and `PgFlow.scale_worker/2`
+play the role of the TypeScript worker's `maxConcurrent` and `batchSize`;
+upstream has no runtime scaling. Upstream workers never use LISTEN/NOTIFY.
+With `signal_strategy: :notify`, PgFlow recreates pgmq's insert trigger on
+each flow queue as `DEFERRABLE INITIALLY DEFERRED` so a long producer
+transaction no longer blocks other producers (`notify_trigger: :pgmq_default`
+keeps pgmq's trigger). TypeScript workers and producers sharing those queues
+are unaffected. See [ELIXIR_VS_SUPABASE.md](docs/ELIXIR_VS_SUPABASE.md#queue-notifications).
 
 ## License
 

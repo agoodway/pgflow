@@ -8,6 +8,7 @@ defmodule PgFlow.Queries.Flows do
   """
 
   alias Ecto.Adapters.SQL
+  alias PgFlow.Queries.Pgmq
 
   import PgFlow.Queries.Helpers, only: [execute_rpc: 4, parse_uuid: 1, format_uuid: 1]
 
@@ -647,6 +648,11 @@ defmodule PgFlow.Queries.Flows do
   @doc """
   Deletes a flow and all associated data (runs, step states, step tasks, queue).
 
+  Fires pending deferred notify trigger events with
+  `PgFlow.Queries.Pgmq.flush_notify_events/1` before dropping the queues, so
+  the call also works inside a caller's transaction that has already sent to
+  those queues.
+
   ## Parameters
 
     * `repo` - The Ecto repository
@@ -715,7 +721,16 @@ defmodule PgFlow.Queries.Flows do
     )
   end
 
+  # Fires pending deferred notify trigger events first: dropping a queue table
+  # after a send in the same transaction otherwise fails with "pending trigger
+  # events".
   defp delete_flow_and_queues(repo, slug) do
+    with :ok <- Pgmq.flush_notify_events(repo) do
+      drop_flow_and_queues(repo, slug)
+    end
+  end
+
+  defp drop_flow_and_queues(repo, slug) do
     sql = """
     SELECT CASE WHEN EXISTS (SELECT 1 FROM pgflow.flows WHERE flow_slug = $1)
       THEN pgflow.delete_flow_and_data($1::text) IS NULL

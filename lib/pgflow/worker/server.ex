@@ -115,6 +115,7 @@ defmodule PgFlow.Worker.Server do
   alias PgFlow.Worker.Bootstrap
   alias PgFlow.Worker.Lifecycle
   alias PgFlow.Worker.TaskRow
+  alias PgFlow.WorkerOptions
 
   # Upper bound on runs whose announced skips this worker remembers. Entries are
   # released as soon as a run goes terminal, so this only ever holds in-flight
@@ -148,6 +149,8 @@ defmodule PgFlow.Worker.Server do
           active_tasks: %{reference() => task_metadata()},
           max_concurrency: pos_integer(),
           batch_size: pos_integer(),
+          configured_max_concurrency: pos_integer(),
+          configured_batch_size: pos_integer(),
           visibility_timeout: pos_integer(),
           signal_strategy: :polling | :notify,
           heartbeat_interval: pos_integer(),
@@ -222,6 +225,38 @@ defmodule PgFlow.Worker.Server do
     GenServer.call(pid, :get_state)
   end
 
+  @doc """
+  Returns runtime and configured worker limits and lifecycle state.
+
+  `timeout` is passed to `GenServer.call/3`; when it elapses the caller exits.
+  """
+  @spec check(pid(), timeout()) :: %{
+          lifecycle: atom(),
+          max_concurrency: pos_integer(),
+          batch_size: pos_integer(),
+          configured_max_concurrency: pos_integer(),
+          configured_batch_size: pos_integer(),
+          active: non_neg_integer()
+        }
+  def check(pid, timeout \\ 5_000) do
+    GenServer.call(pid, :check, timeout)
+  end
+
+  @doc """
+  Updates runtime `max_concurrency` and/or `batch_size` for a running worker.
+
+  Returns `{:error, :not_running}` when the worker is not in the `:running`
+  lifecycle state. Configured values (used on restart) are unchanged.
+
+  `timeout` is passed to `GenServer.call/3`; when it elapses the caller exits,
+  and the worker may still apply the scale.
+  """
+  @spec scale(pid(), keyword(), timeout()) :: {:ok, map()} | {:error, :not_running}
+  def scale(pid, opts, timeout \\ 5_000) when is_list(opts) do
+    WorkerOptions.validate_scale!(opts)
+    GenServer.call(pid, {:scale, opts}, timeout)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -263,6 +298,9 @@ defmodule PgFlow.Worker.Server do
         poll_timer_ref: nil
       }
 
+      max_concurrency = Map.fetch!(config, :max_concurrency)
+      batch_size = Map.fetch!(config, :batch_size)
+
       # Build state
       state = %{
         flow_module: flow_module,
@@ -273,8 +311,10 @@ defmodule PgFlow.Worker.Server do
         repo: repo,
         task_supervisor: task_supervisor,
         active_tasks: %{},
-        max_concurrency: Map.fetch!(config, :max_concurrency),
-        batch_size: Map.fetch!(config, :batch_size),
+        max_concurrency: max_concurrency,
+        batch_size: batch_size,
+        configured_max_concurrency: max_concurrency,
+        configured_batch_size: batch_size,
         visibility_timeout: visibility_timeout,
         signal_strategy: signal_strategy,
         heartbeat_interval: heartbeat_interval,
@@ -516,6 +556,7 @@ defmodule PgFlow.Worker.Server do
     {:noreply, %{state | stop_reason: :operator, stop_waiters: [from | state.stop_waiters]}}
   end
 
+  @impl true
   def handle_call(:stop, from, state) do
     state = begin_stop(state, :operator, from)
 
@@ -531,6 +572,55 @@ defmodule PgFlow.Worker.Server do
   @impl true
   def handle_call(:get_state, _from, state) do
     {:reply, state, state}
+  end
+
+  @impl true
+  def handle_call(:check, _from, state) do
+    {:reply, check_map(state), state}
+  end
+
+  @impl true
+  def handle_call({:scale, opts}, _from, state) do
+    if Lifecycle.can_accept_work?(state.lifecycle) do
+      state = apply_scale_opts(state, opts)
+      active = map_size(state.active_tasks)
+
+      state =
+        if state.max_concurrency > active do
+          send(self(), :poll_now)
+          state
+        else
+          state
+        end
+
+      {:reply, {:ok, check_map(state)}, state}
+    else
+      {:reply, {:error, :not_running}, state}
+    end
+  end
+
+  defp apply_scale_opts(state, opts) do
+    state
+    |> maybe_put_scale_opt(opts, :max_concurrency)
+    |> maybe_put_scale_opt(opts, :batch_size)
+  end
+
+  defp maybe_put_scale_opt(state, opts, key) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} -> Map.put(state, key, value)
+      :error -> state
+    end
+  end
+
+  defp check_map(state) do
+    %{
+      lifecycle: Lifecycle.current(state.lifecycle),
+      max_concurrency: state.max_concurrency,
+      batch_size: state.batch_size,
+      configured_max_concurrency: state.configured_max_concurrency,
+      configured_batch_size: state.configured_batch_size,
+      active: map_size(state.active_tasks)
+    }
   end
 
   @impl true
