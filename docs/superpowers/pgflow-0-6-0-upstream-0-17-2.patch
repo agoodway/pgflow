@@ -1,0 +1,159 @@
+From 356ec8f3df1712ad3bc6b8abcc41643ffbd5b977 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sat, 31 Oct 2026 00:35:58 +0000
+Subject: [PATCH] docs: Update PgFlow skill for 0.6.0 and upstream 0.17.2
+
+- State the core V03 and helpers V07 stop-and-drain upgrade.
+- Record slug rules, the step-mode refusal, and the worker stamp.
+---
+ skills/pgflow/SKILL.md                    |  4 +++-
+ skills/pgflow/references/compatibility.md | 11 ++++-----
+ skills/pgflow/references/flow.md          |  2 +-
+ skills/pgflow/references/operations.md    |  6 ++---
+ skills/pgflow/references/public-api.md    |  2 +-
+ skills/pgflow/references/upgrading.md     | 27 +++++++++++++++++++++--
+ 6 files changed, 37 insertions(+), 15 deletions(-)
+
+diff --git a/skills/pgflow/SKILL.md b/skills/pgflow/SKILL.md
+index 8294d77..77f676a 100644
+--- a/skills/pgflow/SKILL.md
++++ b/skills/pgflow/SKILL.md
+@@ -32,7 +32,9 @@ For `/pgflow help` or an unknown/missing subcommand, list: `bootstrap`, `upgrade
+ 
+ ## Non-negotiable safety rules
+ 
+-- Treat logical flow identity and physical queue identity separately. Queue operations use persisted `(queue_name, message_id)`; current default queue routes are lowercase flow slugs.
++- Treat logical flow identity and physical queue identity separately. Queue operations use persisted `(queue_name, message_id)`; flow-mode queue routes are lowercase flow slugs, at most 47 characters.
++- PgFlow 0.6.0 shares a database with TypeScript 0.17.x only in flow mode. Elixir refuses step-mode flows. A routing mismatch is `{:error, {:flow_routing_mismatch, message}}`. Workers are stamped `elixir-<package version>`.
++- Slugs follow upstream `is_valid_slug`. Compile-time slug errors are fixed in code; migrations never rename slugs. Run `mix pgflow.audit_slugs` before `mix pgflow.setup --upgrade`.
+ - Do not overlap old and new workers during a schema upgrade. Pause producers, drain, stop all writers, apply the new schema version, verify, and deploy matching callers.
+ - Do not expect an applied setup migration to rerun after a dependency bump. Use the host's migration manager; in Ecto-managed applications, generate a new `mix pgflow.setup --upgrade` wrapper.
+ - When an upgrade also moves/restores the database, a green PgFlow schema does not prove recurring schedules survived. Inventory cron state on the source and reconcile host-owned schedules on the target from canonical application configuration.
+diff --git a/skills/pgflow/references/compatibility.md b/skills/pgflow/references/compatibility.md
+index 76d5341..121095e 100644
+--- a/skills/pgflow/references/compatibility.md
++++ b/skills/pgflow/references/compatibility.md
+@@ -17,12 +17,9 @@ pg_cron registrations.
+ 
+ Run migration tests separately because they mutate the shared test schema. Without `PGFLOW_REQUIRE_DB=1`, an unreachable database can exclude integration tests while the command succeeds.
+ 
+-The schema gate checks core/helpers version floors, required tables and pgmq, sole four-argument `start_tasks(text,bigint[],uuid,text)`, absence of the legacy three-argument claim, `ensure_flow_compiled(text,jsonb)`, queue constraints, task statuses, and the eight-field `step_task_record` with `attempts_count`. Worker bootstrap checks a narrower runtime-critical subset; it does not replace this gate.
++The schema gate checks core/helpers version floors, required tables and pgmq, the five-argument `start_tasks(text,bigint[],uuid,text,text)`, absence of the legacy three-argument and four-argument claims, `ensure_flow_compiled(text,jsonb,text,jsonb)`, `register_worker(uuid,text,text,text)`, queue constraints, task statuses, and the eight-field `step_task_record` with `attempts_count`. Worker bootstrap checks a narrower runtime-critical subset; it does not replace this gate.
+ 
+-For a V06 library build, the helpers floor is 6 at both the CLI gate and
+-worker bootstrap. Verify `pgflow.escalate_permanently_stalled()` and the
+-15-column `pgflow.step_progress` view after the migration. V05 consumers must
+-not assume a permanently stalled task or run becomes terminal.
++PgFlow 0.6.0 requires core V03 and helpers V07. Verify `pgflow.escalate_permanently_stalled()` and the 15-column `pgflow.step_progress` view after the migration. Elixir workers stamp `elixir-<package version>` and refuse step-mode flows. A queue-mode mismatch returns `{:error, {:flow_routing_mismatch, message}}`.
+ 
+ ## Upstream harness
+ 
+@@ -31,11 +28,11 @@ Run only against a disposable database with the permitted test prefix:
+ ```bash
+ MIX_ENV=test mix run --no-start test/support/upstream/run.exs \
+   --checkout /path/to/upstream \
+-  --sha 94490709f79ebf366141dd925b047f0c1013e759 \
++  --sha baa9e43f5f9122133deacbc3e8ffc80e284b4f50 \
+   --database-url postgres://postgres:postgres@localhost:54323/pgflow_compat_xxx \
+   --suite all
+ ```
+ 
+ The full harness needs Git, `psql`, Node, pnpm, Supabase CLI, and server pgTAP. Report passes, unresolved probes, and skips separately. Do not claim universal JSON parity: pinned TypeScript coerces falsy handler output while Elixir preserves `false`, `0`, and `""`. Full notify acceptance also requires a pgmq version providing notify-insert support; fallback polling is a distinct profile.
+ 
+-Report compatibility by pinned SHA plus `PgFlow.compatibility_report/0`, not by an unreleased upstream version number.
++Report compatibility as upstream pgflow 0.17.2 (`baa9e43f5f9122133deacbc3e8ffc80e284b4f50`) through `PgFlow.compatibility_report/0`. `PgFlow.core_version/0` remains the legacy string `"0.5.0"` and does not track the package. Pinned TypeScript 0.17.2 still coerces falsy handler output; Elixir preserves `false`, `0`, and `""`.
+diff --git a/skills/pgflow/references/flow.md b/skills/pgflow/references/flow.md
+index 63973bb..64a0ff6 100644
+--- a/skills/pgflow/references/flow.md
++++ b/skills/pgflow/references/flow.md
+@@ -109,7 +109,7 @@ When generating steps, apply these patterns:
+ ## Guardrails
+ 
+ - Always use `use PgFlow.Flow` and the `@flow` module attribute
+-- Queue slugs must be unique case-insensitively across all flows/jobs and at most 47 characters
++- Queue slugs must match upstream `is_valid_slug`: `[A-Za-z0-9_]` only, start with a letter, end with a letter or digit, no `__`, at most 128 characters, and not `run`. The queue name is the lowercased slug, at most 47 characters, and unique across flows and jobs. Compile-time failures are fixed by renaming the slug in code. See [upgrading.md](upgrading.md).
+ - All handler return values must be JSON-serializable
+ - Do not create the migration file manually — use `mix pgflow.gen.flow_migration`
+ - If the flow has a `map` step, the array source step must return a list
+diff --git a/skills/pgflow/references/operations.md b/skills/pgflow/references/operations.md
+index fe943c2..45eeb2a 100644
+--- a/skills/pgflow/references/operations.md
++++ b/skills/pgflow/references/operations.md
+@@ -9,14 +9,14 @@
+ 
+ ## Queue identity
+ 
+-The durable identity is `(queue_name, message_id)`, not `message_id`. Flow slugs keep logical case; current physical queues use lowercase slugs and must be nonempty and at most 47 characters. Case-insensitive slug collisions are invalid. Claim, recovery, cancel/delete, and prune operations must use persisted routes. Per-step custom queues are not implemented.
++The durable identity is `(queue_name, message_id)`, not `message_id`. Flow slugs keep logical case; flow-mode queues use lowercase slugs and must be nonempty and at most 47 characters. Case-insensitive slug collisions are invalid. Claim, recovery, cancel/delete, and prune operations must use persisted routes. Elixir refuses step-mode flows at boot. A TypeScript step-mode worker is a separate deployment.
+ 
+ ## Recovery
+ 
+ Stalled-task recovery is supervised and defaults to a 15-second sweep. A task is eligible only when task, step, and run are all `started` and the effective timeout plus stale threshold elapsed. Recovery uses `FOR UPDATE SKIP LOCKED`, preserves attempt count, increments `requeued_count`, clears ownership/start time, and resets visibility on the persisted queue.
+ 
+-With helpers V05, after three requeues the next sweep archives the message and
+-records `permanently_stalled_at`; the task and run remain `started`. With helpers
++On helpers V05, after three requeues the next sweep archives the message and
++records `permanently_stalled_at`; the task and run remain `started`. Since helpers
+ V06, the recovery process then calls `pgflow.escalate_permanently_stalled()` as
+ a separate query. Escalation locks the run, step, then task; raises the task's
+ attempt count to the effective maximum; and calls `fail_task`, so the step's
+diff --git a/skills/pgflow/references/public-api.md b/skills/pgflow/references/public-api.md
+index b5aee54..bbd7718 100644
+--- a/skills/pgflow/references/public-api.md
++++ b/skills/pgflow/references/public-api.md
+@@ -57,7 +57,7 @@ Worker health is heartbeat-derived: healthy under 30 seconds, stale through 60 s
+ 
+ Use raw SQL only for objects not exposed here (migration preflight, exact function signatures, pgmq internals). Validate identifiers and summarize results rather than exposing raw rows.
+ 
+-## SQL progress read model (helpers V06)
++## SQL progress read model
+ 
+ `pgflow.step_progress` exposes one row per `(run_id, step_slug)` for host SQL
+ consumers such as GraphQL subscriptions. Its columns are `run_id`, `flow_slug`,
+diff --git a/skills/pgflow/references/upgrading.md b/skills/pgflow/references/upgrading.md
+index 0ef7163..60e8a85 100644
+--- a/skills/pgflow/references/upgrading.md
++++ b/skills/pgflow/references/upgrading.md
+@@ -1,6 +1,29 @@
+ # Upgrade PgFlow schema
+ 
+-Use this for an existing installation when a dependency adds a core or helpers migration. PgFlow 0.4.0 aligned with upstream SHA `94490709f79ebf366141dd925b047f0c1013e759` at core V02 + helpers V05; do not call that published npm `0.17.0` compatibility. PgFlow 0.5.0 keeps core V02 and adds helpers V06.
++Use this for an existing installation when a dependency adds a core or helpers migration. PgFlow 0.6.0 targets upstream pgflow 0.17.2 (`baa9e43f5f9122133deacbc3e8ffc80e284b4f50`): core V03 and helpers V07. PgFlow 0.4.0 stayed on core V02 and helpers V05. PgFlow 0.5.0 stayed on core V02 and added helpers V06. Those earlier releases are not the current schema.
++
++## pgflow 0.6.0 stop-and-drain
++
++Anyone on core V02 and helpers V06 or earlier who will share the database with TypeScript 0.17.x workers follows this order:
++
++1. `mix pgflow.audit_slugs` must print no findings.
++2. Stop every Elixir worker and every TypeScript worker. Wait until `SELECT count(*) FROM pgflow.step_tasks WHERE status IN ('queued', 'started')` is 0, or accept that queued tasks resume after the upgrade.
++3. `mix pgflow.setup --upgrade`, then `mix ecto.migrate`. The generated file is `<timestamp>_upgrade_pgflow_core_v03_helpers_v07.exs`. It sets `lock_timeout` and fails the transaction on any slug finding. The migration never renames a slug.
++4. Deploy the Elixir release that requires core V03 and helpers V07, then TypeScript 0.17.x workers on flow-mode flows only.
++
++`down/0` is forward-only. Restore the backup taken before the outage.
++
++## Slug rules
++
++`pgflow.is_valid_slug/1` accepts only `[A-Za-z0-9_]`, must start with a letter, must end with a letter or digit, must not contain `__`, must be at most 128 characters, and must not be `run`. The flow-mode queue name is `lower(flow_slug)`, at most 47 characters, and unique across flows and jobs. Step slugs that differ only by case collide.
++
++Compile-time errors use the same reasons: `empty`, `too_long`, `bad_chars`, `bad_start`, `bad_end`, `double_underscore`, `reserved`, and `queue_name_too_long`. Rename the flow or step in Elixir code and redeploy. Do not edit the slug in SQL.
++
++## Step mode and routing
++
++Elixir refuses a step-mode flow at boot, before compilation, even when local recompilation is enabled. A TypeScript step-mode worker is a separate deployment and does not share the Elixir worker's queue. A queue-mode or route mismatch is `{:error, {:flow_routing_mismatch, message}}`. `message` is the upstream text.
++
++Workers stamp `workers.pgflow_version` as `elixir-<package version>` through the four-argument `register_worker`.
+ 
+ ## Coordinated procedure
+ 
+@@ -77,7 +100,7 @@ The release path should invoke host reconciliation after migrations on every
+ deploy. This makes a restored database self-repairing even when no Ecto
+ migration is pending.
+ 
+-## Helpers V05 to V06
++## Helpers V05 to V06 (previous release)
+ 
+ V06 adds `pgflow.escalate_permanently_stalled()` and `pgflow.step_progress`.
+ Hex pgflow 0.4.0 stops at helpers V05; Hex pgflow 0.5.0 bundles V06. A
+-- 
+2.43.0
+
