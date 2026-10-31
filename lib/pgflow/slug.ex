@@ -46,7 +46,21 @@ defmodule PgFlow.Slug do
   def queue_name(slug) when is_atom(slug), do: queue_name(Atom.to_string(slug))
   def queue_name(slug) when is_binary(slug), do: String.downcase(slug)
 
+  @doc """
+  Finds the first group of slugs that share a lowercased name.
+
+  Returns `nil` when every slug lowercases to a distinct name, or
+  `{lowercased, slugs}` with the colliding slugs in input order.
+  """
+  @spec find_case_collision([String.t() | atom()]) :: nil | {String.t(), [String.t() | atom()]}
+  def find_case_collision(slugs) when is_list(slugs) do
+    slugs
+    |> Enum.group_by(&queue_name/1)
+    |> Enum.find(fn {_lowercased, group} -> length(group) > 1 end)
+  end
+
   @doc "Rejects a queue name longer than the PGMQ limit."
+
   @spec validate_queue_name(String.t()) :: :ok | {:error, :queue_name_too_long}
   def validate_queue_name(name) when byte_size(name) <= @max_queue_name_length, do: :ok
   def validate_queue_name(_name), do: {:error, :queue_name_too_long}

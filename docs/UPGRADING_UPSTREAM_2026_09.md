@@ -147,8 +147,9 @@ recompilation. Never set this value on a database whose history must be preserve
 
 ### Behavior changes
 
-- `Runs.count/cancel/delete` operate on persisted task routes. Payload-keyed orphan
-  messages without a task route are no longer swept by these operations.
+- `Runs.count_queue_messages/4` and `Runs.delete/2` operate on persisted task
+  routes. Payload-keyed orphan messages without a task route are not counted or
+  deleted by these operations.
 - Non-JSON handler output fails the task and follows its configured retry policy;
   it is no longer completed with a synthetic `_raw` object.
 - Editing DSL timeout, retry count, or base delay after compilation does not

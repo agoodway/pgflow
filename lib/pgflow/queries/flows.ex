@@ -8,8 +8,10 @@ defmodule PgFlow.Queries.Flows do
   """
 
   alias Ecto.Adapters.SQL
+  alias PgFlow.Queries.Pgmq
 
-  import PgFlow.Queries.Helpers, only: [execute_rpc: 4, parse_uuid: 1, format_uuid: 1]
+  import PgFlow.Queries.Helpers,
+    only: [execute_ok: 3, execute_rpc: 4, parse_uuid: 1, format_uuid: 1]
 
   @pgflow_schema "pgflow"
 
@@ -478,12 +480,7 @@ defmodule PgFlow.Queries.Flows do
   """
   @spec lock_flow_definition(Ecto.Repo.t(), String.t()) :: :ok | {:error, term()}
   def lock_flow_definition(repo, flow_slug) do
-    sql = "SELECT pg_advisory_xact_lock(1, hashtext(lower($1::text)))"
-
-    case SQL.query(repo, sql, [flow_slug]) do
-      {:ok, _result} -> :ok
-      {:error, error} -> {:error, error}
-    end
+    execute_ok(repo, "SELECT pg_advisory_xact_lock(1, hashtext(lower($1::text)))", [flow_slug])
   end
 
   @doc """
@@ -688,7 +685,7 @@ defmodule PgFlow.Queries.Flows do
   end
 
   defp upsert_flow_definition(repo, slug, max_attempts, base_delay, timeout, steps) do
-    with {:ok, _} <- advisory_lock_slug(repo, slug),
+    with :ok <- lock_flow_definition(repo, slug),
          {:ok, exists} <- flow_exists?(repo, slug),
          :ok <- maybe_delete_existing_flow(repo, slug, exists),
          :ok <- create_flow_definition(repo, slug, max_attempts, base_delay, timeout),
@@ -699,6 +696,11 @@ defmodule PgFlow.Queries.Flows do
 
   @doc """
   Deletes a flow and all associated data (runs, step states, step tasks, queue).
+
+  Fires pending deferred notify trigger events with
+  `PgFlow.Queries.Pgmq.flush_notify_events/1` before dropping the queues, so
+  the call also works inside a caller's transaction that has already sent to
+  those queues.
 
   ## Parameters
 
@@ -714,7 +716,7 @@ defmodule PgFlow.Queries.Flows do
   def delete_flow(repo, slug) do
     tx_result =
       repo.transaction(fn ->
-        with {:ok, _} <- advisory_lock_slug(repo, slug),
+        with :ok <- lock_flow_definition(repo, slug),
              :ok <- delete_flow_rows(repo, slug) do
           :ok
         else
@@ -768,21 +770,23 @@ defmodule PgFlow.Queries.Flows do
     )
   end
 
+  # Fires pending deferred notify trigger events first: dropping a queue table
+  # after a send in the same transaction otherwise fails with "pending trigger
+  # events".
   defp delete_flow_and_queues(repo, slug) do
+    with :ok <- Pgmq.flush_notify_events(repo) do
+      drop_flow_and_queues(repo, slug)
+    end
+  end
+
+  defp drop_flow_and_queues(repo, slug) do
     sql = """
     SELECT CASE WHEN EXISTS (SELECT 1 FROM pgflow.flows WHERE flow_slug = $1)
       THEN pgflow.delete_flow_and_data($1::text) IS NULL
       ELSE pgmq.drop_queue(lower($1::text)) END
     """
 
-    case SQL.query(repo, sql, [slug]) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp advisory_lock_slug(repo, slug) do
-    SQL.query(repo, "SELECT pg_advisory_xact_lock(1, hashtext(lower($1::text)))", [slug])
+    execute_ok(repo, sql, [slug])
   end
 
   defp maybe_delete_existing_flow(_repo, _slug, false), do: :ok

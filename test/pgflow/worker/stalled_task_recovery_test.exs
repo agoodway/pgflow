@@ -10,6 +10,8 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
   """
   use ExUnit.Case
 
+  import PgFlow.Test.FlowFixtures, only: [compile_flow: 1, start_flow_run: 2]
+
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.Queries.Flows
   alias PgFlow.Queries.Workers, as: WorkerQueries
@@ -52,49 +54,6 @@ defmodule PgFlow.Worker.StalledTaskRecoveryTest do
   end
 
   # --- helpers ---
-
-  defp compile_flow(flow_module) do
-    definition = flow_module.__pgflow_definition__()
-    flow_slug = Atom.to_string(definition.slug)
-
-    TestRepo.query!("SELECT pgflow.create_flow($1, $2, $3, $4)", [
-      flow_slug,
-      definition.opts[:max_attempts] || 3,
-      definition.opts[:base_delay] || 1,
-      definition.opts[:timeout] || 30
-    ])
-
-    for step <- definition.steps do
-      TestRepo.query!(
-        "SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8)",
-        [
-          flow_slug,
-          Atom.to_string(step.slug),
-          Enum.map(step.depends_on, &Atom.to_string/1),
-          step.max_attempts,
-          step.base_delay,
-          step.timeout,
-          step.start_delay,
-          Atom.to_string(step.step_type)
-        ]
-      )
-    end
-
-    flow_slug
-  end
-
-  defp start_flow_run(flow_slug, input) do
-    %{rows: [[result]]} =
-      TestRepo.query!("SELECT pgflow.start_flow($1, cast($2 as text)::jsonb)", [
-        flow_slug,
-        Jason.encode!(input)
-      ])
-
-    case result do
-      {run_id, _, _, _, _, _, _, _, _} -> Ecto.UUID.load!(run_id)
-      _ -> raise "Unexpected result: #{inspect(result)}"
-    end
-  end
 
   # Compile a flow, start a run, and move its first task to 'started'.
   defp setup_started(flow_module \\ StalledFlow, input \\ %{"value" => 42}) do

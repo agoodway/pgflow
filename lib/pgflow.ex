@@ -292,17 +292,103 @@ defmodule PgFlow do
   ## Options
 
     * `:repo` - Ecto repository (defaults to the configured repository).
+    * `:max_concurrency` - Override max concurrent tasks for this worker.
+    * `:batch_size` - Override batch size for this worker.
 
-  Polling and concurrency settings come from the PgFlow supervisor configuration.
+  Polling and other worker settings come from the PgFlow supervisor configuration.
+  Limits resolve from the global `max_concurrency`/`batch_size`, then the module's
+  `worker_options` entry, then call-time options. `worker_options` applies to every
+  worker for a module listed in `:flows` or `:jobs`, whether `PgFlow.FlowStarter` or
+  this function starts it; config validation rejects entries for unlisted modules,
+  so a module started only through this function takes its overrides at call time.
+  A worker restarted by its supervisor keeps the options it was started with.
+
+  When a worker for the module is already running, call-time options are compared
+  against its configured (start-time) limits, not limits changed later by
+  `scale_worker/2`: a match returns the running worker and a mismatch returns
+  `{:error, {:conflicting_worker_options, pid}}`.
+
+  Returns `{:error, :not_started}` when a concurrent supervisor restart started a
+  replacement worker that exited before it could be returned; retrying is safe.
+  Raises `ArgumentError` for unknown option keys or invalid values.
 
   ## Examples
 
       {:ok, pid} = PgFlow.start_worker(MyApp.Flows.ProcessOrder)
+      {:ok, pid} = PgFlow.start_worker(MyApp.Flows.Import, max_concurrency: 4)
 
   """
-  @spec start_worker(module(), keyword()) :: {:ok, pid()} | {:error, term()}
+  @spec start_worker(module(), keyword()) ::
+          {:ok, pid()}
+          | {:error, {:conflicting_worker_options, pid()} | :not_started}
+          | {:error, term()}
   def start_worker(flow_module, opts \\ []) do
     WorkerSupervisor.start_worker(flow_module, opts)
+  end
+
+  @doc """
+  Scales a running worker's concurrency or batch size on this node.
+
+  Requires at least one of `:max_concurrency` or `:batch_size`; raises
+  `ArgumentError` on missing or invalid options. `:timeout` (default `5_000` ms,
+  or `:infinity`) bounds the call to the worker; when it elapses the caller exits
+  with `{:timeout, {GenServer, :call, _}}`, and the worker may already have
+  applied (or may still apply) the scale. Scale-down does not interrupt
+  active tasks; any scale that leaves free slots polls for queued work
+  immediately. Runtime limits reset to the configured values when the worker
+  restarts.
+
+  Returns `{:error, :not_found}` when no local worker exists for the module
+  (including the brief window while a crashed worker is being restarted), and
+  `{:error, :not_running}` when the worker is not in the `:running` lifecycle
+  state (for example while it is stopping).
+
+  ## Examples
+
+      {:ok, pid} = PgFlow.start_worker(MyApp.Flows.Import)
+      {:ok, %{max_concurrency: 6}} = PgFlow.scale_worker(MyApp.Flows.Import, max_concurrency: 6)
+
+      # Scale down while tasks finish; active handlers are not interrupted.
+      PgFlow.scale_worker(MyApp.Flows.Import, max_concurrency: 1)
+
+      # After a crash or restart, limits return to configured values, not the scaled ones.
+      Process.exit(pid, :kill)
+      # ... worker supervises back with configured max_concurrency
+
+  """
+  @spec scale_worker(module(), keyword()) ::
+          {:ok, map()} | {:error, :not_found | :not_running}
+  def scale_worker(flow_module, opts) when is_list(opts) do
+    WorkerSupervisor.scale_worker(flow_module, opts)
+  end
+
+  @doc """
+  Returns runtime worker state for a flow on this node, or `nil` if none is running.
+
+  The map includes effective and configured limits, lifecycle, active task count,
+  and the worker's `module` and `pid`.
+
+  ## Options
+
+    * `:timeout` - milliseconds (or `:infinity`) to wait for the worker to reply.
+      Default: `5_000`. A worker busy in a slow database call may not reply in
+      time; the caller then exits with `{:timeout, {GenServer, :call, _}}`.
+
+  Raises `ArgumentError` on unknown or invalid options.
+
+  ## Examples
+
+      PgFlow.check_worker(MyApp.Flows.ProcessOrder)
+      # => nil
+
+      {:ok, _} = PgFlow.start_worker(MyApp.Flows.ProcessOrder)
+      PgFlow.check_worker(MyApp.Flows.ProcessOrder)
+      # => %{module: MyApp.Flows.ProcessOrder, pid: #PID<...>, lifecycle: :running, ...}
+
+  """
+  @spec check_worker(module(), keyword()) :: map() | nil
+  def check_worker(flow_module, opts \\ []) when is_atom(flow_module) and is_list(opts) do
+    WorkerSupervisor.check_worker(flow_module, opts)
   end
 
   @doc """

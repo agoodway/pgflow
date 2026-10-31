@@ -7,8 +7,13 @@ defmodule PgFlow.Upstream.Spec.V03 do
   `pgflow_telemetry` schema is not imported.
   """
 
+  alias PgFlow.Sql.Splitter
   alias PgFlow.Upgrade.SlugAudit
+
   alias PgFlow.Upstream.Bundle
+
+  import PgFlow.Upstream.Spec.Matchers,
+    only: [localize_lock_timeout: 1, set_lock_timeout?: 1, start_tasks_definition?: 1]
 
   @pinned_sha "baa9e43f5f9122133deacbc3e8ffc80e284b4f50"
   @files [
@@ -312,7 +317,7 @@ defmodule PgFlow.Upstream.Spec.V03 do
 
   defp telemetry_keep?(statement) do
     statement
-    |> strip_leading_comments()
+    |> Splitter.strip_leading_comments()
     |> then(&Regex.match?(telemetry_pattern(), &1))
   end
 
@@ -322,23 +327,9 @@ defmodule PgFlow.Upstream.Spec.V03 do
     Regex.compile!("\\A(#{index}|#{column})")
   end
 
-  defp strip_leading_comments(statement) do
-    statement
-    |> String.replace(~r/\A(?:[ \t]*--[^\n]*\n|[ \t]*\/\*.*?\*\/\s*)+/s, "")
-    |> String.trim_leading()
-  end
-
   defp net_http_post?(statement), do: statement =~ "net.http_post"
 
   defp never?(_statement), do: false
-
-  defp set_lock_timeout?(statement) do
-    Regex.match?(~r/^SET lock_timeout = '10s'$/m, statement)
-  end
-
-  defp localize_lock_timeout(statement) do
-    {:ok, Regex.replace(~r/^SET lock_timeout/m, statement, "SET LOCAL lock_timeout")}
-  end
 
   defp three_arg_start_tasks_drop?(statement), do: String.contains?(statement, @three_arg_drop)
 
@@ -354,9 +345,5 @@ defmodule PgFlow.Upstream.Spec.V03 do
 
   defp runs_started_at_index?(statement) do
     String.contains?(statement, ~s(CREATE INDEX "idx_runs_started_at"))
-  end
-
-  defp start_tasks_definition?(statement) do
-    Regex.match?(~r/CREATE (?:OR REPLACE )?FUNCTION "pgflow"\."start_tasks" /s, statement)
   end
 end

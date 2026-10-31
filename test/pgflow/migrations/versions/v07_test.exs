@@ -6,7 +6,7 @@ defmodule PgFlow.Migrations.Versions.V07Test do
 
   @up_path "priv/pgflow_helpers/sql/versions/v07/v07_up.sql"
   @down_path "priv/pgflow_helpers/sql/versions/v07/v07_down.sql"
-  @statement_count 6
+  @statement_count 8
 
   test "v07 is the current helpers version" do
     assert PgFlow.HelpersMigration.current_version() == 7

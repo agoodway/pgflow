@@ -3,7 +3,7 @@
 This guide moves an existing PgFlow Elixir installation from core V02 and
 helpers V06 (or earlier) to core V03 and helpers V07. That schema is the
 pgflow 0.17.2 contract (`baa9e43f5f9122133deacbc3e8ffc80e284b4f50`), so an
-Elixir 0.6.0 worker and a TypeScript 0.17.x worker can share one database in
+Elixir 0.7.0 worker and a TypeScript 0.17.x worker can share one database in
 flow mode.
 
 **There is no expand/contract path.** The upgrade is one transaction. Stop
@@ -18,7 +18,7 @@ guide is the in-place upgrade.
 
 ## Before you start
 
-Upgrade the application dependency to pgflow 0.6.0, then audit slugs before
+Upgrade the application dependency to pgflow 0.7.0, then audit slugs before
 generating the migration:
 
 ```bash
@@ -67,7 +67,7 @@ Take a backup before the outage. `down/0` does not reverse this upgrade.
 
 ### Consumer migration history
 
-Starting with 0.6.0, a bare `PgFlow.Migration.up()` installs the newest core
+Starting with 0.7.0, a bare `PgFlow.Migration.up()` installs the newest core
 version bundled in the library, and a bare `PgFlow.HelpersMigration.up()`
 installs the newest helpers version. An old `setup_pgflow` migration that calls
 them therefore installs V03 and V07 when you replay history from an empty
@@ -75,7 +75,7 @@ database (CI, a new machine, a fresh review environment). Older flow-compile
 migrations that still contain legacy slug literals then fail the V03 slug
 rules.
 
-This is a behavior change in 0.6.0. Before you ship it:
+This is a behavior change in 0.7.0. Before you ship it:
 
 - Pin each existing wrapper to the versions it originally installed, for
   example `PgFlow.Migration.up(version: 1)` and
@@ -141,9 +141,9 @@ exclusive lock. The time grows with the size of `pgflow.runs`. Check
 
 ## Deploy
 
-Migrate first. 0.6.0 workers refuse to boot until the V03/V07 wrapper has run:
+Migrate first. 0.7.0 workers refuse to boot until the V03/V07 wrapper has run:
 the boot schema check returns `{:schema_incompatible, ...}`. Do not roll workers
-onto 0.6.0 before the migration.
+onto 0.7.0 before the migration.
 
 1. Run the migration (above).
 2. Deploy the Elixir release that requires core V03 and helpers V07.
@@ -174,6 +174,27 @@ without `--repo`. `PgFlow.compatibility_report/0` reports
   The message is the upstream text.
 - Bare `up()` calls track the newest bundled version (see "Consumer migration
   history"). Generated wrappers pin explicit versions.
+- Helpers V07 adds `pgflow.delete_run(uuid)`, a port-only helper that
+  `PgFlow.Runs.delete/2` calls. It deletes one run's lifecycle rows and its
+  exact live and archived messages, and SQL or Hasura callers can use it
+  directly. It locks the run, then every task row of the run, before touching
+  any queue, so it does not deadlock against claims or stalled-task recovery.
+- Helpers V07 also replaces `prune_data_older_than` with the same lock order:
+  it locks the eligible runs by `run_id`, then their task rows, before queue
+  cleanup and deletes. Its signature, filters, and return shape are unchanged.
+- PgFlow has no per-run cancel or fail API. `PgFlow.Runs.delete/2` is cleanup
+  for history that may be discarded; it does not interrupt a running handler.
+
+### Databases that applied a pre-release helpers V07
+
+`delete_run` and the run-first prune joined helpers V07 before 0.7.0 shipped.
+A database that applied V07 from an earlier pre-release build reports helpers
+version 7 but lacks `pgflow.delete_run(uuid)`, and Ecto will not rerun its
+wrapper. `mix pgflow.check_schema` reports the missing function. Either
+recreate the database, or apply the last two statements of
+`priv/pgflow_helpers/sql/versions/v07/v07_up.sql` (the `delete_run` and
+`prune_data_older_than` definitions, with `$SCHEMA$` replaced by `pgflow`) in a
+reviewed migration. Both are `CREATE OR REPLACE`, so re-applying them is safe.
 
 ## Not supported
 

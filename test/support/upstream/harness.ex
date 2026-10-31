@@ -2,7 +2,7 @@ defmodule PgFlow.Test.UpstreamHarness do
   @moduledoc false
 
   alias PgFlow.Sql.Splitter
-  alias PgFlow.Test.{UpstreamFixture, UpstreamInterop}
+  alias PgFlow.Test.{UpstreamFixture, UpstreamInterop, UpstreamScriptOutput}
 
   @pinned_sha "baa9e43f5f9122133deacbc3e8ffc80e284b4f50"
   @pgflow_ddl_statement ~r/^\s*(CREATE (UNIQUE )?INDEX|ALTER TABLE)\s.*"pgflow"\./s
@@ -543,25 +543,6 @@ defmodule PgFlow.Test.UpstreamHarness do
     end
   end
 
-  defp decode_script_json(output) do
-    case extract_json_line(output) do
-      nil -> :error
-      json -> Jason.decode(json)
-    end
-  end
-
-  defp extract_json_line(output) do
-    output
-    |> String.split("\n", trim: true)
-    |> Enum.reverse()
-    |> Enum.find(&String.starts_with?(&1, "{"))
-  end
-
-  defp script_output_excerpt(output) do
-    output = String.trim(output)
-    if String.length(output) <= 800, do: output, else: String.slice(output, -800, 800)
-  end
-
   defp run_node_script!(script, checkout, database_url, extra_args \\ []) do
     script_path = Path.join(@support_dir, script)
 
@@ -578,7 +559,7 @@ defmodule PgFlow.Test.UpstreamHarness do
            stderr_to_stdout: true
          ) do
       {output, 0} ->
-        case decode_script_json(output) do
+        case UpstreamScriptOutput.decode_json(output) do
           {:ok, %{"tests" => tests, "failures" => failures} = decoded} ->
             {:ok,
              %{
@@ -595,7 +576,7 @@ defmodule PgFlow.Test.UpstreamHarness do
         end
 
       {output, status} ->
-        {:error, "#{script} failed (exit #{status}): #{script_output_excerpt(output)}"}
+        {:error, "#{script} failed (exit #{status}): #{UpstreamScriptOutput.excerpt(output)}"}
     end
   end
 
@@ -853,19 +834,13 @@ defmodule PgFlow.Test.UpstreamHarness do
     end
   end
 
-  defp pgflow_ddl_statement?(statement) do
-    statement
-    |> strip_leading_sql_comments()
-    |> then(&Regex.match?(@pgflow_ddl_statement, &1))
-  end
-
   # Upstream migrations prefix each statement with a `-- Create ...` comment.
   # The keep-rule is about the DDL verb, so those comments are ignored for matching
   # and kept in the replayed text.
-  defp strip_leading_sql_comments(statement) do
+  defp pgflow_ddl_statement?(statement) do
     statement
-    |> String.replace(~r/\A(?:[ \t]*--[^\n]*\n|[ \t]*\/\*.*?\*\/\s*)+/s, "")
-    |> String.trim_leading()
+    |> Splitter.strip_leading_comments()
+    |> then(&Regex.match?(@pgflow_ddl_statement, &1))
   end
 
   defp validate_target_catalog!(database_url) do

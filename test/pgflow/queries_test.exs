@@ -1,6 +1,8 @@
 defmodule PgFlow.QueriesTest do
   use ExUnit.Case
 
+  import PgFlow.Test.FlowFixtures, only: [compile_flow: 1, start_flow_run: 2]
+
   require Logger
 
   alias Ecto.Adapters.SQL.Sandbox
@@ -62,58 +64,6 @@ defmodule PgFlow.QueriesTest do
       fn deps, _ctx ->
         %{second_result: deps.first["first_result"] * 2}
       end
-    end
-  end
-
-  defp compile_flow(flow_module) do
-    definition = flow_module.__pgflow_definition__()
-    flow_slug = Atom.to_string(definition.slug)
-
-    max_attempts = definition.opts[:max_attempts] || 3
-    base_delay = definition.opts[:base_delay] || 1
-    timeout = definition.opts[:timeout] || 30
-
-    TestRepo.query!(
-      "SELECT pgflow.create_flow($1, $2, $3, $4)",
-      [flow_slug, max_attempts, base_delay, timeout]
-    )
-
-    for step <- definition.steps do
-      step_slug = Atom.to_string(step.slug)
-      deps = Enum.map(step.depends_on, &Atom.to_string/1)
-      step_type = Atom.to_string(step.step_type)
-
-      TestRepo.query!(
-        "SELECT pgflow.add_step($1, $2, $3::text[], $4, $5, $6, $7, $8)",
-        [
-          flow_slug,
-          step_slug,
-          deps,
-          step.max_attempts,
-          step.base_delay,
-          step.timeout,
-          step.start_delay,
-          step_type
-        ]
-      )
-    end
-
-    flow_slug
-  end
-
-  defp start_flow_run(flow_slug, input) do
-    %{rows: [[result]]} =
-      TestRepo.query!(
-        "SELECT pgflow.start_flow($1, cast($2 as text)::jsonb)",
-        [flow_slug, Jason.encode!(input)]
-      )
-
-    case result do
-      {run_id, _, _, _, _, _, _, _, _} ->
-        Ecto.UUID.load!(run_id)
-
-      _ ->
-        raise "Unexpected result: #{inspect(result)}"
     end
   end
 

@@ -1,8 +1,7 @@
 defmodule PgFlow.Upstream.CoreV03UpgradeTest do
   use ExUnit.Case, async: false
 
-  alias EctoEvolver.Adapters.Postgres, as: EvolverPostgres
-  alias PgFlow.Test.UpstreamFixture
+  import PgFlow.Test.UpstreamUpgrade
 
   @moduletag :integration
   @moduletag :migration
@@ -12,7 +11,7 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
 
     in_fixture(fixture, fn ->
       PgFlow.TestRepo.query!("DROP SCHEMA pgflow CASCADE")
-      migrate_v03!()
+      migrate!(:core_v03)
 
       assert core_version() == 3
       assert column_default("flows", "queue_mode") =~ "flow"
@@ -35,9 +34,9 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
     fixture = fixture!()
 
     in_fixture(fixture, fn ->
-      migrate_v02!()
-      migrate_helpers_v05!()
-      migrate_helpers_v06!()
+      migrate!(:core_v02)
+      migrate!(:helpers_v05)
+      migrate!(:helpers_v06)
       seed_flow!()
 
       counts = table_counts()
@@ -45,7 +44,7 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
       queue_name =
         scalar!("SELECT queue_name FROM pgflow.step_tasks WHERE flow_slug = 'seed_flow'")
 
-      migrate_v03!()
+      migrate!(:core_v03)
 
       assert table_counts() == counts
 
@@ -62,16 +61,16 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
     fixture = fixture!()
 
     in_fixture(fixture, fn ->
-      migrate_v02!()
-      migrate_helpers_v05!()
-      migrate_helpers_v06!()
+      migrate!(:core_v02)
+      migrate!(:helpers_v05)
+      migrate!(:helpers_v06)
 
       old = seed_in_flight!()
       before_checksum = state_checksum()
       before_messages = queue_messages()
 
-      migrate_v03!()
-      migrate_helpers_v07!()
+      migrate!(:core_v03)
+      migrate!(:helpers_v07)
 
       assert core_version() == 3
       assert state_checksum() == before_checksum
@@ -119,11 +118,11 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
     fixture = fixture!()
 
     in_fixture(fixture, fn ->
-      migrate_v02!()
-      migrate_helpers_v05!()
-      migrate_helpers_v06!()
+      migrate!(:core_v02)
+      migrate!(:helpers_v05)
+      migrate!(:helpers_v06)
       seed_in_flight!()
-      migrate_v03!()
+      migrate!(:core_v03)
 
       checksum = state_checksum()
       messages = queue_messages()
@@ -148,13 +147,13 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
     fixture = fixture!()
 
     in_fixture(fixture, fn ->
-      migrate_v02!()
+      migrate!(:core_v02)
       PgFlow.TestRepo.query!("ALTER TABLE pgflow.flows DROP CONSTRAINT slug_is_valid")
       PgFlow.TestRepo.query!("INSERT INTO pgflow.flows (flow_slug) VALUES ('bad__flow')")
 
       error =
         assert_raise Postgrex.Error, fn ->
-          migrate_v03!()
+          migrate!(:core_v03)
         end
 
       assert error.postgres.code == :check_violation
@@ -168,7 +167,7 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
     fixture = fixture!()
 
     in_fixture(fixture, fn ->
-      migrate_v02!()
+      migrate!(:core_v02)
 
       PgFlow.TestRepo.query!("""
       INSERT INTO pgflow.flows (flow_slug) VALUES ('case_flow')
@@ -181,7 +180,7 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
 
       error =
         assert_raise Postgrex.Error, fn ->
-          migrate_v03!()
+          migrate!(:core_v03)
         end
 
       assert error.postgres.code == :check_violation
@@ -196,7 +195,7 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
 
     in_fixture(fixture, fn ->
       PgFlow.TestRepo.query!("DROP SCHEMA pgflow CASCADE")
-      migrate_v03!()
+      migrate!(:core_v03)
 
       assert_raise Postgrex.Error, ~r/PgFlow core V03 is forward-only/, fn ->
         Ecto.Migrator.down(
@@ -209,68 +208,6 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
 
       assert core_version() == 3
     end)
-  end
-
-  defp fixture! do
-    fixture = UpstreamFixture.setup!()
-    Process.unlink(fixture.repo_pid)
-    on_exit(fn -> UpstreamFixture.teardown!(fixture) end)
-    fixture
-  end
-
-  defp in_fixture(fixture, fun) do
-    previous = PgFlow.TestRepo.put_dynamic_repo(fixture.repo_name)
-
-    try do
-      fun.()
-    after
-      PgFlow.TestRepo.put_dynamic_repo(previous)
-    end
-  end
-
-  defp migrate_v02! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_102,
-      PgFlow.Upstream.CoreUpgradeMigration,
-      log: false
-    )
-  end
-
-  defp migrate_helpers_v05! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_105,
-      PgFlow.Upstream.HelpersUpgradeMigration,
-      log: false
-    )
-  end
-
-  defp migrate_helpers_v06! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_106,
-      PgFlow.Upstream.HelpersV06Migration,
-      log: false
-    )
-  end
-
-  defp migrate_v03! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_203,
-      PgFlow.Upstream.CoreV03Migration,
-      log: false
-    )
-  end
-
-  defp migrate_helpers_v07! do
-    Ecto.Migrator.up(
-      PgFlow.TestRepo,
-      9_000_000_207,
-      PgFlow.Upstream.HelpersV07Migration,
-      log: false
-    )
   end
 
   # Seeds, on a V02/V06 schema: a run with `b` claimed (old signature) and `c`
@@ -440,15 +377,6 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
     end)
   end
 
-  defp core_version do
-    EvolverPostgres.get_version(PgFlow.TestRepo, "pgflow", {:view, "pgflow_version"})
-  end
-
-  defp scalar!(sql, params \\ []) do
-    %{rows: [[value]]} = PgFlow.TestRepo.query!(sql, params)
-    value
-  end
-
   defp column_default(table, column) do
     scalar!(
       """
@@ -460,48 +388,7 @@ defmodule PgFlow.Upstream.CoreV03UpgradeTest do
     )
   end
 
-  defp column_exists?(table, column) do
-    scalar!(
-      """
-      SELECT EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = 'pgflow' AND table_name = $1 AND column_name = $2
-      )
-      """,
-      [table, column]
-    )
-  end
-
-  defp function_arguments(name) do
-    PgFlow.TestRepo.query!(
-      """
-      SELECT pg_get_function_identity_arguments(p.oid)
-      FROM pg_proc AS p
-      JOIN pg_namespace AS n ON n.oid = p.pronamespace
-      WHERE n.nspname = 'pgflow' AND p.proname = $1
-      ORDER BY 1
-      """,
-      [name]
-    ).rows
-    |> List.flatten()
-  end
-
   defp indexdef(name) do
     scalar!("SELECT pg_get_indexdef(to_regclass($1))", ["pgflow." <> name])
-  end
-
-  defp record_fields do
-    PgFlow.TestRepo.query!("""
-    SELECT attname
-    FROM pg_attribute
-    WHERE attrelid = (
-      SELECT typrelid FROM pg_type WHERE oid = 'pgflow.step_task_record'::regtype
-    )
-      AND attnum > 0
-      AND NOT attisdropped
-    ORDER BY attnum
-    """).rows
-    |> List.flatten()
   end
 end

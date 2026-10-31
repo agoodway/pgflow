@@ -340,6 +340,168 @@ defmodule PgFlow.RunLifecycleTest do
     end
   end
 
+  describe "pgflow.delete_run/1" do
+    test "deletes live and archived messages and lifecycle rows, and repeats as a no-op" do
+      create_flow("sql_delete_run")
+      add_step("sql_delete_run", "work", type: "map")
+      run_id = start_flow_run("sql_delete_run", ["live", "archive"])
+      other_run_id = start_flow_run("sql_delete_run", ["other"])
+      [archived_message_id | _] = task_message_ids(run_id)
+
+      TestRepo.query!("SELECT pgmq.archive($1::text, $2::bigint)", [
+        "sql_delete_run",
+        archived_message_id
+      ])
+
+      worker_id = Ecto.UUID.generate()
+
+      TestRepo.query!(
+        "INSERT INTO pgflow.workers (worker_id, queue_name, function_name) VALUES ($1, $2, $3)",
+        [Ecto.UUID.dump!(worker_id), "sql_delete_run", "elixir:test"]
+      )
+
+      sql_delete_run!(run_id)
+
+      assert queue_count("q", "sql_delete_run", run_id) == 0
+      assert queue_count("a", "sql_delete_run", run_id) == 0
+      assert relational_counts(run_id) == {0, 0, 0}
+      assert relational_counts(other_run_id) == {1, 1, 1}
+      assert queue_count("q", "sql_delete_run", other_run_id) == 1
+
+      sql_delete_run!(run_id)
+      sql_delete_run!(Ecto.UUID.generate())
+
+      assert %{rows: [[1]]} =
+               TestRepo.query!("SELECT count(*) FROM pgflow.workers WHERE worker_id = $1", [
+                 Ecto.UUID.dump!(worker_id)
+               ])
+
+      assert %{rows: [[1]]} =
+               TestRepo.query!(
+                 "SELECT count(*) FROM pgflow.flows WHERE flow_slug = 'sql_delete_run'"
+               )
+    end
+
+    test "skips a missing archive table and still deletes live messages" do
+      create_flow("sql_delete_no_archive")
+      add_step("sql_delete_no_archive", "work")
+      run_id = start_flow_run("sql_delete_no_archive", %{})
+      archive_table = canonical_queue_table("a", "sql_delete_no_archive")
+      hide_queue_table!(archive_table)
+
+      sql_delete_run!(run_id)
+
+      assert queue_count("q", "sql_delete_no_archive", run_id) == 0
+      assert relational_counts(run_id) == {0, 0, 0}
+    end
+
+    test "skips a missing live table and still deletes archived messages" do
+      create_flow("sql_delete_no_live")
+      add_step("sql_delete_no_live", "work")
+      run_id = start_flow_run("sql_delete_no_live", %{})
+      [message_id] = task_message_ids(run_id)
+
+      TestRepo.query!("SELECT pgmq.archive($1::text, $2::bigint)", [
+        "sql_delete_no_live",
+        message_id
+      ])
+
+      hide_queue_table!(canonical_queue_table("q", "sql_delete_no_live"))
+
+      assert :ok = Runs.delete(TestRepo, run_id)
+
+      assert queue_count("a", "sql_delete_no_live", run_id) == 0
+      assert relational_counts(run_id) == {0, 0, 0}
+    end
+
+    test "scopes equal message ids to each task's persisted queue" do
+      create_flow("sql_delete_first")
+      add_step("sql_delete_first", "work")
+      create_flow("sql_delete_second")
+      add_step("sql_delete_second", "work")
+      run_id = start_flow_run("sql_delete_first", %{})
+      other_run_id = start_flow_run("sql_delete_second", %{})
+
+      assert task_message_ids(run_id) == task_message_ids(other_run_id)
+
+      assert :ok = Runs.delete(TestRepo, run_id)
+
+      assert relational_counts(run_id) == {0, 0, 0}
+      assert queue_count("q", "sql_delete_second", other_run_id) == 1
+      assert relational_counts(other_run_id) == {1, 1, 1}
+    end
+
+    test "follows per-task queue routes and tolerates NULL message ids" do
+      create_flow("SqlDeleteRoutes")
+      add_step("SqlDeleteRoutes", "work", type: "map")
+      run_id = start_flow_run("SqlDeleteRoutes", ["routed", "flow", "unqueued"])
+      [routed_id, _flow_id, unqueued_id] = task_message_ids(run_id)
+      route_queue = "sql_delete_extra_route"
+      TestRepo.query!("SELECT pgmq.create($1::text)", [route_queue])
+
+      %{rows: [[route_message_id]]} =
+        TestRepo.query!("SELECT pgmq.send($1::text, jsonb_build_object('run_id', $2::text))", [
+          route_queue,
+          run_id
+        ])
+
+      TestRepo.query!(
+        """
+        UPDATE pgflow.step_tasks
+        SET queue_name = $2, message_id = $3
+        WHERE run_id = $1 AND message_id = $4
+        """,
+        [Ecto.UUID.dump!(run_id), route_queue, route_message_id, routed_id]
+      )
+
+      TestRepo.query!(
+        "UPDATE pgflow.step_tasks SET message_id = NULL WHERE run_id = $1 AND message_id = $2",
+        [Ecto.UUID.dump!(run_id), unqueued_id]
+      )
+
+      sql_delete_run!(run_id)
+
+      assert queue_count("q", route_queue, run_id) == 0
+      # The rerouted task no longer references its original flow-queue message,
+      # and the NULL-id task references none, so both messages stay.
+      assert queue_count("q", "SqlDeleteRoutes", run_id) == 2
+      assert relational_counts(run_id) == {0, 0, 0}
+    end
+
+    test "raises SQLSTATE PGF01 for an invalid persisted slug and deletes nothing" do
+      run_id = Ecto.UUID.generate()
+
+      with_foreign_key_checks_disabled(fn ->
+        TestRepo.query!(
+          "INSERT INTO pgflow.runs (run_id, flow_slug, input) VALUES ($1, $2, '{}'::jsonb)",
+          [Ecto.UUID.dump!(run_id), "invalid-slug"]
+        )
+      end)
+
+      assert {:error, %Postgrex.Error{postgres: %{pg_code: "PGF01", message: message}}} =
+               TestRepo.query("SELECT pgflow.delete_run($1::uuid)", [Ecto.UUID.dump!(run_id)])
+
+      assert message =~ "pgflow.delete_run: invalid flow slug"
+      assert relational_counts(run_id) == {1, 0, 0}
+
+      with_foreign_key_checks_disabled(fn ->
+        TestRepo.query!("DELETE FROM pgflow.runs WHERE run_id = $1", [Ecto.UUID.dump!(run_id)])
+      end)
+    end
+  end
+
+  # Hides a queue table from `to_regclass` by renaming it. The test connection
+  # runs inside a sandbox transaction, so the rename is undone when the test ends.
+  defp hide_queue_table!(queue_table) do
+    TestRepo.query!(
+      "ALTER TABLE #{queue_table} RENAME TO hidden_#{System.unique_integer([:positive])}"
+    )
+  end
+
+  defp sql_delete_run!(run_id) do
+    TestRepo.query!("SELECT pgflow.delete_run($1::uuid)", [Ecto.UUID.dump!(run_id)])
+  end
+
   defp queue_visibility(flow_slug, run_id) do
     queue_table = canonical_queue_table("q", flow_slug)
 

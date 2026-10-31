@@ -262,13 +262,6 @@ defmodule PgFlow.IntegrationCase do
     end)
   end
 
-  @doc """
-  Returns the canonical PGMQ queue route for a flow slug.
-
-  Matches PostgreSQL's default `lower(flow_slug)` snapshot on steps and tasks.
-  """
-  def canonical_queue_name(flow_slug) when is_binary(flow_slug), do: String.downcase(flow_slug)
-
   # Ensure a run_id is in binary UUID format
   def ensure_uuid_binary(run_id) when byte_size(run_id) == 16, do: run_id
 

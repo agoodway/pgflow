@@ -42,7 +42,19 @@ defmodule PgFlow.Sql.Splitter do
     |> Enum.reject(&empty_or_comment_only?/1)
   end
 
+  @doc """
+  Removes the `--` line comments and `/* */` block comments that precede a
+  statement, along with the whitespace around them.
+  """
+  @spec strip_leading_comments(String.t()) :: String.t()
+  def strip_leading_comments(statement) when is_binary(statement) do
+    statement
+    |> String.replace(~r/\A(?:[ \t]*--[^\n]*\n|[ \t]*\/\*.*?\*\/\s*)+/s, "")
+    |> String.trim_leading()
+  end
+
   @doc "Join statements back into a single script with `--SPLIT--` markers."
+
   @spec join([String.t()]) :: String.t()
   def join(statements) when is_list(statements) do
     Enum.map_join(statements, "\n\n--SPLIT--\n\n", & &1)

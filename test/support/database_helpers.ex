@@ -28,6 +28,18 @@ defmodule PgFlow.Test.DatabaseHelpers do
     ]
   end
 
+  @doc "Builds Postgrex connection options for the ordinary test database."
+  @spec connection_opts(keyword()) :: keyword()
+  def connection_opts(repo_config) do
+    [
+      hostname: Keyword.fetch!(repo_config, :hostname),
+      port: resolve_port(repo_config),
+      database: resolve_database(repo_config),
+      username: Keyword.fetch!(repo_config, :username),
+      password: Keyword.fetch!(repo_config, :password)
+    ]
+  end
+
   @doc "Resolves the ordinary test port from the current environment or repository configuration."
   @spec resolve_port(keyword()) :: pos_integer()
   def resolve_port(repo_config) do

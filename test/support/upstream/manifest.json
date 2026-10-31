@@ -121,6 +121,7 @@
         "prune_data_older_than"
       ],
       "extra_functions": [
+        "delete_run",
         "escalate_permanently_stalled",
         "flow_exists",
         "get_flow_input",

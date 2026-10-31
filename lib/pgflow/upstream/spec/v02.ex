@@ -9,6 +9,9 @@ defmodule PgFlow.Upstream.Spec.V02 do
 
   alias PgFlow.Upstream.Bundle
 
+  import PgFlow.Upstream.Spec.Matchers,
+    only: [localize_lock_timeout: 1, set_lock_timeout?: 1, start_tasks_definition?: 1]
+
   @pinned_sha "94490709f79ebf366141dd925b047f0c1013e759"
   @files [
     "20260607175525_pgflow_worker_start_mode.sql",
@@ -127,17 +130,5 @@ defmodule PgFlow.Upstream.Spec.V02 do
       ~r/CREATE OR REPLACE FUNCTION "pgflow"\."ensure_workers" \(\) RETURNS TABLE/s,
       statement
     )
-  end
-
-  defp set_lock_timeout?(statement) do
-    Regex.match?(~r/^SET lock_timeout = '10s'$/m, statement)
-  end
-
-  defp localize_lock_timeout(statement) do
-    {:ok, Regex.replace(~r/^SET lock_timeout/m, statement, "SET LOCAL lock_timeout")}
-  end
-
-  defp start_tasks_definition?(statement) do
-    Regex.match?(~r/CREATE (?:OR REPLACE )?FUNCTION "pgflow"\."start_tasks" /s, statement)
   end
 end

@@ -22,6 +22,7 @@ defmodule PgFlow.Supervisor do
   require Logger
 
   alias PgFlow.{Config, FlowStarter, Telemetry, WorkerSupervisor}
+  alias PgFlow.Queries.Pgmq
   alias PgFlow.Signal
   alias PgFlow.Worker.StalledTaskRecovery
 
@@ -60,7 +61,7 @@ defmodule PgFlow.Supervisor do
     if pubsub, do: Telemetry.PubSub.attach(pubsub: pubsub)
 
     signal_strategy = Keyword.get(config, :signal_strategy, :polling)
-    notify_throttle_ms = Keyword.get(config, :notify_throttle_ms, 250)
+    notify_throttle_ms = Keyword.get(config, :notify_throttle_ms, Pgmq.default_throttle_ms())
 
     children =
       List.flatten([
@@ -73,7 +74,9 @@ defmodule PgFlow.Supervisor do
          flows: flows,
          jobs: jobs,
          signal_strategy: signal_strategy,
-         notify_throttle_ms: notify_throttle_ms}
+         notify_throttle_ms: notify_throttle_ms,
+         notify_trigger: Keyword.fetch!(config, :notify_trigger),
+         notify_lock_timeout_ms: Keyword.fetch!(config, :notify_lock_timeout_ms)}
       ])
 
     # Use :rest_for_one so if TaskSupervisor crashes, WorkerSupervisor

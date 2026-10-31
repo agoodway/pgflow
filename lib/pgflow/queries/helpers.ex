@@ -8,9 +8,21 @@ defmodule PgFlow.Queries.Helpers do
   Used by both PgFlow core query modules and the PgFlow Dashboard.
   """
 
+  alias Ecto.Adapters.SQL
+
   # ===================
   # RPC Helpers
   # ===================
+
+  @doc """
+  Runs `sql` with `params` and discards the result.
+
+  Returns `:ok` when the query succeeds, or the query's `{:error, reason}`.
+  """
+  @spec execute_ok(module(), String.t(), list()) :: :ok | {:error, term()}
+  def execute_ok(repo, sql, params) do
+    with {:ok, _result} <- SQL.query(repo, sql, params), do: :ok
+  end
 
   @doc """
   Executes an RPC-style call to a PostgreSQL function.

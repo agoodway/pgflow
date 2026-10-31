@@ -2,6 +2,8 @@ defmodule PgFlow.ConfigTest do
   use ExUnit.Case, async: true
 
   alias PgFlow.Config
+  alias PgFlow.TestFlows.SimpleFlow
+  alias PgFlow.TestJobs.SimpleJob
 
   # Create a test repo module for validation
   defmodule ValidTestRepo do
@@ -573,6 +575,82 @@ defmodule PgFlow.ConfigTest do
       config = Config.validate!(repo: ValidTestRepo, signal_strategy: :notify)
 
       assert config[:signal_strategy] == :notify
+    end
+  end
+
+  describe "notify trigger options" do
+    test "default to a deferred trigger with a 2s lock timeout" do
+      config = Config.validate!(repo: ValidTestRepo)
+
+      assert config[:notify_trigger] == :deferred
+      assert config[:notify_lock_timeout_ms] == 2_000
+    end
+
+    test "accept :pgmq_default and a custom lock timeout" do
+      config =
+        Config.validate!(
+          repo: ValidTestRepo,
+          notify_trigger: :pgmq_default,
+          notify_lock_timeout_ms: 500
+        )
+
+      assert config[:notify_trigger] == :pgmq_default
+      assert config[:notify_lock_timeout_ms] == 500
+    end
+
+    test "reject invalid values" do
+      assert_raise ArgumentError, ~r/notify_trigger/, fn ->
+        Config.validate!(repo: ValidTestRepo, notify_trigger: :immediate)
+      end
+
+      assert_raise ArgumentError, ~r/notify_lock_timeout_ms/, fn ->
+        Config.validate!(repo: ValidTestRepo, notify_lock_timeout_ms: 0)
+      end
+    end
+  end
+
+  describe "worker_options" do
+    test "defaults to an empty map" do
+      config = Config.validate!(repo: ValidTestRepo)
+      assert config[:worker_options] == %{}
+    end
+
+    test "accepts options for listed flows and jobs" do
+      worker_options = %{
+        SimpleFlow => [max_concurrency: 2],
+        SimpleJob => [batch_size: 3]
+      }
+
+      config =
+        Config.validate!(
+          repo: ValidTestRepo,
+          flows: [SimpleFlow],
+          jobs: [SimpleJob],
+          worker_options: worker_options
+        )
+
+      assert config[:worker_options] == worker_options
+    end
+
+    test "rejects a module that is not a listed flow or job" do
+      assert_raise ArgumentError, ~r/worker_options.*not listed in :flows or :jobs/, fn ->
+        Config.validate!(
+          repo: ValidTestRepo,
+          flows: [SimpleFlow],
+          jobs: [SimpleJob],
+          worker_options: %{NotListedModule => [max_concurrency: 2]}
+        )
+      end
+    end
+
+    test "rejects invalid per-worker keys" do
+      assert_raise ArgumentError, fn ->
+        Config.validate!(
+          repo: ValidTestRepo,
+          flows: [SimpleFlow],
+          worker_options: %{SimpleFlow => [timeout: 5]}
+        )
+      end
     end
   end
 

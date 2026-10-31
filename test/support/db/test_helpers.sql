@@ -32,6 +32,17 @@ BEGIN
     NULL;
   END;
 
+  -- Fire pending deferred notify trigger events, which would otherwise make
+  -- dropping a queue sent to earlier in this transaction fail.
+  IF EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_constraint
+    WHERE conname = 'trigger_notify_queue_insert_listeners'
+      AND connamespace = to_regnamespace('pgmq')
+  ) THEN
+    SET CONSTRAINTS pgmq.trigger_notify_queue_insert_listeners IMMEDIATE;
+  END IF;
+
   -- Drop pgmq queues
   PERFORM pgmq.drop_queue(queue_name) FROM pgmq.list_queues();
 END;
