@@ -147,7 +147,28 @@ defmodule PgFlow.QueriesTest do
       handler,
       [:pg_flow, :test_repo, :query],
       fn _event, _measurements, metadata, _config ->
-        send(parent, {:captured_query, metadata.query})
+        send(parent, {:captured_query, metadata.query, metadata.params})
+      end,
+      nil
+    )
+
+    try do
+      fun.()
+      Enum.map(receive_queries([]), fn {query, _params} -> query end)
+    after
+      :telemetry.detach(handler)
+    end
+  end
+
+  defp capture_query_calls(fun) do
+    handler = "pgflow-query-params-capture-#{System.unique_integer([:positive])}"
+    parent = self()
+
+    :telemetry.attach(
+      handler,
+      [:pg_flow, :test_repo, :query],
+      fn _event, _measurements, metadata, _config ->
+        send(parent, {:captured_query, metadata.query, metadata.params})
       end,
       nil
     )
@@ -162,7 +183,7 @@ defmodule PgFlow.QueriesTest do
 
   defp receive_queries(queries) do
     receive do
-      {:captured_query, query} -> receive_queries([query | queries])
+      {:captured_query, query, params} -> receive_queries([{query, params} | queries])
     after
       0 -> Enum.reverse(queries)
     end
@@ -585,6 +606,35 @@ defmodule PgFlow.QueriesTest do
   end
 
   # ── mark_worker_stopped ────────────────────────────────────────────
+
+  describe "UUID query parameters" do
+    test "are sent as canonical strings with an in-SQL text cast" do
+      flow_slug = compile_flow(SimpleFlow)
+      run_id = start_flow_run(flow_slug, %{"value" => 42})
+      worker_id = Ecto.UUID.generate()
+
+      calls =
+        capture_query_calls(fn ->
+          assert {:ok, nil} =
+                   WorkerQueries.register_worker(TestRepo, worker_id, flow_slug, "elixir:test")
+
+          assert {:ok, _} = WorkerQueries.heartbeat_worker(TestRepo, worker_id)
+          assert {:ok, nil} = WorkerQueries.mark_worker_stopped(TestRepo, worker_id)
+          assert {:ok, _} = Flows.get_run(TestRepo, run_id)
+          assert {:ok, _} = Flows.get_flow_input(TestRepo, run_id)
+        end)
+
+      uuid_calls =
+        Enum.filter(calls, fn {_query, params} -> worker_id in params or run_id in params end)
+
+      assert length(uuid_calls) == 5
+      assert Enum.all?(uuid_calls, fn {query, _params} -> query =~ "::text::uuid" end)
+
+      refute Enum.any?(calls, fn {_query, params} ->
+               Enum.any?(params, &(is_binary(&1) and byte_size(&1) == 16))
+             end)
+    end
+  end
 
   describe "mark_worker_stopped/2" do
     test "sets stopped_at timestamp" do

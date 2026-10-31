@@ -409,15 +409,13 @@ defmodule PgFlow.Runs do
     sql = """
     SELECT queue_name, array_agg(message_id) AS message_ids
     FROM pgflow.step_tasks
-    WHERE run_id = ANY($1::uuid[])
+    WHERE run_id = ANY($1::text[]::uuid[])
       AND flow_slug = $2::text
       AND message_id IS NOT NULL
     GROUP BY queue_name
     """
 
-    uuid_binaries = Enum.map(run_ids, &Ecto.UUID.dump!/1)
-
-    case SQL.query(repo, sql, [uuid_binaries, flow_slug]) do
+    case SQL.query(repo, sql, [run_ids, flow_slug]) do
       {:ok, %{rows: rows}} ->
         {:ok, Enum.map(rows, fn [queue_name, message_ids] -> {queue_name, message_ids} end)}
 

@@ -255,7 +255,9 @@ defmodule PgflowDemo.UpstreamUpgradeFixture do
   end
 
   defp migration_module!(pattern) do
-    [{module, _}] = pattern |> migration_path!() |> Code.compile_file()
+    [{module, _}] =
+      ignoring_module_conflicts(fn -> pattern |> migration_path!() |> Code.compile_file() end)
+
     module
   end
 
@@ -272,9 +274,22 @@ defmodule PgflowDemo.UpstreamUpgradeFixture do
     previous = PgflowDemo.Repo.put_dynamic_repo(fixture.repo_name)
 
     try do
-      fun.()
+      ignoring_module_conflicts(fun)
     after
       PgflowDemo.Repo.put_dynamic_repo(previous)
+    end
+  end
+
+  # Ecto.Migrator recompiles migration files on every run, and fixtures replay the
+  # same migrations against several databases, so module redefinition is expected.
+  defp ignoring_module_conflicts(fun) do
+    ignore_conflicts? = Code.get_compiler_option(:ignore_module_conflict)
+    Code.put_compiler_option(:ignore_module_conflict, true)
+
+    try do
+      fun.()
+    after
+      Code.put_compiler_option(:ignore_module_conflict, ignore_conflicts?)
     end
   end
 

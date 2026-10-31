@@ -138,7 +138,7 @@ defmodule PgFlow.Queries.Flows do
     WITH task AS (
       SELECT step_tasks.message_id, step_tasks.queue_name
       FROM pgflow.step_tasks AS step_tasks
-      WHERE step_tasks.run_id = $1::uuid
+      WHERE step_tasks.run_id = $1::text::uuid
         AND step_tasks.message_id IS NOT NULL
       ORDER BY step_tasks.queued_at ASC
       LIMIT 1
@@ -178,7 +178,7 @@ defmodule PgFlow.Queries.Flows do
   @spec get_run(Ecto.Repo.t(), String.t()) ::
           {:ok, %{status: String.t(), output: term()}} | {:error, :not_found | term()}
   def get_run(repo, run_id) do
-    sql = "SELECT status, output FROM pgflow.runs WHERE run_id = $1"
+    sql = "SELECT status, output FROM pgflow.runs WHERE run_id = $1::text::uuid"
 
     case SQL.query(repo, sql, [parse_uuid(run_id)]) do
       {:ok, %{rows: [[status, output]]}} -> {:ok, %{status: status, output: output}}
@@ -216,7 +216,7 @@ defmodule PgFlow.Queries.Flows do
     JOIN pgflow.steps AS steps
       ON steps.flow_slug = step_states.flow_slug
      AND steps.step_slug = step_states.step_slug
-    WHERE step_states.run_id = $1 AND step_states.status = 'skipped'
+    WHERE step_states.run_id = $1::text::uuid AND step_states.status = 'skipped'
     ORDER BY step_states.skipped_at ASC NULLS LAST, steps.step_index ASC
     """
 
@@ -271,7 +271,7 @@ defmodule PgFlow.Queries.Flows do
   @spec complete_task(Ecto.Repo.t(), String.t(), String.t(), non_neg_integer(), term()) ::
           {:ok, term()} | {:error, term()}
   def complete_task(repo, run_id, step_slug, task_index, output) do
-    sql = "SELECT * FROM pgflow.complete_task($1, $2, $3, $4::jsonb)"
+    sql = "SELECT * FROM pgflow.complete_task($1::text::uuid, $2, $3, $4::jsonb)"
     query_single_row(repo, sql, [parse_uuid(run_id), step_slug, task_index, output])
   end
 
@@ -294,7 +294,7 @@ defmodule PgFlow.Queries.Flows do
   @spec fail_task(Ecto.Repo.t(), String.t(), String.t(), non_neg_integer(), String.t()) ::
           {:ok, term()} | {:error, term()}
   def fail_task(repo, run_id, step_slug, task_index, error_message) do
-    sql = "SELECT * FROM pgflow.fail_task($1, $2, $3, $4)"
+    sql = "SELECT * FROM pgflow.fail_task($1::text::uuid, $2, $3, $4)"
     query_single_row(repo, sql, [parse_uuid(run_id), step_slug, task_index, error_message])
   end
 
@@ -379,7 +379,7 @@ defmodule PgFlow.Queries.Flows do
   def start_tasks(repo, flow_slug, msg_ids, worker_id, queue_name)
       when is_binary(queue_name) and queue_name != "" do
     sql =
-      "SELECT * FROM pgflow.start_tasks($1::text, $2::bigint[], $3::uuid, $4::text, NULL::text)"
+      "SELECT * FROM pgflow.start_tasks($1::text, $2::bigint[], $3::text::uuid, $4::text, NULL::text)"
 
     case SQL.query(repo, sql, [flow_slug, msg_ids, parse_uuid(worker_id), queue_name]) do
       {:ok, %{rows: rows}} -> {:ok, rows}
@@ -874,6 +874,7 @@ defmodule PgFlow.Queries.Flows do
   def get_flow_input(repo, run_id) do
     case execute_rpc(repo, "get_flow_input", [parse_uuid(run_id)],
            schema: @pgflow_schema,
+           uuid_params: [1],
            mode: :raw
          ) do
       {:ok, [%{get_flow_input: nil}]} -> {:error, :not_found}
@@ -945,6 +946,7 @@ defmodule PgFlow.Queries.Flows do
   def get_step_output(repo, run_id, step_slug) do
     case execute_rpc(repo, "get_step_output", [parse_uuid(run_id), step_slug],
            schema: @pgflow_schema,
+           uuid_params: [1],
            mode: :raw
          ) do
       {:ok, [%{get_step_output: output}]} -> {:ok, output}
