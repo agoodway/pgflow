@@ -383,16 +383,16 @@ The Elixir implementation adds or omits the following relative to the pinned
 upstream commit (`PgFlow.upstream_sha/0`). The compatibility harness manifest
 records each one.
 
-| Change                                 | Location         | Description                                                                                            |
-| -------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------ |
-| `flow_type` column + check             | `pgflow.flows`   | Distinguishes background jobs from multi-step DAG workflows.                                           |
-| `attempts_count` on `step_task_record` | `pgflow` type    | Real handler attempt count returned by the claim. TypeScript workers ignore the extra field.           |
-| `step_progress` view                   | `pgflow`         | Elixir-only read model for the dashboard and clients.                                                  |
-| Helper SQL functions                   | `pgflow`         | `register_worker`, `flow_exists`, `get_flow_input`, `get_step_output`, `escalate_permanently_stalled`. |
-| Helper overrides                       | `pgflow`         | Queue-aware `start_tasks/4`, `recover_stalled_tasks`, filtered `prune_data_older_than/2`.              |
-| Version tracking views                 | `pgflow`         | `pgflow_version`, `extensions_version`.                                                                |
-| Omitted `ensure_workers`               | `pgflow`         | Needs Supabase `net.http_post`; Elixir registers workers through OTP.                                  |
-| Deferred notify trigger (runtime only) | `pgmq.q_<queue>` | In `:notify` mode only. Not part of the pgflow schema; see Queue Notifications.                        |
+| Change                                 | Location         | Description                                                                                                                                                                 |
+| -------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `flow_type` column + check             | `pgflow.flows`   | Distinguishes background jobs from multi-step DAG workflows.                                                                                                                |
+| `attempts_count` on `step_task_record` | `pgflow` type    | Real handler attempt count returned by the claim. TypeScript workers ignore the extra field.                                                                                |
+| `step_progress` view                   | `pgflow`         | Elixir-only read model for the dashboard and clients.                                                                                                                       |
+| Helper SQL functions                   | `pgflow`         | `register_worker`, `flow_exists`, `get_flow_input`, `get_step_output`, `escalate_permanently_stalled`, port-only `delete_run` (one run's history and exact queue messages). |
+| Helper overrides                       | `pgflow`         | Queue-aware `start_tasks/4`, `recover_stalled_tasks`, filtered `prune_data_older_than/2` (locks runs before their tasks, like `delete_run`).                                |
+| Version tracking views                 | `pgflow`         | `pgflow_version`, `extensions_version`.                                                                                                                                     |
+| Omitted `ensure_workers`               | `pgflow`         | Needs Supabase `net.http_post`; Elixir registers workers through OTP.                                                                                                       |
+| Deferred notify trigger (runtime only) | `pgmq.q_<queue>` | In `:notify` mode only. Not part of the pgflow schema; see Queue Notifications.                                                                                             |
 
 Existing flow records default to `flow_type = 'flow'`. Helpers are installed
 with `mix pgflow.gen.helpers_migration`.

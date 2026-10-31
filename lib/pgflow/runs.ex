@@ -280,12 +280,30 @@ defmodule PgFlow.Runs do
   end
 
   @doc """
-  Deletes a run and all of its queued and persisted lifecycle data.
+  Deletes a run's history: its lifecycle rows and its exact queue messages.
 
-  The operation locks an existing run, collects persisted queue routes from
-  `step_tasks`, and performs all cleanup in one transaction. Queue cleanup
-  uses each task's `(queue_name, message_id)` identity. An absent run or queue
-  is a successful no-op.
+  Delegates to `pgflow.delete_run(uuid)` in one statement, so Elixir and
+  SQL/Hasura callers share one implementation. The function locks the run,
+  then every task row of the run, before touching any queue, which keeps it
+  free of lock cycles with claims, stalled-task recovery, and pruning. Queue
+  cleanup uses each task's persisted `(queue_name, message_id)` identity in
+  both the live and archive tables, regardless of message age; a missing
+  queue table is skipped. Workers, flow definitions, queues, and unrelated
+  messages are left untouched.
+
+  This is a cleanup operation for history that may be discarded. It does not
+  interrupt a handler that is already running, and PgFlow has no per-run
+  cancel or fail API: a handler finishing after the delete finds no task to
+  complete.
+
+  An absent run is a successful no-op. A run whose persisted flow slug fails
+  PgFlow's slug rules returns `{:error, :invalid_flow_slug}` without deleting
+  anything; other database errors, including deadlocks and constraint
+  violations, are returned as `{:error, %Postgrex.Error{}}`.
+
+  ## Examples
+
+      :ok = PgFlow.Runs.delete(MyApp.Repo, run_id)
   """
   @spec delete(module(), Ecto.UUID.t()) ::
           :ok | {:error, :invalid_id | :invalid_flow_slug | term()}
@@ -293,11 +311,22 @@ defmodule PgFlow.Runs do
     database_result(fn ->
       with {:ok, run_id} <- Helpers.cast_uuid(run_id) do
         repo
-        |> transact_delete(run_id)
-        |> transaction_result()
+        |> SQL.query("SELECT pgflow.delete_run($1::text::uuid)", [run_id])
+        |> delete_result()
       end
     end)
   end
+
+  @invalid_flow_slug_sqlstate "PGF01"
+
+  defp delete_result({:ok, _result}), do: :ok
+
+  defp delete_result(
+         {:error, %Postgrex.Error{postgres: %{pg_code: @invalid_flow_slug_sqlstate}}}
+       ),
+       do: {:error, :invalid_flow_slug}
+
+  defp delete_result({:error, reason}), do: {:error, reason}
 
   defp database_result(fun) do
     fun.()
@@ -319,41 +348,6 @@ defmodule PgFlow.Runs do
     with :ok <- Flows.validate_slug(repo, flow_slug),
          {:ok, routes} <- task_queue_routes(repo, [run_id], flow_slug) do
       make_routes_available(repo, "q", routes)
-    end
-  end
-
-  defp transact_delete(repo, run_id) do
-    repo.transaction(fn ->
-      case delete_run(repo, run_id) do
-        :ok -> :ok
-        {:error, reason} -> repo.rollback(reason)
-      end
-    end)
-  end
-
-  defp transaction_result({:ok, :ok}), do: :ok
-  defp transaction_result({:error, reason}), do: {:error, reason}
-
-  defp delete_run(repo, run_id) do
-    case locked_run(repo, run_id) do
-      %Run{} = run -> delete_locked_run(repo, run)
-      nil -> :ok
-    end
-  end
-
-  defp locked_run(repo, run_id) do
-    Run
-    |> where([run], run.run_id == ^run_id)
-    |> lock("FOR UPDATE")
-    |> repo.one()
-  end
-
-  defp delete_locked_run(repo, %Run{flow_slug: flow_slug, run_id: run_id}) do
-    with :ok <- Flows.validate_slug(repo, flow_slug),
-         {:ok, routes} <- task_queue_routes(repo, [run_id], flow_slug),
-         :ok <- delete_route_messages(repo, "q", routes),
-         :ok <- delete_route_messages(repo, "a", routes) do
-      delete_relational_rows(repo, run_id)
     end
   end
 
@@ -469,17 +463,6 @@ defmodule PgFlow.Runs do
     route_result(result)
   end
 
-  defp delete_route_messages(_repo, _prefix, []), do: :ok
-
-  defp delete_route_messages(repo, prefix, routes) do
-    result =
-      each_existing_route(repo, prefix, routes, fn table, ids ->
-        SQL.query(repo, "DELETE FROM #{table} WHERE msg_id = ANY($1::bigint[])", [ids])
-      end)
-
-    route_result(result)
-  end
-
   defp route_result({:ok, _}), do: :ok
   defp route_result({:error, _} = error), do: error
 
@@ -496,22 +479,6 @@ defmodule PgFlow.Runs do
 
   defp apply_route_operation(nil, _ids, _operation), do: {:ok, nil}
   defp apply_route_operation(table, ids, operation), do: operation.(table, ids)
-
-  defp delete_relational_rows(repo, run_id) do
-    StepTask
-    |> where([task], task.run_id == ^run_id)
-    |> repo.delete_all()
-
-    StepState
-    |> where([state], state.run_id == ^run_id)
-    |> repo.delete_all()
-
-    Run
-    |> where([run], run.run_id == ^run_id)
-    |> repo.delete_all()
-
-    :ok
-  end
 
   defp run_with_states_query(run_id) do
     states_query =

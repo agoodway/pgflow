@@ -319,3 +319,176 @@ AS $$
   ON CONFLICT (worker_id) DO UPDATE
     SET last_heartbeat_at = NOW(), pgflow_version = EXCLUDED.pgflow_version;
 $$;
+
+--SPLIT--
+
+-- WRITE: Delete one run's lifecycle rows and its exact queue messages.
+-- Lock order: run, then every task row of the run (NULL message ids included),
+-- then queue rows. Claim and recovery lock task rows before queue rows, so
+-- taking every task lock before touching a queue keeps them from forming a
+-- lock cycle with this function. Raises SQLSTATE PGF01 for an invalid
+-- persisted flow slug, before anything is deleted.
+CREATE OR REPLACE FUNCTION $SCHEMA$.delete_run(p_run_id uuid)
+RETURNS void
+LANGUAGE plpgsql VOLATILE
+SECURITY INVOKER
+SET search_path = ''
+AS $$
+DECLARE
+  v_flow_slug text;
+  v_route record;
+  v_prefix text;
+  v_table text;
+BEGIN
+  SELECT r.flow_slug INTO v_flow_slug
+  FROM pgflow.runs AS r
+  WHERE r.run_id = p_run_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN;
+  END IF;
+
+  IF NOT coalesce(pgflow.is_valid_slug(v_flow_slug), false) THEN
+    RAISE EXCEPTION USING
+      ERRCODE = 'PGF01',
+      MESSAGE = format('pgflow.delete_run: invalid flow slug %L for run %s', v_flow_slug, p_run_id);
+  END IF;
+
+  PERFORM 1
+  FROM (
+    SELECT st.task_index
+    FROM pgflow.step_tasks AS st
+    WHERE st.run_id = p_run_id
+    ORDER BY st.step_slug, st.task_index
+    FOR UPDATE
+  ) AS locked_tasks;
+
+  FOR v_route IN
+    SELECT st.queue_name, array_agg(st.message_id ORDER BY st.message_id) AS message_ids
+    FROM pgflow.step_tasks AS st
+    WHERE st.run_id = p_run_id
+      AND st.message_id IS NOT NULL
+    GROUP BY st.queue_name
+    ORDER BY st.queue_name
+  LOOP
+    FOREACH v_prefix IN ARRAY ARRAY['q', 'a'] LOOP
+      v_table := format('pgmq.%I', pgmq.format_table_name(v_route.queue_name, v_prefix));
+
+      IF to_regclass(v_table) IS NOT NULL THEN
+        EXECUTE format('DELETE FROM %s WHERE msg_id = ANY($1)', v_table)
+        USING v_route.message_ids;
+      END IF;
+    END LOOP;
+  END LOOP;
+
+  DELETE FROM pgflow.step_tasks WHERE run_id = p_run_id;
+  DELETE FROM pgflow.step_states WHERE run_id = p_run_id;
+  DELETE FROM pgflow.runs WHERE run_id = p_run_id;
+END;
+$$;
+
+--SPLIT--
+
+-- WRITE: Queue-aware pruning with the delete_run lock order: lock the eligible
+-- runs (by run_id), then their task rows, then clean queues, then delete the
+-- locked set. Signature, filters, worker and archive sweeps, and the return
+-- shape match helpers V05.
+CREATE OR REPLACE FUNCTION $SCHEMA$.prune_data_older_than(
+  p_retention_interval INTERVAL,
+  p_flow_slugs TEXT[] DEFAULT NULL
+) RETURNS TABLE(
+  deleted_runs bigint,
+  deleted_step_states bigint,
+  deleted_step_tasks bigint,
+  deleted_workers bigint
+)
+LANGUAGE plpgsql VOLATILE
+SECURITY INVOKER
+SET search_path = ''
+AS $$
+DECLARE
+  cutoff_timestamp TIMESTAMPTZ := NOW() - p_retention_interval;
+  v_deleted_runs bigint := 0;
+  v_deleted_step_states bigint := 0;
+  v_deleted_step_tasks bigint := 0;
+  v_deleted_workers bigint := 0;
+  v_run_ids uuid[];
+  task_record RECORD;
+  route_record RECORD;
+  archive_table TEXT;
+  dynamic_sql TEXT;
+  filter_flows BOOLEAN := (p_flow_slugs IS NOT NULL AND array_length(p_flow_slugs, 1) > 0);
+BEGIN
+  DELETE FROM pgflow.workers
+  WHERE last_heartbeat_at < cutoff_timestamp;
+  GET DIAGNOSTICS v_deleted_workers = ROW_COUNT;
+
+  SELECT coalesce(array_agg(locked_runs.run_id ORDER BY locked_runs.run_id), '{}'::uuid[])
+  INTO v_run_ids
+  FROM (
+    SELECT r.run_id
+    FROM pgflow.runs AS r
+    WHERE (
+      (r.completed_at IS NOT NULL AND r.completed_at < cutoff_timestamp) OR
+      (r.failed_at IS NOT NULL AND r.failed_at < cutoff_timestamp)
+    )
+    AND (NOT filter_flows OR r.flow_slug = ANY(p_flow_slugs))
+    ORDER BY r.run_id
+    FOR UPDATE
+  ) AS locked_runs;
+
+  PERFORM 1
+  FROM (
+    SELECT st.task_index
+    FROM pgflow.step_tasks AS st
+    WHERE st.run_id = ANY(v_run_ids)
+    ORDER BY st.run_id, st.step_slug, st.task_index
+    FOR UPDATE
+  ) AS locked_tasks;
+
+  FOR task_record IN
+    SELECT
+      st.queue_name,
+      ARRAY_AGG(st.message_id) FILTER (WHERE st.message_id IS NOT NULL) AS message_ids
+    FROM pgflow.step_tasks AS st
+    WHERE st.run_id = ANY(v_run_ids)
+    GROUP BY st.queue_name
+    ORDER BY st.queue_name
+  LOOP
+    IF task_record.message_ids IS NOT NULL AND array_length(task_record.message_ids, 1) > 0 THEN
+      PERFORM pgmq.delete(task_record.queue_name, task_record.message_ids);
+    END IF;
+  END LOOP;
+
+  DELETE FROM pgflow.step_tasks WHERE run_id = ANY(v_run_ids);
+  GET DIAGNOSTICS v_deleted_step_tasks = ROW_COUNT;
+
+  DELETE FROM pgflow.step_states WHERE run_id = ANY(v_run_ids);
+  GET DIAGNOSTICS v_deleted_step_states = ROW_COUNT;
+
+  DELETE FROM pgflow.runs WHERE run_id = ANY(v_run_ids);
+  GET DIAGNOSTICS v_deleted_runs = ROW_COUNT;
+
+  FOR route_record IN
+    SELECT DISTINCT queue_name FROM (
+      SELECT queue_name FROM pgflow.steps
+      WHERE NOT filter_flows OR flow_slug = ANY(p_flow_slugs)
+      UNION
+      SELECT lower(flow_slug) FROM pgflow.flows
+      WHERE NOT filter_flows OR flow_slug = ANY(p_flow_slugs)
+    ) routes
+  LOOP
+    archive_table := pgmq.format_table_name(route_record.queue_name, 'a');
+    IF EXISTS (
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema = 'pgmq' AND table_name = archive_table
+    ) THEN
+      dynamic_sql := format('DELETE FROM pgmq.%I WHERE archived_at < $1', archive_table);
+      EXECUTE dynamic_sql USING cutoff_timestamp;
+    END IF;
+  END LOOP;
+
+  RETURN QUERY SELECT v_deleted_runs, v_deleted_step_states, v_deleted_step_tasks, v_deleted_workers;
+END;
+$$;

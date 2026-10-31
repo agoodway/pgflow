@@ -27,6 +27,7 @@ defmodule PgFlow.SchemaCheck do
   @compile_signature "pgflow.ensure_flow_compiled(text,jsonb,text,jsonb)"
   @legacy_compile_signature "pgflow.ensure_flow_compiled(text,jsonb)"
   @register_worker_signature "pgflow.register_worker(uuid,text,text,text)"
+  @delete_run_signature "pgflow.delete_run(uuid)"
 
   @record_fields ~w(flow_slug run_id step_slug input msg_id task_index flow_input attempts_count)
   @record_types ~w(text uuid text jsonb bigint integer jsonb integer)
@@ -141,6 +142,7 @@ defmodule PgFlow.SchemaCheck do
       &check_compile_signature/1,
       &check_legacy_compile_absent/1,
       &check_register_worker/1,
+      &check_delete_run/1,
       &check_record_layout/1,
       &check_task_statuses/1,
       &check_queue_constraints/1
@@ -284,8 +286,7 @@ defmodule PgFlow.SchemaCheck do
      "pgmq notify triggers on #{pgmq_tables(rows)} have no pgmq.notify_insert_throttle row, so " <>
        "they send no NOTIFY and workers wait for their fallback poll. The table is UNLOGGED: " <>
        "crash recovery and Neon compute restarts empty it. Running PgFlow.Signal.Notify " <>
-       "processes restore missing rows on their next reconcile tick " <>
-       "(:throttle_reconcile_interval_ms, default 30s), and worker boot restores them; " <>
+       "processes restore missing rows every 30 seconds, and worker boot restores them; " <>
        "PgFlow.Queries.Pgmq.enable_notify_insert/4 also restores them"}
   end
 
@@ -507,6 +508,18 @@ defmodule PgFlow.SchemaCheck do
       :ok
     else
       {:error, "missing four-argument register_worker function #{@register_worker_signature}"}
+    end
+  end
+
+  # A database that applied helpers V07 before delete_run joined V07 lacks the
+  # function that `PgFlow.Runs.delete/2` calls.
+  defp check_delete_run(repo) do
+    if function_exists?(repo, @delete_run_signature) do
+      :ok
+    else
+      {:error,
+       "missing run deletion function #{@delete_run_signature}; re-apply the helpers V07 " <>
+         "delete_run and prune_data_older_than definitions, or recreate the database"}
     end
   end
 

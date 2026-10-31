@@ -95,10 +95,10 @@ PgFlow.Supervisor (rest_for_one)
 |   |-- Worker.Server (job: send_email)
 |   +-- ...
 |-- StalledTaskRecovery
-+-- :flow_starter (temporary Task — registers flows/jobs, starts workers)
++-- FlowStarter (GenServer: registers flows/jobs, starts workers, retries transient failures)
 ```
 
-The `:flow_starter` is a one-shot initialization task that runs after WorkerSupervisor is alive. It registers each flow/job module via `FlowRegistry`, starts a `Worker.Server` for each, and (when using `:notify` strategy) enables pgmq notifications and registers workers with `Signal.Notify`.
+`FlowStarter` is a GenServer child started after WorkerSupervisor is alive. It registers each flow/job module via `FlowRegistry`, starts a `Worker.Server` for each, and (when using `:notify` strategy) enables pgmq notifications and registers workers with `Signal.Notify`.
 
 ## Module Dependency Graph
 
