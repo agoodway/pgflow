@@ -3,6 +3,17 @@ defmodule PgFlow.MixProject do
 
   @version "0.7.1"
   @source_url "https://github.com/agoodway/pgflow"
+  @public_docs ~w(
+    README.md
+    docs/ARCHITECTURE.md
+    docs/COMPARISON.md
+    docs/DASHBOARD.md
+    docs/ELIXIR_VS_SUPABASE.md
+    docs/LIVE_CLIENT.md
+    docs/UPSTREAM_COMPATIBILITY.md
+    docs/UPGRADING_UPSTREAM_2026_09.md
+    docs/UPGRADING_UPSTREAM_2026_10.md
+  )
 
   def project do
     [
@@ -98,26 +109,14 @@ defmodule PgFlow.MixProject do
       maintainers: ["Chase Pursley"],
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files:
-        ~w(lib priv mix.exs README.md LICENSE .formatter.exs) ++
-          Enum.reject(Path.wildcard("docs/**/*"), fn path ->
-            File.dir?(path) or String.starts_with?(path, "docs/superpowers/") or
-              path == "docs/2026-09-14-external-waits-upstream-alignment-brief.md"
-          end)
+      files: ~w(lib priv mix.exs LICENSE .formatter.exs) ++ @public_docs
     ]
   end
 
   defp docs do
     [
       main: "readme",
-      extras: [
-        "README.md",
-        "docs/ARCHITECTURE.md",
-        "docs/COMPARISON.md",
-        "docs/DASHBOARD.md",
-        "docs/ELIXIR_VS_SUPABASE.md",
-        "docs/LIVE_CLIENT.md"
-      ],
+      extras: @public_docs,
       source_ref: "v#{@version}"
     ]
   end

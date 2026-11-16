@@ -53,7 +53,7 @@ The dashboard's Runs page uses [LiveFilter](https://github.com/agoodway/livefilt
 # mix.exs
 def deps do
   [
-    {:pgflow, "~> 0.1.0"},
+    {:pgflow, "~> 0.7.1"},
     {:livefilter, "~> 0.2.0"}
   ]
 end

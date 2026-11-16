@@ -368,7 +368,7 @@ Both call the same PostgreSQL functions:
 | `pgflow.create_flow`                     | Register flow + create pgmq queue            |
 | `pgflow.add_step`                        | Add step with dependencies                   |
 | `pgflow.start_flow`                      | Create run, enqueue root steps               |
-| `pgflow.start_tasks/4`                   | Claim tasks with queue route + attempt count |
+| `pgflow.start_tasks/5`                   | Claim tasks with queue route + attempt count |
 | `pgflow.complete_task`                   | Save output, cascade to dependents           |
 | `pgflow.fail_task`                       | Retry with backoff or fail permanently       |
 | `pgflow.start_ready_steps`               | Activate steps with all deps satisfied       |
@@ -389,7 +389,7 @@ records each one.
 | `attempts_count` on `step_task_record` | `pgflow` type    | Real handler attempt count returned by the claim. TypeScript workers ignore the extra field.                                                                                |
 | `step_progress` view                   | `pgflow`         | Elixir-only read model for the dashboard and clients.                                                                                                                       |
 | Helper SQL functions                   | `pgflow`         | `register_worker`, `flow_exists`, `get_flow_input`, `get_step_output`, `escalate_permanently_stalled`, port-only `delete_run` (one run's history and exact queue messages). |
-| Helper overrides                       | `pgflow`         | Queue-aware `start_tasks/4`, `recover_stalled_tasks`, filtered `prune_data_older_than/2` (locks runs before their tasks, like `delete_run`).                                |
+| Helper overrides                       | `pgflow`         | Queue-aware `start_tasks/5`, `recover_stalled_tasks`, filtered `prune_data_older_than/2` (locks runs before their tasks, like `delete_run`).                                |
 | Version tracking views                 | `pgflow`         | `pgflow_version`, `extensions_version`.                                                                                                                                     |
 | Omitted `ensure_workers`               | `pgflow`         | Needs Supabase `net.http_post`; Elixir registers workers through OTP.                                                                                                       |
 | Deferred notify trigger (runtime only) | `pgmq.q_<queue>` | In `:notify` mode only. Not part of the pgflow schema; see Queue Notifications.                                                                                             |
@@ -403,5 +403,5 @@ with `mix pgflow.gen.helpers_migration`.
 
 **Elixir:** `mix pgflow.gen.flow_migration MyFlow` reads `__pgflow_definition__/0`
 and generates an Ecto migration. Worker startup uses `PgFlow.Worker.Bootstrap`
-and `pgflow.ensure_flow_compiled/2` to compile or verify definitions. `FlowCompiler`
+and `pgflow.ensure_flow_compiled/4` to compile or verify definitions. `FlowCompiler`
 remains available for existing migrations and explicit upserts.

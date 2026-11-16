@@ -69,10 +69,10 @@ Sets the default assign (`:flow_run`) to `nil` and stores PubSub config in socke
 
 **Options:**
 
-| Option    | Default      | Description                  |
-|-----------|--------------|------------------------------|
-| `:pubsub` | (required)   | Your Phoenix.PubSub module   |
-| `:as`     | `:flow_run`  | Assign key for the run       |
+| Option      | Default        | Description                    |
+| ----------- | -------------- | ------------------------------ |
+| `:pubsub`   | (required)     | Your Phoenix.PubSub module     |
+| `:as`       | `:flow_run`    | Assign key for the run         |
 
 ### `start_flow/4`
 
@@ -89,9 +89,9 @@ Accepts a flow module, slug atom, or string slug as the second argument.
 
 **Options:**
 
-| Option | Default     | Description            |
-|--------|-------------|------------------------|
-| `:as`  | `:flow_run` | Assign key for the run |
+| Option   | Default       | Description              |
+| -------- | ------------- | ------------------------ |
+| `:as`    | `:flow_run`   | Assign key for the run   |
 
 ### `enqueue/4`
 
@@ -114,9 +114,9 @@ socket = LiveClient.subscribe(socket, run_id)
 
 **Options:**
 
-| Option | Default     | Description            |
-|--------|-------------|------------------------|
-| `:as`  | `:flow_run` | Assign key for the run |
+| Option   | Default       | Description              |
+| -------- | ------------- | ------------------------ |
+| `:as`    | `:flow_run`   | Assign key for the run   |
 
 ### `unsubscribe/2`
 
@@ -172,45 +172,48 @@ Then access `@order_run` and `@email_run` independently in templates.
 
 ### `%PgFlow.Schema.Run{}`
 
-| Field             | Type        | Description                                      |
-|-------------------|-------------|--------------------------------------------------|
-| `run_id`          | `binary_id` | UUID of the run                                  |
-| `flow_slug`       | `string`    | Flow or job slug                                 |
-| `status`          | `string`    | `"started"`, `"completed"`, or `"failed"`        |
-| `input`           | `map`       | Input data passed to the flow                    |
-| `output`          | `map`       | Final output (set on completion)                 |
-| `remaining_steps` | `integer`   | Steps not yet completed                          |
-| `started_at`      | `datetime`  | When the run started                             |
-| `completed_at`    | `datetime`  | When the run completed                           |
-| `failed_at`       | `datetime`  | When the run failed                              |
-| `step_states`     | `list`      | Preloaded `%StepState{}` structs                 |
+| Field               | Type          | Description                                        |
+| ------------------- | ------------- | -------------------------------------------------- |
+| `run_id`            | `binary_id`   | UUID of the run                                    |
+| `flow_slug`         | `string`      | Flow or job slug                                   |
+| `status`            | `string`      | `"started"`, `"completed"`, or `"failed"`          |
+| `input`             | `map`         | Input data passed to the flow                      |
+| `output`            | `map`         | Final output (set on completion)                   |
+| `remaining_steps`   | `integer`     | Steps not yet completed                            |
+| `started_at`        | `datetime`    | When the run started                               |
+| `completed_at`      | `datetime`    | When the run completed                             |
+| `failed_at`         | `datetime`    | When the run failed                                |
+| `step_states`       | `list`        | Preloaded `%StepState{}` structs                   |
 
 ### `%PgFlow.Schema.StepState{}`
 
-| Field             | Type       | Description                                              |
-|-------------------|------------|----------------------------------------------------------|
-| `step_slug`       | `string`   | Step identifier                                          |
-| `status`          | `string`   | `"created"`, `"started"`, `"completed"`, or `"failed"`   |
-| `remaining_tasks` | `integer`  | Tasks not yet completed                                  |
-| `output`          | `map`      | Step output (set on completion)                          |
-| `error_message`   | `string`   | Error message (set on failure)                           |
-| `started_at`      | `datetime` | When the step started                                    |
-| `completed_at`    | `datetime` | When the step completed                                  |
-| `failed_at`       | `datetime` | When the step failed                                     |
+| Field               | Type         | Description                                                         |
+| ------------------- | ------------ | ------------------------------------------------------------------- |
+| `step_slug`         | `string`     | Step identifier                                                     |
+| `status`            | `string`     | `"created"`, `"started"`, `"completed"`, `"failed"`, or `"skipped"` |
+| `remaining_tasks`   | `integer`    | Tasks not yet completed                                             |
+| `output`            | `map`        | Step output (set on completion)                                     |
+| `error_message`     | `string`     | Error message (set on failure)                                      |
+| `started_at`        | `datetime`   | When the step started                                               |
+| `completed_at`      | `datetime`   | When the step completed                                             |
+| `failed_at`         | `datetime`   | When the step failed                                                |
+| `skip_reason`       | `string`     | Reason the database skipped the step                                |
+| `skipped_at`        | `datetime`   | When the step was skipped                                           |
 
 ## Events
 
 LiveClient handles the following PubSub events automatically:
 
-| Event              | Effect                                                  |
-|--------------------|---------------------------------------------------------|
-| `:task_started`    | Updates step status to `"started"`                      |
-| `:task_completed`  | Updates step status to `"completed"`, sets output       |
-| `:task_failed`     | Updates step status to `"failed"`, sets error message   |
-| `:run_completed`   | Updates run status to `"completed"`, sets output        |
-| `:run_failed`      | Updates run status to `"failed"`                        |
+| Event                | Effect                                                     |
+| -------------------- | ---------------------------------------------------------- |
+| `:task_started`      | Updates step status to `"started"`                         |
+| `:task_completed`    | Updates step status to `"completed"`, sets output          |
+| `:task_failed`       | Updates step status to `"failed"`, sets error message      |
+| `:step_skipped`      | Sets step status to `"skipped"`, skip reason and timestamp |
+| `:run_completed`     | Updates run status to `"completed"`, sets output           |
+| `:run_failed`        | Updates run status to `"failed"`                           |
 
-Updates are idempotent — status only advances forward (`created` < `started` < `completed` < `failed`). Out-of-order or duplicate messages are safely ignored.
+Updates are idempotent: status advances from `created` to `started` to a terminal status. `completed`, `failed`, and `skipped` have equal precedence. A database-confirmed `:step_skipped` event can replace a locally inferred failure; other duplicate or non-advancing status updates are ignored.
 
 ## Subscribing to Existing Runs
 

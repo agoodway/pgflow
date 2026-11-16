@@ -27,7 +27,7 @@ PgFlow is a native Elixir implementation of [pgflow](https://pgflow.dev) - a Pos
 
 **Compatibility:** Same pgflow.* schema, same core SQL functions, same pgmq message format. Elixir and TypeScript workers can run side-by-side processing the same flows when pinned to the same upstream SHA (`PgFlow.upstream_sha/0`). See [UPSTREAM_COMPATIBILITY.md](UPSTREAM_COMPATIBILITY.md).
 
-**Elixir extensions:** Adds helper SQL functions for OTP worker lifecycle. Backward-compatible - TypeScript workers can safely ignore them. Queue identity, four-argument claim, and startup compilation follow upstream core V02; helpers V05 reconcile recovery and pruning with persisted `(queue_name, message_id)` routes.
+**Elixir extensions:** Adds helper SQL functions for OTP worker lifecycle. Backward-compatible - TypeScript workers can safely ignore them. Queue identity and the five-argument claim follow upstream core V03; helpers V07 reconcile startup compilation, recovery, and pruning with persisted `(queue_name, message_id)` routes.
 
 **Schema verification:** `mix pgflow.check_schema` validates installed core/helpers versions, function signatures, queue constraints, and the eight-field `step_task_record` before production deploys.
 

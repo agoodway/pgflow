@@ -60,67 +60,29 @@ Then fetch dependencies:
 mix deps.get
 ```
 
-### Upgrading to 0.7
+### Upgrading
 
-- Helpers V07 includes `pgflow.delete_run(uuid)`, which `PgFlow.Runs.delete/2`
-  now calls, and a `prune_data_older_than` that locks runs before their tasks.
-  Both remove lock cycles with claims and stalled-task recovery. A database
-  that applied a pre-release helpers V07 lacks `delete_run`
-  (`mix pgflow.check_schema` reports it): recreate it or re-apply those two
-  definitions, as described in
-  [UPGRADING_UPSTREAM_2026_10.md](docs/UPGRADING_UPSTREAM_2026_10.md).
-- PgFlow has no per-run cancel or fail API. `PgFlow.Runs.delete/2` deletes run
-  history and cannot interrupt a handler that is already running.
-- `PgFlow.start_worker/2` now raises `ArgumentError` for any option other than
-  `:repo`, `:max_concurrency`, and `:batch_size`, and for invalid values. Earlier
-  releases ignored unknown options. It returns
-  `{:error, {:conflicting_worker_options, pid}}` when a worker is already running
-  with different configured limits.
-- With `signal_strategy: :notify`, the first boot after the upgrade recreates
-  each flow queue's pgmq notify trigger as `DEFERRABLE INITIALLY DEFERRED`, so a
-  long producer transaction no longer blocks other producers on the same queue.
-  Later boots that find the deferred trigger only reconcile the queue's
-  throttle row, with no DDL. A trigger failure now fails the producer's COMMIT
-  instead of its INSERT, and a transaction that sends to a queue and then drops
-  or purges it must first run
-  `SET CONSTRAINTS pgmq.trigger_notify_queue_insert_listeners IMMEDIATE`
-  (`PgFlow.Queries.Pgmq.flush_notify_events/1`; `PgFlow.delete_flow/1` does
-  this itself). Set `notify_trigger: :pgmq_default` to keep pgmq's immediate
-  trigger, on every node, and `notify_lock_timeout_ms` (default `2000`) to bound
-  how long a boot waits for the queue table lock. See the Notify section of
-  [ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- `mix pgflow.check_schema` now prints warnings, without failing, for flow
-  queue notify triggers that are not deferred (for example after
-  `ALTER EXTENSION pgmq UPDATE`), that have no `pgmq.notify_insert_throttle`
-  row, or that sit on partitioned queues pgmq cannot notify for. Pass
-  `--notify-trigger pgmq_default` when the app uses `notify_trigger: :pgmq_default`.
-- `PgFlow.Signal.Notify` restores missing `pgmq.notify_insert_throttle` rows
-  every 30 seconds. pgmq keeps that table UNLOGGED, so crash recovery and Neon
-  compute restarts empty it and silence notifications until a row is restored.
-- New: `PgFlow.scale_worker/2` and `PgFlow.check_worker/2` for local runtime
-  scaling, and the `worker_options` config map for per-flow or per-job
-  `max_concurrency` and `batch_size`. Both calls take `:timeout` (default
-  `5_000` ms, or `:infinity`); on expiry the caller exits with
-  `{:timeout, {GenServer, :call, _}}`.
+For existing installations, follow the [upgrade guide](docs/UPGRADING_UPSTREAM_2026_10.md).
 
 ## Quick Start
 
 ### 1. Database Setup
 
-**For development**, use the provided Docker Compose which builds a pre-configured Postgres image:
+**For library development**, start the dedicated integration database:
 
 ```bash
-docker compose up -d
+docker compose -f test/support/db/compose.yaml up -d
+PGFLOW_REQUIRE_DB=1 mix test
 ```
 
-This builds a Postgres 17 image with pgmq, pg_cron, and the pgflow schema pre-loaded. Database available at `localhost:54323` (user: `postgres`, password: `postgres`, database: `pgflow_test`).
+Postgres is available at `localhost:54323` (user: `postgres`, password:
+`postgres`, database: `pgflow_test`). The test helper installs the extensions
+and PgFlow schema through the library's migrations; the image does not preload
+that schema.
 
-**Resetting the database:** The pgflow schema is loaded by the Docker init script on first container creation only. If you drop the database (e.g. `mix ecto.reset`), you must re-apply it:
-
-```bash
-# Destroy the Docker volume and start fresh
-docker compose down -v && docker compose up -d
-```
+The repository-root `docker compose up -d` serves the demo instead, with
+`pgflow_demo_dev` as its primary database. Both Compose configurations use
+port 54323, so run only one at a time.
 
 **For your application**, generate consumer migrations using the setup tasks. Each writes one wrapper migration into your app's `priv/repo/migrations/`:
 
@@ -382,7 +344,7 @@ Requires the `:pubsub` option in your PgFlow config. See [LIVE_CLIENT.md](docs/L
 
 ## Demo App
 
-See [`demo/README.md`](demo/README.md) for a Phoenix LiveView application demonstrating PgFlow with real-time flow visualization.
+See [`demo/README.md`](https://github.com/agoodway/pgflow/blob/main/demo/README.md) for a Phoenix LiveView application demonstrating PgFlow with real-time flow visualization.
 
 ## Telemetry
 
