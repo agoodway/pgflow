@@ -3,22 +3,19 @@ defmodule PgFlow.FlowStarterTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.Flow.Shape
-  alias PgFlow.{FlowStarter, WorkerSupervisor}
+  alias PgFlow.{FlowRegistry, FlowStarter, WorkerSupervisor}
   alias PgFlow.TestRepo
 
   @moduletag timeout: 10_000
 
-  # Not a PgFlow.Flow — FlowRegistry.register/1 raises ArgumentError for this,
-  # which FlowStarter classifies as :permanent.
+  # Loaded modules without flow metadata are permanent registration failures.
   defmodule NotAFlow do
     @moduledoc false
     def hello, do: :world
   end
 
   setup do
-    # A default repo is required by FlowStarter's init even though tests in
-    # this module never exercise worker/notify phases (every scenario here
-    # short-circuits at the registry phase).
+    # Registry-only scenarios still require a repo option during init.
     [repo: :unused_repo]
   end
 
@@ -37,6 +34,140 @@ defmodule PgFlow.FlowStarterTest do
       assert snap.healthy? == true
       assert snap.modules == []
       assert %DateTime{} = snap.started_at
+    end
+  end
+
+  describe "unloaded module retries" do
+    test "retries automatically with capped backoff and stays unready", %{repo: repo} do
+      module = __MODULE__.MissingFlow
+      parent = self()
+      handler_id = {__MODULE__, make_ref()}
+      event = [:pgflow, :starter, :module, :retry_scheduled]
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          event,
+          fn _event, measurements, metadata, _config ->
+            if metadata.module == module, do: send(parent, {:retry, measurements})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      start_supervised!(
+        {FlowStarter,
+         repo: repo,
+         flows: [module],
+         backoff_base_ms: 10,
+         backoff_max_ms: 25,
+         backoff_jitter_ratio: 0.0}
+      )
+
+      for {attempt, delay} <- [{1, 10}, {2, 20}, {3, 25}, {4, 25}] do
+        assert_receive {:retry, %{attempt: ^attempt, delay_ms: ^delay}}, 1_000
+      end
+
+      assert %{status: :retrying, attempts: attempts, last_error: error} =
+               FlowStarter.module_status(module)
+
+      assert attempts >= 4
+
+      assert %{class: :transient, phase: :registry, reason: {:error, {:not_loaded, ^module}}} =
+               error
+
+      assert Map.has_key?(:sys.get_state(FlowStarter).timers, module)
+      refute FlowStarter.ready?()
+      refute FlowStarter.healthy?()
+      assert FlowStarter.await_ready(30) == {:error, :timeout}
+    end
+
+    @tag :integration
+    test "registers and starts a worker automatically once the flow module loads" do
+      module = __MODULE__.LateLoadedFlow
+      refute Code.ensure_loaded?(module)
+      :ok = Sandbox.checkout(TestRepo)
+      :ok = Sandbox.mode(TestRepo, {:shared, self()})
+      TestRepo.query!("SELECT pgflow_tests.reset_db()")
+
+      start_supervised!({Task.Supervisor, name: PgFlow.TaskSupervisor})
+
+      start_supervised!(
+        {WorkerSupervisor,
+         repo: TestRepo,
+         max_concurrency: 2,
+         batch_size: 2,
+         signal_strategy: :polling,
+         min_poll_interval: 50,
+         max_poll_interval: 50,
+         notify_fallback_interval: 30_000,
+         heartbeat_interval: 10_000}
+      )
+
+      on_exit(fn ->
+        FlowRegistry.unregister(module)
+        :code.purge(module)
+        :code.delete(module)
+        :persistent_term.erase({PgFlow, :repo})
+        :persistent_term.erase({PgFlow, :config})
+        Sandbox.mode(TestRepo, :manual)
+      end)
+
+      parent = self()
+      handler_id = {__MODULE__, make_ref()}
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:pgflow, :starter, :module, :retry_scheduled],
+          fn _event, _measurements, metadata, _config ->
+            if metadata.module == module, do: send(parent, :late_module_retry)
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      start_supervised!(
+        {FlowStarter,
+         repo: TestRepo,
+         flows: [module],
+         backoff_base_ms: 10,
+         backoff_max_ms: 25,
+         backoff_jitter_ratio: 0.0}
+      )
+
+      assert_receive :late_module_retry, 1_000
+
+      assert %{status: :retrying, last_error: %{phase: :registry}} =
+               FlowStarter.module_status(module)
+
+      Module.create(
+        module,
+        quote do
+          use PgFlow.Flow
+          @flow slug: :flow_starter_late_loaded, max_attempts: 3, timeout: 60
+
+          step :process do
+            fn input, _ctx -> input end
+          end
+        end,
+        Macro.Env.location(__ENV__)
+      )
+
+      assert FlowStarter.await_ready(2_000) == :ok
+      assert %{status: :succeeded, last_error: nil} = FlowStarter.module_status(module)
+      assert {:ok, %{module: ^module, slug: :flow_starter_late_loaded}} = FlowRegistry.get(module)
+      assert %{pid: worker_pid} = WorkerSupervisor.check_worker(module)
+      assert is_pid(worker_pid)
+      assert FlowStarter.healthy?()
+      refute Map.has_key?(:sys.get_state(FlowStarter).timers, module)
+
+      assert %{rows: [["flow_starter_late_loaded"]]} =
+               TestRepo.query!(
+                 "SELECT flow_slug FROM pgflow.flows WHERE flow_slug = 'flow_starter_late_loaded'"
+               )
     end
   end
 
@@ -223,6 +354,7 @@ defmodule PgFlow.FlowStarterTest do
       assert ms.status == :failed_permanent
       assert ms.last_error.class == :permanent
       assert ms.last_error.phase == :registry
+      assert ms.last_error.reason == {:error, {:invalid_flow_module, NotAFlow}}
     end
 
     test "no retry timer scheduled after permanent failure" do

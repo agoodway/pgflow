@@ -18,8 +18,10 @@ defmodule PgFlow.FlowStarter do
 
   ## Retry model
 
-    * Transient errors (DB connectivity, supervisor not yet running) retry
-      indefinitely with exponential backoff + uniform jitter.
+    * Transient errors (module not yet loaded, DB connectivity, supervisor
+      not yet running) retry indefinitely with exponential backoff + uniform jitter.
+      An absent or misspelled module therefore keeps retrying until corrected;
+      backoff is capped at 30 seconds by default before jitter is applied.
     * Permanent errors (invalid flow module, missing `__pgflow_definition__/0`,
       pgmq SQL missing) stop retries immediately.
 
@@ -378,12 +380,12 @@ defmodule PgFlow.FlowStarter do
     end
   end
 
-  # Phase 1 — registry. FlowRegistry.register/1 returns tuples; permanent
-  # errors are invalid or unloaded modules.
+  # Phase 1 — registry. Unloaded modules may become available later;
+  # loaded modules without flow metadata are permanent errors.
   defp run_phase(:registry, ms, _state) do
     case FlowRegistry.register(ms.module) do
       :ok -> {:ok, ms}
-      {:error, {:not_loaded, _}} = err -> {:error, :permanent, err, :registry}
+      {:error, {:not_loaded, _}} = err -> {:error, :transient, err, :registry}
       {:error, {:invalid_flow_module, _}} = err -> {:error, :permanent, err, :registry}
     end
   end
