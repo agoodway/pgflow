@@ -49,7 +49,7 @@ Add `pgflow` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:pgflow, "~> 0.7.1"}
+    {:pgflow, "~> 0.7.2"}
   ]
 end
 ```

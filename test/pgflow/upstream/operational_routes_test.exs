@@ -4,6 +4,7 @@ defmodule PgFlow.Upstream.OperationalRoutesTest do
   """
   use PgFlow.IntegrationCase, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias PgFlow.Flow.Shape
   alias PgFlow.Queries.{Flows, Pgmq}
   alias PgFlow.{Runs, Workers}
@@ -389,12 +390,17 @@ defmodule PgFlow.Upstream.OperationalRoutesTest do
     @tag :pgmq_notify
     test "notify registers on canonical queue without creating mixed-case queue metadata" do
       if pgmq_notify_available?() do
+        # NOTIFY is delivered on commit, so run outside the sandbox transaction.
+        :ok = Sandbox.checkin(TestRepo)
+        Sandbox.mode(TestRepo, :auto)
+
         flow_slug = "MixedCaseNotify"
         queue_name = PgFlow.Slug.queue_name(flow_slug)
         create_flow(flow_slug)
         add_step(flow_slug, "work")
 
-        refute queue_exists?(flow_slug)
+        assert queue_exists?(queue_name)
+        refute raw_case_queue_exists?(flow_slug)
 
         {:ok, notify_pid} = Notify.start_link(repo: TestRepo, notify_throttle_ms: 0)
         Process.sleep(50)
@@ -484,6 +490,21 @@ defmodule PgFlow.Upstream.OperationalRoutesTest do
 
   defp ensure_queue!(queue_name) do
     TestRepo.query!("SELECT pgmq.create($1::text)", [queue_name])
+  end
+
+  # Checks the queue name exactly as written (no lowercasing) for both the
+  # physical table and the pgmq metadata row.
+  defp raw_case_queue_exists?(queue_name) do
+    %{rows: [[exists?]]} =
+      TestRepo.query!(
+        """
+        SELECT to_regclass(format('%I.%I', 'pgmq', 'q_' || $1::text)) IS NOT NULL
+            OR EXISTS (SELECT 1 FROM pgmq.meta WHERE queue_name = $1::text)
+        """,
+        [queue_name]
+      )
+
+    exists?
   end
 
   defp queue_exists?(queue_name) do

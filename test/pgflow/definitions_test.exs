@@ -222,10 +222,16 @@ defmodule PgFlow.DefinitionsTest do
 
       assert next_run_at.time_zone == "Etc/UTC"
 
+      %{rows: [[server_time_zone]]} =
+        TestRepo.query!("SELECT current_setting('cron.timezone')")
+
+      local_time_zone =
+        if server_time_zone in ["GMT", "UTC"], do: "Etc/UTC", else: server_time_zone
+
       assert {:ok, local_next_run} =
                DateTime.shift_zone(
                  next_run_at,
-                 "America/New_York",
+                 local_time_zone,
                  PgFlow.Test.FixedTimeZoneDatabase
                )
 
@@ -239,8 +245,13 @@ defmodule PgFlow.DefinitionsTest do
 
       Calendar.put_time_zone_database(Calendar.UTCOnlyTimeZoneDatabase)
 
-      assert {:ok, %CronSummary{next_run_at: nil}} =
+      # A UTC-only database can resolve only a UTC server zone.
+      assert {:ok, %CronSummary{next_run_at: unresolved_next_run}} =
                Definitions.get_cron(TestRepo, "definitions_test_timezone")
+
+      if local_time_zone == "Etc/UTC",
+        do: assert(%DateTime{} = unresolved_next_run),
+        else: assert(is_nil(unresolved_next_run))
 
       Calendar.put_time_zone_database(PgFlow.Test.FixedTimeZoneDatabase)
     end

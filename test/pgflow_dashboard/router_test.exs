@@ -48,6 +48,11 @@ defmodule PgFlowDashboard.RouterTest do
       # are present as deps so the real dependency probe must succeed.
       assert :ok = Router.ensure_dashboard_dependencies!()
     end
+
+    test "dashboard modules are compiled when their optional deps are present" do
+      assert Code.ensure_loaded?(PgFlowDashboard.Live.RunsLive.Index)
+      assert Code.ensure_loaded?(PgFlowDashboard.Live.OverviewLive)
+    end
   end
 
   describe "missing_dependencies/1" do

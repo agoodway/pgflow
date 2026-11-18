@@ -88,6 +88,80 @@ defmodule PgFlow.RunsTest do
       assert {:ok, [%RunSummary{run_id: ^job_id}]} = Runs.list(TestRepo, flow_type: :job)
     end
 
+    test "accept list values for status, flow slug, and flow type; an empty list matches nothing" do
+      create_flow("in_flow_a")
+      add_step("in_flow_a", "work")
+      create_flow("in_flow_b")
+      add_step("in_flow_b", "work")
+      TestRepo.query!("UPDATE pgflow.flows SET flow_type = 'job' WHERE flow_slug = 'in_flow_b'")
+
+      started_id = start_flow_run("in_flow_a", %{})
+      completed_id = start_flow_run("in_flow_a", %{})
+      failed_id = start_flow_run("in_flow_b", %{})
+
+      TestRepo.query!(
+        "UPDATE pgflow.runs SET status = 'completed', remaining_steps = 0, completed_at = started_at WHERE run_id = $1",
+        [Ecto.UUID.dump!(completed_id)]
+      )
+
+      TestRepo.query!(
+        "UPDATE pgflow.runs SET status = 'failed', failed_at = started_at WHERE run_id = $1",
+        [Ecto.UUID.dump!(failed_id)]
+      )
+
+      scope = [flow_slug: ["in_flow_a", "in_flow_b"]]
+
+      assert {:ok, runs} = Runs.list(TestRepo, scope ++ [status: ["completed", :failed]])
+      assert runs |> Enum.map(& &1.run_id) |> Enum.sort() == Enum.sort([completed_id, failed_id])
+      assert {:ok, 2} = Runs.count(TestRepo, scope ++ [status: ["completed", "failed"]])
+
+      assert {:ok, [%RunSummary{run_id: ^started_id}]} =
+               Runs.list(TestRepo, flow_slug: ["in_flow_a"], status: ["started"])
+
+      assert {:ok, [%RunSummary{run_id: ^failed_id}]} =
+               Runs.list(TestRepo, scope ++ [flow_type: ["job"]])
+
+      assert {:ok, 3} = Runs.count(TestRepo, scope ++ [flow_type: ["flow", :job]])
+      assert {:ok, []} = Runs.list(TestRepo, scope ++ [status: []])
+      assert {:ok, 0} = Runs.count(TestRepo, flow_slug: [])
+      assert {:ok, 0} = Runs.count(TestRepo, scope ++ [flow_type: []])
+    end
+
+    test "exclude values with {:not, value_or_list}; an empty exclusion list excludes nothing" do
+      create_flow("not_flow_a")
+      add_step("not_flow_a", "work")
+      create_flow("not_flow_b")
+      add_step("not_flow_b", "work")
+      TestRepo.query!("UPDATE pgflow.flows SET flow_type = 'job' WHERE flow_slug = 'not_flow_b'")
+
+      started_id = start_flow_run("not_flow_a", %{})
+      failed_id = start_flow_run("not_flow_b", %{})
+
+      TestRepo.query!(
+        "UPDATE pgflow.runs SET status = 'failed', failed_at = started_at WHERE run_id = $1",
+        [Ecto.UUID.dump!(failed_id)]
+      )
+
+      scope = [flow_slug: ["not_flow_a", "not_flow_b"]]
+
+      assert {:ok, [%RunSummary{run_id: ^started_id}]} =
+               Runs.list(TestRepo, scope ++ [status: {:not, "failed"}])
+
+      assert {:ok, [%RunSummary{run_id: ^failed_id}]} =
+               Runs.list(TestRepo, scope ++ [status: {:not, [:started, "completed"]}])
+
+      assert {:ok, 2} = Runs.count(TestRepo, scope ++ [status: {:not, []}])
+
+      assert {:ok, [%RunSummary{run_id: ^started_id}]} =
+               Runs.list(TestRepo, scope ++ [flow_type: {:not, "job"}])
+
+      assert {:ok, [%RunSummary{run_id: ^failed_id}]} =
+               Runs.list(TestRepo, flow_slug: {:not, ["not_flow_a"]}, flow_type: ["job"])
+
+      assert {:ok, 2} =
+               Runs.count(TestRepo, flow_slug: {:not, "nonexistent"}, flow_type: {:not, []})
+    end
+
     test "uses a deterministic composite cursor when timestamps match" do
       create_flow("cursor_runs")
       add_step("cursor_runs", "work")

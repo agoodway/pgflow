@@ -1,152 +1,154 @@
-defmodule PgFlowDashboard.Live.FlowsLive.Show do
-  @moduledoc """
-  Flow detail page with dependency graph and run history grid.
-  """
+if Code.ensure_loaded?(Phoenix.LiveView) do
+  defmodule PgFlowDashboard.Live.FlowsLive.Show do
+    @moduledoc """
+    Flow detail page with dependency graph and run history grid.
+    """
 
-  use Phoenix.LiveView
+    use Phoenix.LiveView
 
-  alias PgFlow.{Definitions, Runs}
-  alias PgFlowDashboard.Components.{DependencyGraph, Layouts, RunHistoryGrid}
-  alias PgFlowDashboard.Live.LiveHelpers
+    alias PgFlow.{Definitions, Runs}
+    alias PgFlowDashboard.Components.{DependencyGraph, Layouts, RunHistoryGrid}
+    alias PgFlowDashboard.Live.LiveHelpers
 
-  @impl true
-  def mount(%{"slug" => flow_slug}, session, socket) do
-    {:cont, socket} = LiveHelpers.on_mount(session, socket)
+    @impl true
+    def mount(%{"slug" => flow_slug}, session, socket) do
+      {:cont, socket} = LiveHelpers.on_mount(session, socket)
 
-    socket =
-      socket
-      |> assign(:page_title, flow_slug)
-      |> assign(:base_path, session["base_path"] || "/pgflow")
-      |> assign(:flow_slug, flow_slug)
-      |> load_flow()
-      |> load_run_history()
-
-    if socket.assigns.flow do
       socket =
         socket
-        |> LiveHelpers.subscribe_to_updates()
+        |> assign(:page_title, flow_slug)
+        |> assign(:base_path, session["base_path"] || "/pgflow")
+        |> assign(:flow_slug, flow_slug)
+        |> load_flow()
+        |> load_run_history()
+
+      if socket.assigns.flow do
+        socket =
+          socket
+          |> LiveHelpers.subscribe_to_updates()
+          |> LiveHelpers.schedule_refresh()
+
+        {:ok, socket}
+      else
+        {:ok, push_navigate(socket, to: "#{socket.assigns.base_path}/flows")}
+      end
+    end
+
+    @impl true
+    def handle_info(:refresh, socket) do
+      socket =
+        socket
+        |> load_flow()
+        |> load_run_history()
         |> LiveHelpers.schedule_refresh()
 
-      {:ok, socket}
-    else
-      {:ok, push_navigate(socket, to: "#{socket.assigns.base_path}/flows")}
+      {:noreply, socket}
     end
-  end
 
-  @impl true
-  def handle_info(:refresh, socket) do
-    socket =
-      socket
-      |> load_flow()
-      |> load_run_history()
-      |> LiveHelpers.schedule_refresh()
-
-    {:noreply, socket}
-  end
-
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket) do
-    {:noreply, load_run_history(socket)}
-  end
-
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket) do
-    {:noreply, load_run_history(socket)}
-  end
-
-  @impl true
-  def handle_info(_, socket), do: {:noreply, socket}
-
-  defp load_flow(socket) do
-    case Definitions.get_flow(socket.assigns.repo, socket.assigns.flow_slug) do
-      {:ok, flow} ->
-        {:ok, steps} = Definitions.list_steps(socket.assigns.repo, socket.assigns.flow_slug)
-        {:ok, deps} = Definitions.list_deps(socket.assigns.repo, socket.assigns.flow_slug)
-
-        socket
-        |> assign(:flow, flow)
-        |> assign(:flow_steps, DependencyGraph.with_dependencies(steps, deps))
-
-      {:error, _} ->
-        assign(socket, :flow, nil)
+    @impl true
+    def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket) do
+      {:noreply, load_run_history(socket)}
     end
-  end
 
-  defp load_run_history(socket) do
-    {:ok, cells} =
-      Runs.history(socket.assigns.repo, socket.assigns.flow_slug,
-        limit: socket.assigns.config[:max_grid_runs] || 50
-      )
+    @impl true
+    def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket) do
+      {:noreply, load_run_history(socket)}
+    end
 
-    grid_data = RunHistoryGrid.group_cells(cells)
+    @impl true
+    def handle_info(_, socket), do: {:noreply, socket}
 
-    step_slugs =
-      if socket.assigns.flow do
-        Enum.map(socket.assigns.flow_steps, & &1.step_slug)
-      else
-        Map.keys(grid_data)
+    defp load_flow(socket) do
+      case Definitions.get_flow(socket.assigns.repo, socket.assigns.flow_slug) do
+        {:ok, flow} ->
+          {:ok, steps} = Definitions.list_steps(socket.assigns.repo, socket.assigns.flow_slug)
+          {:ok, deps} = Definitions.list_deps(socket.assigns.repo, socket.assigns.flow_slug)
+
+          socket
+          |> assign(:flow, flow)
+          |> assign(:flow_steps, DependencyGraph.with_dependencies(steps, deps))
+
+        {:error, _} ->
+          assign(socket, :flow, nil)
       end
+    end
 
-    socket
-    |> assign(:grid_data, grid_data)
-    |> assign(:step_slugs, step_slugs)
-  end
+    defp load_run_history(socket) do
+      {:ok, cells} =
+        Runs.history(socket.assigns.repo, socket.assigns.flow_slug,
+          limit: socket.assigns.config[:max_grid_runs] || 50
+        )
 
-  @impl true
-  def render(assigns) do
-    ~H"""
-    <Layouts.dashboard_layout current_page={:flows} base_path={@base_path}>
-      <div :if={@flow}>
-        <!-- Header -->
-        <div class="mb-6">
-          <.link navigate={"#{@base_path}/flows"} class="text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 mb-2 inline-block">
-            ← Back to flows
-          </.link>
-          <h1 class="text-2xl font-bold text-slate-900 dark:text-white">{@flow.flow_slug}</h1>
-          <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            {@flow.step_count} steps · Max {@ flow.opt_max_attempts} attempts · {@ flow.opt_timeout}s timeout
-          </p>
-        </div>
+      grid_data = RunHistoryGrid.group_cells(cells)
 
-        <!-- Stats -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-            <p class="text-sm text-slate-500 dark:text-slate-400">Total Runs (24h)</p>
-            <p class="text-2xl font-semibold text-slate-900 dark:text-white">{@flow.total_runs_24h}</p>
+      step_slugs =
+        if socket.assigns.flow do
+          Enum.map(socket.assigns.flow_steps, & &1.step_slug)
+        else
+          Map.keys(grid_data)
+        end
+
+      socket
+      |> assign(:grid_data, grid_data)
+      |> assign(:step_slugs, step_slugs)
+    end
+
+    @impl true
+    def render(assigns) do
+      ~H"""
+      <Layouts.dashboard_layout current_page={:flows} base_path={@base_path}>
+        <div :if={@flow}>
+          <!-- Header -->
+          <div class="mb-6">
+            <.link navigate={"#{@base_path}/flows"} class="text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 mb-2 inline-block">
+              ← Back to flows
+            </.link>
+            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">{@flow.flow_slug}</h1>
+            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              {@flow.step_count} steps · Max {@ flow.opt_max_attempts} attempts · {@ flow.opt_timeout}s timeout
+            </p>
           </div>
-          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-            <p class="text-sm text-slate-500 dark:text-slate-400">Success Rate</p>
-            <p class="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">{LiveHelpers.format_percent(@flow.success_rate_24h)}%</p>
-          </div>
-          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-            <p class="text-sm text-slate-500 dark:text-slate-400">Avg Duration</p>
-            <p class="text-2xl font-semibold text-slate-900 dark:text-white">{LiveHelpers.format_duration(@flow.avg_duration_ms)}</p>
-          </div>
-          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-            <p class="text-sm text-slate-500 dark:text-slate-400">P95 Duration</p>
-            <p class="text-2xl font-semibold text-slate-900 dark:text-white">{LiveHelpers.format_duration(@flow.p95_duration_ms)}</p>
-          </div>
-        </div>
 
-        <!-- Workflow -->
-        <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4 mb-6">
-          <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Workflow</h2>
-          <DependencyGraph.dependency_graph steps={@flow_steps} />
-        </div>
+          <!-- Stats -->
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+            <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+              <p class="text-sm text-slate-500 dark:text-slate-400">Total Runs (24h)</p>
+              <p class="text-2xl font-semibold text-slate-900 dark:text-white">{@flow.total_runs_24h}</p>
+            </div>
+            <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+              <p class="text-sm text-slate-500 dark:text-slate-400">Success Rate</p>
+              <p class="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">{LiveHelpers.format_percent(@flow.success_rate_24h)}%</p>
+            </div>
+            <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+              <p class="text-sm text-slate-500 dark:text-slate-400">Avg Duration</p>
+              <p class="text-2xl font-semibold text-slate-900 dark:text-white">{LiveHelpers.format_duration(@flow.avg_duration_ms)}</p>
+            </div>
+            <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+              <p class="text-sm text-slate-500 dark:text-slate-400">P95 Duration</p>
+              <p class="text-2xl font-semibold text-slate-900 dark:text-white">{LiveHelpers.format_duration(@flow.p95_duration_ms)}</p>
+            </div>
+          </div>
 
-        <!-- Run History Grid -->
-        <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-          <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Run History</h2>
-          <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Click a cell to view run details with step selected</p>
-          <RunHistoryGrid.run_history_grid
-            grid_data={@grid_data}
-            steps={@step_slugs}
-            max_runs={@config[:max_grid_runs] || 50}
-            base_path={@base_path}
-          />
+          <!-- Workflow -->
+          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4 mb-6">
+            <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Workflow</h2>
+            <DependencyGraph.dependency_graph steps={@flow_steps} />
+          </div>
+
+          <!-- Run History Grid -->
+          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+            <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Run History</h2>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Click a cell to view run details with step selected</p>
+            <RunHistoryGrid.run_history_grid
+              grid_data={@grid_data}
+              steps={@step_slugs}
+              max_runs={@config[:max_grid_runs] || 50}
+              base_path={@base_path}
+            />
+          </div>
         </div>
-      </div>
-    </Layouts.dashboard_layout>
-    """
+      </Layouts.dashboard_layout>
+      """
+    end
   end
 end

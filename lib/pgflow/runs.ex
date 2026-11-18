@@ -56,6 +56,10 @@ defmodule PgFlow.Runs do
   `:started_after`, `:started_before`, `:input_contains`, `:cursor`, and `:limit`.
   Explicit `:started_after` and `:started_before` bounds are inclusive. No time
   filter is applied unless a time option is supplied.
+
+  `:flow_slug`, `:status`, and `:flow_type` accept a single value, a list of values
+  (an empty list matches nothing), or `{:not, value_or_list}` to exclude values
+  (an empty exclusion list excludes nothing).
   """
   @spec list(module(), keyword()) :: {:ok, [RunSummary.t()]} | {:error, :invalid_id}
   def list(repo, opts \\ []) do
@@ -595,20 +599,54 @@ defmodule PgFlow.Runs do
   end
 
   defp filter_flow_slug(query, nil), do: query
+  defp filter_flow_slug(query, []), do: where(query, false)
+
+  defp filter_flow_slug(query, {:not, excluded}) do
+    excluded = excluded_values(excluded)
+    where(query, [run], run.flow_slug not in ^excluded)
+  end
+
+  defp filter_flow_slug(query, flow_slugs) when is_list(flow_slugs),
+    do: where(query, [run], run.flow_slug in ^flow_slugs)
+
   defp filter_flow_slug(query, flow_slug), do: where(query, [run], run.flow_slug == ^flow_slug)
 
   defp filter_status(query, nil), do: query
+  defp filter_status(query, []), do: where(query, false)
+
+  defp filter_status(query, {:not, excluded}) do
+    excluded = excluded_values(excluded)
+    where(query, [run], run.status not in ^excluded)
+  end
+
+  defp filter_status(query, statuses) when is_list(statuses) do
+    statuses = Enum.map(statuses, &Helpers.status_to_string/1)
+    where(query, [run], run.status in ^statuses)
+  end
 
   defp filter_status(query, status) do
     where(query, [run], run.status == ^Helpers.status_to_string(status))
   end
 
   defp filter_flow_type(query, nil), do: query
+  defp filter_flow_type(query, []), do: where(query, false)
+
+  defp filter_flow_type(query, {:not, excluded}) do
+    excluded = excluded_values(excluded)
+    where(query, [_run, flow], coalesce(flow.flow_type, "flow") not in ^excluded)
+  end
+
+  defp filter_flow_type(query, flow_types) when is_list(flow_types) do
+    flow_types = Enum.map(flow_types, &Helpers.status_to_string/1)
+    where(query, [_run, flow], coalesce(flow.flow_type, "flow") in ^flow_types)
+  end
 
   defp filter_flow_type(query, flow_type) do
     flow_type = Helpers.status_to_string(flow_type)
     where(query, [_run, flow], coalesce(flow.flow_type, "flow") == ^flow_type)
   end
+
+  defp excluded_values(values), do: values |> List.wrap() |> Enum.map(&Helpers.status_to_string/1)
 
   defp filter_input(query, nil), do: query
 

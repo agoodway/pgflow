@@ -1,342 +1,388 @@
-defmodule PgFlowDashboard.Live.RunsLive.Index do
-  @moduledoc """
-  Runs list page with LiveFilter-based filtering.
+if Code.ensure_loaded?(Phoenix.LiveView) and Code.ensure_loaded?(LiveFilter) do
+  defmodule PgFlowDashboard.Live.RunsLive.Index do
+    @moduledoc """
+    Runs list page with LiveFilter-based filtering.
 
-  Uses URL-driven filters for shareable links and Ecto queries via QueryBuilder.
-  """
+    Uses URL-driven filters for shareable links and Ecto queries via QueryBuilder.
+    """
 
-  use Phoenix.LiveView
+    use Phoenix.LiveView
 
-  alias LiveFilter.{Filter, Pagination, Params.Serializer}
-  alias PgFlow.{Definitions, Runs}
-  alias PgFlowDashboard.Components.{Layouts, ProgressBar, StatusBadge, TypeBadge}
-  alias PgFlowDashboard.Live.LiveHelpers
+    alias LiveFilter.{Filter, Pagination, Params.Serializer}
+    alias PgFlow.{Definitions, Runs}
+    alias PgFlowDashboard.Components.{Layouts, ProgressBar, StatusBadge, TypeBadge}
+    alias PgFlowDashboard.Live.LiveHelpers
 
-  defp filter_config(socket) do
-    [
-      LiveFilter.select(:flow_type,
-        label: "Type",
-        options: [
-          {"Flow", "flow"},
-          {"Job", "job"}
-        ],
-        icon: "hero-squares-2x2",
-        default_visible: true
-      ),
-      LiveFilter.select(:flow_slug,
-        label: "Queue",
-        options_fn: fn -> queue_options(socket.assigns) end,
-        icon: "hero-queue-list",
-        default_visible: true
-      ),
-      LiveFilter.select(:status,
-        label: "Status",
-        options: [
-          {"Running", "started"},
-          {"Completed", "completed"},
-          {"Failed", "failed"}
-        ],
-        icon: "hero-signal",
-        default_visible: true
-      ),
-      LiveFilter.datetime_range(:started_at,
-        label: "Started",
-        icon: "hero-calendar-days",
-        default_visible: true
-      )
-    ]
-  end
+    defp filter_config(socket) do
+      [
+        LiveFilter.select(:flow_type,
+          label: "Type",
+          options: [
+            {"Flow", "flow"},
+            {"Job", "job"}
+          ],
+          icon: "hero-squares-2x2",
+          default_visible: true
+        ),
+        LiveFilter.select(:flow_slug,
+          label: "Queue",
+          options_fn: fn -> queue_options(socket.assigns) end,
+          icon: "hero-queue-list",
+          default_visible: true
+        ),
+        LiveFilter.select(:status,
+          label: "Status",
+          options: [
+            {"Running", "started"},
+            {"Completed", "completed"},
+            {"Failed", "failed"}
+          ],
+          icon: "hero-signal",
+          default_visible: true
+        ),
+        LiveFilter.datetime_range(:started_at,
+          label: "Started",
+          icon: "hero-calendar-days",
+          default_visible: true
+        )
+      ]
+    end
 
-  defp queue_options(assigns) do
-    flows = Map.get(assigns, :flows, [])
-    jobs = Map.get(assigns, :jobs, [])
-    crons = Map.get(assigns, :crons, [])
+    defp queue_options(assigns) do
+      flows = Map.get(assigns, :flows, [])
+      jobs = Map.get(assigns, :jobs, [])
+      crons = Map.get(assigns, :crons, [])
 
-    flow_opts = Enum.map(flows, fn f -> {f.flow_slug, f.flow_slug} end)
-    job_opts = Enum.map(jobs, fn j -> {j.flow_slug, j.flow_slug} end)
-    cron_opts = Enum.map(crons, fn c -> {c.flow_slug, c.flow_slug} end)
+      flow_opts = Enum.map(flows, fn f -> {f.flow_slug, f.flow_slug} end)
+      job_opts = Enum.map(jobs, fn j -> {j.flow_slug, j.flow_slug} end)
+      cron_opts = Enum.map(crons, fn c -> {c.flow_slug, c.flow_slug} end)
 
-    (flow_opts ++ job_opts ++ cron_opts)
-    |> Enum.uniq_by(fn {_, slug} -> slug end)
-    |> Enum.sort_by(fn {label, _} -> label end)
-  end
+      (flow_opts ++ job_opts ++ cron_opts)
+      |> Enum.uniq_by(fn {_, slug} -> slug end)
+      |> Enum.sort_by(fn {label, _} -> label end)
+    end
 
-  @impl true
-  def mount(_params, session, socket) do
-    {:cont, socket} = LiveHelpers.on_mount(session, socket)
-
-    socket =
-      socket
-      |> assign(:page_title, "Runs")
-      |> assign(:base_path, session["base_path"] || "/pgflow")
-      |> load_flows_and_jobs()
-      |> LiveHelpers.subscribe_to_updates()
-      |> LiveHelpers.schedule_refresh()
-
-    {:ok, socket}
-  end
-
-  @impl true
-  def handle_params(params, _uri, socket) do
-    config = filter_config(socket)
-
-    # Redirect to default date range if no started_at filter
-    if missing_date_filter?(params) do
-      default_params = default_date_params(socket.assigns.time_zone)
-
-      {:noreply,
-       push_patch(socket,
-         to: LiveFilter.to_path("#{socket.assigns.base_path}/runs", default_params)
-       )}
-    else
-      {filters, remaining} = LiveFilter.from_params(params, config)
-      {pagination, remaining} = LiveFilter.pagination_from_params(remaining, default_limit: 50)
+    @impl true
+    def mount(_params, session, socket) do
+      {:cont, socket} = LiveHelpers.on_mount(session, socket)
 
       socket =
         socket
-        |> LiveFilter.init(config, filters)
-        |> assign(:pagination, pagination)
-        |> assign(:remaining_params, remaining)
+        |> assign(:page_title, "Runs")
+        |> assign(:base_path, session["base_path"] || "/pgflow")
+        |> load_flows_and_jobs()
+        |> LiveHelpers.subscribe_to_updates()
+        |> LiveHelpers.schedule_refresh()
+
+      {:ok, socket}
+    end
+
+    @impl true
+    def handle_params(params, _uri, socket) do
+      config = filter_config(socket)
+
+      # Redirect to default date range if no started_at filter
+      if missing_date_filter?(params) do
+        default_params = with_default_date_range(params, socket.assigns.time_zone)
+
+        {:noreply,
+         push_patch(socket,
+           to: LiveFilter.to_path("#{socket.assigns.base_path}/runs", default_params)
+         )}
+      else
+        {filters, remaining} = LiveFilter.from_params(params, config)
+        {pagination, remaining} = LiveFilter.pagination_from_params(remaining, default_limit: 50)
+
+        socket =
+          socket
+          |> LiveFilter.init(config, filters)
+          |> assign(:pagination, pagination)
+          |> assign(:remaining_params, remaining)
+          |> load_runs()
+
+        {:noreply, socket}
+      end
+    end
+
+    @impl true
+    def handle_info(
+          {:livefilter, :updated, params},
+          %{assigns: %{remaining_params: remaining_params, pagination: %{limit: limit}}} = socket
+        ) do
+      pagination_params = %{"limit" => to_string(limit), "offset" => "0"}
+      all_params = Map.merge(remaining_params, params) |> Map.merge(pagination_params)
+
+      {:noreply,
+       push_patch(socket, to: LiveFilter.to_path("#{socket.assigns.base_path}/runs", all_params))}
+    end
+
+    @impl true
+    def handle_info(
+          {:livefilter, :page_changed, pagination_params},
+          %{assigns: %{remaining_params: remaining_params, livefilter: %{filters: filters}}} =
+            socket
+        ) do
+      filter_params = Serializer.to_params(filters)
+      all_params = Map.merge(remaining_params, filter_params) |> Map.merge(pagination_params)
+
+      {:noreply,
+       push_patch(socket, to: LiveFilter.to_path("#{socket.assigns.base_path}/runs", all_params))}
+    end
+
+    @impl true
+    def handle_info(:refresh, socket) do
+      socket =
+        socket
         |> load_runs()
+        |> LiveHelpers.schedule_refresh()
 
       {:noreply, socket}
     end
-  end
 
-  @impl true
-  def handle_info(
-        {:livefilter, :updated, params},
-        %{assigns: %{remaining_params: remaining_params, pagination: %{limit: limit}}} = socket
-      ) do
-    pagination_params = %{"limit" => to_string(limit), "offset" => "0"}
-    all_params = Map.merge(remaining_params, params) |> Map.merge(pagination_params)
+    @impl true
+    def handle_info({:pgflow, _run_id, {:run_started, _}}, socket),
+      do: {:noreply, load_runs(socket)}
 
-    {:noreply,
-     push_patch(socket, to: LiveFilter.to_path("#{socket.assigns.base_path}/runs", all_params))}
-  end
+    @impl true
+    def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket),
+      do: {:noreply, load_runs(socket)}
 
-  @impl true
-  def handle_info(
-        {:livefilter, :page_changed, pagination_params},
-        %{assigns: %{remaining_params: remaining_params, livefilter: %{filters: filters}}} =
-          socket
-      ) do
-    filter_params = Serializer.to_params(filters)
-    all_params = Map.merge(remaining_params, filter_params) |> Map.merge(pagination_params)
+    @impl true
+    def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket),
+      do: {:noreply, load_runs(socket)}
 
-    {:noreply,
-     push_patch(socket, to: LiveFilter.to_path("#{socket.assigns.base_path}/runs", all_params))}
-  end
+    @impl true
+    def handle_info(_, socket), do: {:noreply, socket}
 
-  @impl true
-  def handle_info(:refresh, socket) do
-    socket =
+    defp load_flows_and_jobs(socket) do
+      {:ok, flows} = Definitions.list_flows(socket.assigns.repo)
+      {:ok, jobs} = Definitions.list_jobs(socket.assigns.repo)
+      {:ok, crons} = Definitions.list_crons(socket.assigns.repo)
+
       socket
-      |> load_runs()
-      |> LiveHelpers.schedule_refresh()
+      |> assign(:flows, flows)
+      |> assign(:jobs, jobs)
+      |> assign(:crons, crons)
+    end
 
-    {:noreply, socket}
-  end
+    defp load_runs(
+           %{assigns: %{pagination: pagination, livefilter: %{filters: filters}}} = socket
+         ) do
+      query_opts = operational_filters(filters)
+      {:ok, total_count} = Runs.count(socket.assigns.repo, query_opts)
 
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_started, _}}, socket),
-    do: {:noreply, load_runs(socket)}
+      {:ok, runs} =
+        Runs.list(
+          socket.assigns.repo,
+          Keyword.put(query_opts, :limit, pagination.offset + pagination.limit)
+        )
 
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket),
-    do: {:noreply, load_runs(socket)}
+      runs = Enum.drop(runs, pagination.offset)
 
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket),
-    do: {:noreply, load_runs(socket)}
+      pagination = Pagination.with_total(pagination, total_count)
 
-  @impl true
-  def handle_info(_, socket), do: {:noreply, socket}
+      socket
+      |> assign(:runs, runs)
+      |> assign(:pagination, pagination)
+    end
 
-  defp load_flows_and_jobs(socket) do
-    {:ok, flows} = Definitions.list_flows(socket.assigns.repo)
-    {:ok, jobs} = Definitions.list_jobs(socket.assigns.repo)
-    {:ok, crons} = Definitions.list_crons(socket.assigns.repo)
+    # Fallback when socket not yet initialized (PubSub messages before handle_params)
+    defp load_runs(socket), do: socket
 
-    socket
-    |> assign(:flows, flows)
-    |> assign(:jobs, jobs)
-    |> assign(:crons, crons)
-  end
+    @doc """
+    Converts active LiveFilter values into options accepted by `PgFlow.Runs`.
 
-  defp load_runs(%{assigns: %{pagination: pagination, livefilter: %{filters: filters}}} = socket) do
-    query_opts = operational_filters(filters)
-    {:ok, total_count} = Runs.count(socket.assigns.repo, query_opts)
-
-    {:ok, runs} =
-      Runs.list(
-        socket.assigns.repo,
-        Keyword.put(query_opts, :limit, pagination.offset + pagination.limit)
-      )
-
-    runs = Enum.drop(runs, pagination.offset)
-
-    pagination = Pagination.with_total(pagination, total_count)
-
-    socket
-    |> assign(:runs, runs)
-    |> assign(:pagination, pagination)
-  end
-
-  # Fallback when socket not yet initialized (PubSub messages before handle_params)
-  defp load_runs(socket), do: socket
-
-  @doc """
-  Converts active LiveFilter values into options accepted by `PgFlow.Runs`.
-
-  Started-at ranges may include either or both endpoints.
-  """
-  @spec operational_filters([Filter.t()]) :: keyword()
-  def operational_filters(filters) do
-    Enum.reduce(filters, [], fn
-      %Filter{field: field, value: value}, opts when field in [:flow_type, :flow_slug, :status] ->
-        Keyword.put(opts, field, value)
-
-      %Filter{field: :started_at, value: {started_after, started_before}}, opts ->
-        opts
-        |> put_datetime_filter(:started_after, started_after)
-        |> put_datetime_filter(:started_before, started_before)
-
-      _filter, opts ->
-        opts
-    end)
-  end
-
-  defp put_datetime_filter(opts, _field, nil), do: opts
-
-  defp put_datetime_filter(opts, field, value) do
-    Keyword.put(opts, field, parse_datetime!(value))
-  end
-
-  defp parse_datetime!(%DateTime{} = value), do: value
-
-  defp parse_datetime!(value) when is_binary(value) do
-    {:ok, datetime, _offset} = DateTime.from_iso8601(value)
-    datetime
-  end
-
-  defp missing_date_filter?(params) do
-    has_legacy_range =
-      Map.has_key?(params, "started_at.gte") || Map.has_key?(params, "started_at.lte")
-
-    has_and_range =
-      case Map.get(params, "and") do
-        and_param when is_binary(and_param) ->
-          String.contains?(and_param, "started_at.gte.") ||
-            String.contains?(and_param, "started_at.lte.")
-
-        _ ->
-          false
-      end
-
-    !(has_legacy_range || has_and_range)
-  end
-
-  defp default_date_params(time_zone) do
-    {start_of_day, end_of_day} =
-      LiveHelpers.local_day_bounds(DateTime.utc_now(), time_zone)
-
-    %{
-      "and" =>
-        "(started_at.gte.#{DateTime.to_iso8601(start_of_day)},started_at.lte.#{DateTime.to_iso8601(end_of_day)})",
-      "limit" => "50",
-      "offset" => "0"
-    }
-  end
-
-  @impl true
-  def render(assigns) do
-    ~H"""
-    <Layouts.dashboard_layout current_page={:runs} base_path={@base_path}>
-      <Layouts.page_header title="Runs" subtitle="All workflow executions" />
-
-      <div class="mb-6 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-        <LiveFilter.bar filter={@livefilter} />
-      </div>
-
-      <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
-        <div class="px-4 py-2 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 flex items-center justify-between">
-          <span class="text-sm text-slate-500 dark:text-slate-400">
-            Showing {length(@runs)} of {@pagination.total_count} runs
-          </span>
-        </div>
-        <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
-          <thead class="bg-slate-50 dark:bg-slate-800/50">
-            <tr>
-              <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Run ID</th>
-              <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Queue</th>
-              <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Status</th>
-              <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Progress</th>
-              <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Duration</th>
-              <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Started</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
-            <tr :if={@runs == []} id="runs-empty">
-              <td colspan="6" class="px-4 py-8 text-center text-slate-500 dark:text-slate-400">
-                No runs found
-              </td>
-            </tr>
-            <tr
-              :for={run <- @runs}
-              id={"run-#{run.run_id}"}
-              class="hover:bg-slate-50 dark:hover:bg-slate-700/50"
-            >
-              <td class="px-4 py-3">
-                <.link
-                  navigate={"#{@base_path}/runs/#{run.run_id}"}
-                  class="text-sm font-mono text-purple-600 hover:text-purple-700 dark:text-purple-400"
-                >
-                  {LiveHelpers.short_id(run.run_id)}
-                </.link>
-              </td>
-              <td class="px-4 py-3">
-                <div class="flex items-center gap-2">
-                  <span class="text-sm text-slate-700 dark:text-slate-300">{run.flow_slug}</span>
-                  <TypeBadge.type_badge type={run.flow_type} />
-                </div>
-              </td>
-              <td class="px-4 py-3">
-                <StatusBadge.status_badge
-                  status={run.status}
-                  size={:sm}
-                  pulse={run.status == "started"}
-                />
-              </td>
-              <td class="px-4 py-3 w-32">
-                <%= if run.flow_type in ["job", "cron"] do %>
-                  <span class="text-sm text-slate-400 dark:text-slate-500">—</span>
-                <% else %>
-                  <ProgressBar.progress_bar
-                    progress={run.progress_percent}
-                    completed={run.completed_steps}
-                    total={run.total_steps}
-                    failed={run.failed_steps}
-                    skipped={run.skipped_steps}
-                    size={:sm}
-                  />
-                <% end %>
-              </td>
-              <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
-                {LiveHelpers.format_duration(run.duration_ms)}
-              </td>
-              <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
-                {LiveHelpers.format_timestamp(run.started_at, @time_zone)}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-
-        <div class="px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
-          <LiveFilter.paginator pagination={@pagination} />
-        </div>
-      </div>
-    </Layouts.dashboard_layout>
+    Started-at ranges may include either or both endpoints.
     """
+    @spec operational_filters([Filter.t()]) :: keyword()
+    def operational_filters(filters) do
+      Enum.reduce(filters, [], fn
+        %Filter{field: field, operator: operator, value: value}, opts
+        when field in [:flow_type, :flow_slug, :status] ->
+          put_selection(opts, field, operator, selected_values(value))
+
+        %Filter{field: :started_at, value: {started_after, started_before}}, opts ->
+          opts
+          |> put_datetime_filter(:started_after, started_after, :start)
+          |> put_datetime_filter(:started_before, started_before, :end)
+
+        _filter, opts ->
+          opts
+      end)
+    end
+
+    defp put_selection(opts, field, operator, value) when operator in [:eq, :in],
+      do: Keyword.put(opts, field, value)
+
+    defp put_selection(opts, field, operator, value) when operator in [:neq, :not_in],
+      do: Keyword.put(opts, field, {:not, value})
+
+    defp put_selection(opts, _field, _operator, _value), do: opts
+
+    # `in.()` parses to [""], which selects nothing.
+    defp selected_values(values) when is_list(values), do: Enum.reject(values, &(&1 == ""))
+    defp selected_values(value), do: value
+
+    defp put_datetime_filter(opts, _field, nil, _bound), do: opts
+
+    defp put_datetime_filter(opts, field, value, bound) do
+      case parse_datetime(value, bound) do
+        {:ok, datetime} -> Keyword.put(opts, field, datetime)
+        :error -> opts
+      end
+    end
+
+    defp parse_datetime(%DateTime{} = value, _bound), do: {:ok, value}
+
+    defp parse_datetime(value, bound) when is_binary(value) do
+      case DateTime.from_iso8601(value) do
+        {:ok, datetime, _offset} -> {:ok, datetime}
+        {:error, _reason} -> parse_utc_date(value, bound)
+      end
+    end
+
+    defp parse_utc_date(value, bound) do
+      case Date.from_iso8601(value) do
+        {:ok, date} ->
+          {start_of_day, end_of_day} =
+            date
+            |> DateTime.new!(~T[00:00:00], "Etc/UTC")
+            |> LiveHelpers.local_day_bounds("Etc/UTC")
+
+          {:ok, if(bound == :start, do: start_of_day, else: end_of_day)}
+
+        {:error, _reason} ->
+          :error
+      end
+    end
+
+    defp missing_date_filter?(params) do
+      has_legacy_range =
+        Map.has_key?(params, "started_at.gte") || Map.has_key?(params, "started_at.lte")
+
+      has_and_range =
+        case Map.get(params, "and") do
+          and_param when is_binary(and_param) ->
+            String.contains?(and_param, "started_at.gte.") ||
+              String.contains?(and_param, "started_at.lte.")
+
+          _ ->
+            false
+        end
+
+      !(has_legacy_range || has_and_range)
+    end
+
+    # Replaces only the date range; every other filter, sort, and pagination param is kept.
+    defp with_default_date_range(params, time_zone) do
+      default_params = default_date_params(time_zone)
+
+      default_params
+      |> Map.merge(params)
+      |> Map.put("and", default_params["and"])
+    end
+
+    defp default_date_params(time_zone) do
+      {start_of_day, end_of_day} =
+        LiveHelpers.local_day_bounds(DateTime.utc_now(), time_zone)
+
+      %{
+        "and" =>
+          "(started_at.gte.#{DateTime.to_iso8601(start_of_day)},started_at.lte.#{DateTime.to_iso8601(end_of_day)})",
+        "limit" => "50",
+        "offset" => "0"
+      }
+    end
+
+    @impl true
+    def render(assigns) do
+      ~H"""
+      <Layouts.dashboard_layout current_page={:runs} base_path={@base_path}>
+        <Layouts.page_header title="Runs" subtitle="All workflow executions" />
+
+        <div class="mb-6 bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+          <LiveFilter.bar filter={@livefilter} />
+        </div>
+
+        <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+          <div class="px-4 py-2 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 flex items-center justify-between">
+            <span class="text-sm text-slate-500 dark:text-slate-400">
+              Showing {length(@runs)} of {@pagination.total_count} runs
+            </span>
+          </div>
+          <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+            <thead class="bg-slate-50 dark:bg-slate-800/50">
+              <tr>
+                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Run ID</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Queue</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Status</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Progress</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Duration</th>
+                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Started</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
+              <tr :if={@runs == []} id="runs-empty">
+                <td colspan="6" class="px-4 py-8 text-center text-slate-500 dark:text-slate-400">
+                  No runs found
+                </td>
+              </tr>
+              <tr
+                :for={run <- @runs}
+                id={"run-#{run.run_id}"}
+                class="hover:bg-slate-50 dark:hover:bg-slate-700/50"
+              >
+                <td class="px-4 py-3">
+                  <.link
+                    navigate={"#{@base_path}/runs/#{run.run_id}"}
+                    class="text-sm font-mono text-purple-600 hover:text-purple-700 dark:text-purple-400"
+                  >
+                    {LiveHelpers.short_id(run.run_id)}
+                  </.link>
+                </td>
+                <td class="px-4 py-3">
+                  <div class="flex items-center gap-2">
+                    <span class="text-sm text-slate-700 dark:text-slate-300">{run.flow_slug}</span>
+                    <TypeBadge.type_badge type={run.flow_type} />
+                  </div>
+                </td>
+                <td class="px-4 py-3">
+                  <StatusBadge.status_badge
+                    status={run.status}
+                    size={:sm}
+                    pulse={run.status == "started"}
+                  />
+                </td>
+                <td class="px-4 py-3 w-32">
+                  <%= if run.flow_type in ["job", "cron"] do %>
+                    <span class="text-sm text-slate-400 dark:text-slate-500">—</span>
+                  <% else %>
+                    <ProgressBar.progress_bar
+                      progress={run.progress_percent}
+                      completed={run.completed_steps}
+                      total={run.total_steps}
+                      failed={run.failed_steps}
+                      skipped={run.skipped_steps}
+                      size={:sm}
+                    />
+                  <% end %>
+                </td>
+                <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
+                  {LiveHelpers.format_duration(run.duration_ms)}
+                </td>
+                <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
+                  {LiveHelpers.format_timestamp(run.started_at, @time_zone)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
+            <LiveFilter.paginator pagination={@pagination} />
+          </div>
+        </div>
+      </Layouts.dashboard_layout>
+      """
+    end
   end
 end

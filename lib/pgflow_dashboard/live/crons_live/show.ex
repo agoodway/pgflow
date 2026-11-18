@@ -1,266 +1,268 @@
-defmodule PgFlowDashboard.Live.CronsLive.Show do
-  @moduledoc """
-  Cron detail page with schedule info, run history grid, and recent runs table.
-  """
+if Code.ensure_loaded?(Phoenix.LiveView) do
+  defmodule PgFlowDashboard.Live.CronsLive.Show do
+    @moduledoc """
+    Cron detail page with schedule info, run history grid, and recent runs table.
+    """
 
-  use Phoenix.LiveView
+    use Phoenix.LiveView
 
-  alias PgFlow.{Definitions, Runs}
-  alias PgFlowDashboard.Components.{Layouts, RunHistoryHelpers, StatusBadge}
-  alias PgFlowDashboard.Live.{CronPresentation, LiveHelpers}
+    alias PgFlow.{Definitions, Runs}
+    alias PgFlowDashboard.Components.{Layouts, RunHistoryHelpers, StatusBadge}
+    alias PgFlowDashboard.Live.{CronPresentation, LiveHelpers}
 
-  @page_size 20
+    @page_size 20
 
-  @impl true
-  def mount(%{"id" => cron_slug}, session, socket) do
-    {:cont, socket} = LiveHelpers.on_mount(session, socket)
+    @impl true
+    def mount(%{"id" => cron_slug}, session, socket) do
+      {:cont, socket} = LiveHelpers.on_mount(session, socket)
 
-    socket =
-      socket
-      |> assign(:page_title, cron_slug)
-      |> assign(:base_path, session["base_path"] || "/pgflow")
-      |> assign(:cron_slug, cron_slug)
-      |> load_cron()
-
-    if socket.assigns.cron do
       socket =
         socket
+        |> assign(:page_title, cron_slug)
+        |> assign(:base_path, session["base_path"] || "/pgflow")
+        |> assign(:cron_slug, cron_slug)
+        |> load_cron()
+
+      if socket.assigns.cron do
+        socket =
+          socket
+          |> load_run_history()
+          |> load_recent_runs()
+          |> LiveHelpers.subscribe_to_updates()
+          |> LiveHelpers.schedule_refresh()
+
+        {:ok, socket}
+      else
+        {:ok, push_navigate(socket, to: "#{socket.assigns.base_path}/crons")}
+      end
+    end
+
+    @impl true
+    def handle_info(:refresh, socket) do
+      socket =
+        socket
+        |> load_cron()
         |> load_run_history()
         |> load_recent_runs()
-        |> LiveHelpers.subscribe_to_updates()
         |> LiveHelpers.schedule_refresh()
 
-      {:ok, socket}
-    else
-      {:ok, push_navigate(socket, to: "#{socket.assigns.base_path}/crons")}
+      {:noreply, socket}
     end
-  end
 
-  @impl true
-  def handle_info(:refresh, socket) do
-    socket =
-      socket
-      |> load_cron()
-      |> load_run_history()
-      |> load_recent_runs()
-      |> LiveHelpers.schedule_refresh()
-
-    {:noreply, socket}
-  end
-
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket) do
-    {:noreply, socket |> load_run_history() |> load_recent_runs()}
-  end
-
-  @impl true
-  def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket) do
-    {:noreply, socket |> load_run_history() |> load_recent_runs()}
-  end
-
-  @impl true
-  def handle_info(_, socket), do: {:noreply, socket}
-
-  defp load_cron(socket) do
-    case Definitions.get_cron(socket.assigns.repo, socket.assigns.cron_slug) do
-      {:ok, cron} -> assign(socket, :cron, CronPresentation.present(cron))
-      {:error, _} -> assign(socket, :cron, nil)
+    @impl true
+    def handle_info({:pgflow, _run_id, {:run_completed, _}}, socket) do
+      {:noreply, socket |> load_run_history() |> load_recent_runs()}
     end
-  end
 
-  defp load_run_history(socket) do
-    {:ok, grid_cells} =
-      Runs.history(socket.assigns.repo, socket.assigns.cron_slug,
-        limit: socket.assigns.config[:max_grid_runs] || 50
-      )
+    @impl true
+    def handle_info({:pgflow, _run_id, {:run_failed, _}}, socket) do
+      {:noreply, socket |> load_run_history() |> load_recent_runs()}
+    end
 
-    assign(socket, :grid_cells, grid_cells)
-  end
+    @impl true
+    def handle_info(_, socket), do: {:noreply, socket}
 
-  defp load_recent_runs(socket) do
-    {:ok, runs} =
-      Runs.list(socket.assigns.repo,
-        flow_slug: socket.assigns.cron_slug,
-        limit: @page_size + 1
-      )
-
-    {runs, has_more} =
-      if length(runs) > @page_size do
-        {Enum.take(runs, @page_size), true}
-      else
-        {runs, false}
+    defp load_cron(socket) do
+      case Definitions.get_cron(socket.assigns.repo, socket.assigns.cron_slug) do
+        {:ok, cron} -> assign(socket, :cron, CronPresentation.present(cron))
+        {:error, _} -> assign(socket, :cron, nil)
       end
+    end
 
-    socket
-    |> assign(:recent_runs, runs)
-    |> assign(:has_more_runs, has_more)
-  end
+    defp load_run_history(socket) do
+      {:ok, grid_cells} =
+        Runs.history(socket.assigns.repo, socket.assigns.cron_slug,
+          limit: socket.assigns.config[:max_grid_runs] || 50
+        )
 
-  @impl true
-  def render(assigns) do
-    ~H"""
-    <Layouts.dashboard_layout current_page={:crons} base_path={@base_path}>
-      <div :if={@cron}>
-        <!-- Header -->
-        <div class="mb-6">
-          <.link
-            navigate={"#{@base_path}/crons"}
-            class="text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 mb-2 inline-block"
-          >
-            ← Back to crons
-          </.link>
-          <div class="flex items-center gap-3">
-            <h1 class="text-2xl font-bold text-slate-900 dark:text-white">{@cron.cron.flow_slug}</h1>
-            <span class={[
-              "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
-              @cron.cron.flow_type == "job" && "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400",
-              @cron.cron.flow_type == "flow" && "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400"
-            ]}>
-              {@cron.cron.flow_type}
-            </span>
-            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
-              cron
-            </span>
-            <span
-              :if={@cron.cron.is_active}
-              class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400"
+      assign(socket, :grid_cells, grid_cells)
+    end
+
+    defp load_recent_runs(socket) do
+      {:ok, runs} =
+        Runs.list(socket.assigns.repo,
+          flow_slug: socket.assigns.cron_slug,
+          limit: @page_size + 1
+        )
+
+      {runs, has_more} =
+        if length(runs) > @page_size do
+          {Enum.take(runs, @page_size), true}
+        else
+          {runs, false}
+        end
+
+      socket
+      |> assign(:recent_runs, runs)
+      |> assign(:has_more_runs, has_more)
+    end
+
+    @impl true
+    def render(assigns) do
+      ~H"""
+      <Layouts.dashboard_layout current_page={:crons} base_path={@base_path}>
+        <div :if={@cron}>
+          <!-- Header -->
+          <div class="mb-6">
+            <.link
+              navigate={"#{@base_path}/crons"}
+              class="text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 mb-2 inline-block"
             >
-              Active
-            </span>
-            <span
-              :if={!@cron.cron.is_active}
-              class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400"
-            >
-              Inactive
-            </span>
-          </div>
-          <div class="mt-2">
-            <p class="text-sm text-slate-700 dark:text-slate-300">
-              {@cron.human_schedule || "Custom schedule"}
-              <span class="text-slate-400 dark:text-slate-500 font-mono text-xs ml-2">
-                ({@cron.cron.cron_expression || "—"})
+              ← Back to crons
+            </.link>
+            <div class="flex items-center gap-3">
+              <h1 class="text-2xl font-bold text-slate-900 dark:text-white">{@cron.cron.flow_slug}</h1>
+              <span class={[
+                "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
+                @cron.cron.flow_type == "job" && "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400",
+                @cron.cron.flow_type == "flow" && "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400"
+              ]}>
+                {@cron.cron.flow_type}
               </span>
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
+                cron
+              </span>
+              <span
+                :if={@cron.cron.is_active}
+                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400"
+              >
+                Active
+              </span>
+              <span
+                :if={!@cron.cron.is_active}
+                class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400"
+              >
+                Inactive
+              </span>
+            </div>
+            <div class="mt-2">
+              <p class="text-sm text-slate-700 dark:text-slate-300">
+                {@cron.human_schedule || "Custom schedule"}
+                <span class="text-slate-400 dark:text-slate-500 font-mono text-xs ml-2">
+                  ({@cron.cron.cron_expression || "—"})
+                </span>
+              </p>
+            </div>
+            <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              Max {@cron.cron.opt_max_attempts} attempts · {@cron.cron.opt_timeout}s timeout
             </p>
           </div>
-          <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Max {@cron.cron.opt_max_attempts} attempts · {@cron.cron.opt_timeout}s timeout
-          </p>
-        </div>
 
-        <!-- Stats -->
-        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
-          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-            <p class="text-sm text-slate-500 dark:text-slate-400">Next Run</p>
-            <p class="text-lg font-semibold text-amber-600 dark:text-amber-400">
-              {LiveHelpers.format_relative_time(@cron.cron.next_run_at)}
-            </p>
+          <!-- Stats -->
+          <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+            <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+              <p class="text-sm text-slate-500 dark:text-slate-400">Next Run</p>
+              <p class="text-lg font-semibold text-amber-600 dark:text-amber-400">
+                {LiveHelpers.format_relative_time(@cron.cron.next_run_at)}
+              </p>
+            </div>
+            <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+              <p class="text-sm text-slate-500 dark:text-slate-400">Runs (24h)</p>
+              <p class="text-2xl font-semibold text-slate-900 dark:text-white">{@cron.cron.total_runs_24h}</p>
+            </div>
+            <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+              <p class="text-sm text-slate-500 dark:text-slate-400">Success Rate</p>
+              <p class="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">
+                {LiveHelpers.format_percent(@cron.cron.success_rate_24h)}%
+              </p>
+            </div>
+            <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+              <p class="text-sm text-slate-500 dark:text-slate-400">Avg Duration</p>
+              <p class="text-2xl font-semibold text-slate-900 dark:text-white">
+                {LiveHelpers.format_duration(@cron.cron.avg_duration_ms)}
+              </p>
+            </div>
+            <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+              <p class="text-sm text-slate-500 dark:text-slate-400">P95 Duration</p>
+              <p class="text-2xl font-semibold text-slate-900 dark:text-white">
+                {LiveHelpers.format_duration(@cron.cron.p95_duration_ms)}
+              </p>
+            </div>
           </div>
-          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-            <p class="text-sm text-slate-500 dark:text-slate-400">Runs (24h)</p>
-            <p class="text-2xl font-semibold text-slate-900 dark:text-white">{@cron.cron.total_runs_24h}</p>
-          </div>
-          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-            <p class="text-sm text-slate-500 dark:text-slate-400">Success Rate</p>
-            <p class="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">
-              {LiveHelpers.format_percent(@cron.cron.success_rate_24h)}%
-            </p>
-          </div>
-          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-            <p class="text-sm text-slate-500 dark:text-slate-400">Avg Duration</p>
-            <p class="text-2xl font-semibold text-slate-900 dark:text-white">
-              {LiveHelpers.format_duration(@cron.cron.avg_duration_ms)}
-            </p>
-          </div>
-          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-            <p class="text-sm text-slate-500 dark:text-slate-400">P95 Duration</p>
-            <p class="text-2xl font-semibold text-slate-900 dark:text-white">
-              {LiveHelpers.format_duration(@cron.cron.p95_duration_ms)}
-            </p>
-          </div>
-        </div>
 
-        <!-- Run History Grid -->
-        <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4 mb-6">
-          <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Run History</h2>
-          <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">
-            Recent cron executions (oldest → newest)
-          </p>
-          <RunHistoryHelpers.run_history_grid cells={@grid_cells} base_path={@base_path} />
-        </div>
-
-        <!-- Recent Runs Table -->
-        <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
-          <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
-            <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Recent Runs</h2>
+          <!-- Run History Grid -->
+          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 p-4 mb-6">
+            <h2 class="text-sm font-semibold text-slate-900 dark:text-white mb-4">Run History</h2>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">
+              Recent cron executions (oldest → newest)
+            </p>
+            <RunHistoryHelpers.run_history_grid cells={@grid_cells} base_path={@base_path} />
           </div>
-          <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
-            <thead class="bg-slate-50 dark:bg-slate-800/50">
-              <tr>
-                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">
-                  Run ID
-                </th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">
-                  Status
-                </th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">
-                  Duration
-                </th>
-                <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">
-                  Started
-                </th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
-              <%= if @recent_runs == [] do %>
+
+          <!-- Recent Runs Table -->
+          <div class="bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+            <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+              <h2 class="text-sm font-semibold text-slate-900 dark:text-white">Recent Runs</h2>
+            </div>
+            <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+              <thead class="bg-slate-50 dark:bg-slate-800/50">
                 <tr>
-                  <td colspan="4" class="px-4 py-8 text-center text-slate-500 dark:text-slate-400">
-                    No runs yet
-                  </td>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">
+                    Run ID
+                  </th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">
+                    Status
+                  </th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">
+                    Duration
+                  </th>
+                  <th class="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">
+                    Started
+                  </th>
                 </tr>
-              <% else %>
-                <%= for run <- @recent_runs do %>
-                  <tr class="hover:bg-slate-50 dark:hover:bg-slate-700/50">
-                    <td class="px-4 py-3">
-                      <.link
-                        navigate={"#{@base_path}/runs/#{run.run_id}"}
-                        class="text-sm font-mono text-purple-600 hover:text-purple-700 dark:text-purple-400"
-                      >
-                        {LiveHelpers.short_id(run.run_id)}
-                      </.link>
-                    </td>
-                    <td class="px-4 py-3">
-                      <StatusBadge.status_badge
-                        status={run.status}
-                        size={:sm}
-                        pulse={run.status == "started"}
-                      />
-                    </td>
-                    <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
-                      {LiveHelpers.format_duration(run.duration_ms)}
-                    </td>
-                    <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
-                      {LiveHelpers.format_timestamp(run.started_at, @time_zone)}
+              </thead>
+              <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
+                <%= if @recent_runs == [] do %>
+                  <tr>
+                    <td colspan="4" class="px-4 py-8 text-center text-slate-500 dark:text-slate-400">
+                      No runs yet
                     </td>
                   </tr>
+                <% else %>
+                  <%= for run <- @recent_runs do %>
+                    <tr class="hover:bg-slate-50 dark:hover:bg-slate-700/50">
+                      <td class="px-4 py-3">
+                        <.link
+                          navigate={"#{@base_path}/runs/#{run.run_id}"}
+                          class="text-sm font-mono text-purple-600 hover:text-purple-700 dark:text-purple-400"
+                        >
+                          {LiveHelpers.short_id(run.run_id)}
+                        </.link>
+                      </td>
+                      <td class="px-4 py-3">
+                        <StatusBadge.status_badge
+                          status={run.status}
+                          size={:sm}
+                          pulse={run.status == "started"}
+                        />
+                      </td>
+                      <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
+                        {LiveHelpers.format_duration(run.duration_ms)}
+                      </td>
+                      <td class="px-4 py-3 text-sm text-slate-500 dark:text-slate-400">
+                        {LiveHelpers.format_timestamp(run.started_at, @time_zone)}
+                      </td>
+                    </tr>
+                  <% end %>
                 <% end %>
-              <% end %>
-            </tbody>
-          </table>
+              </tbody>
+            </table>
 
-          <div
-            :if={@has_more_runs}
-            class="px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50"
-          >
-            <.link
-              navigate={"#{@base_path}/runs?flow=#{@cron_slug}"}
-              class="text-sm text-purple-600 hover:text-purple-700 dark:text-purple-400"
+            <div
+              :if={@has_more_runs}
+              class="px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50"
             >
-              View all runs →
-            </.link>
+              <.link
+                navigate={"#{@base_path}/runs?flow=#{@cron_slug}"}
+                class="text-sm text-purple-600 hover:text-purple-700 dark:text-purple-400"
+              >
+                View all runs →
+              </.link>
+            </div>
           </div>
         </div>
-      </div>
-    </Layouts.dashboard_layout>
-    """
+      </Layouts.dashboard_layout>
+      """
+    end
   end
 end

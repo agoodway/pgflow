@@ -42,7 +42,7 @@ defmodule PgflowDemo.MixProject do
   defp deps do
     [
       {:pgflow, path: ".."},
-      {:livefilter, "~> 0.2.0"},
+      {:livefilter, "~> 0.3.0"},
 
       # Tz - required by PgFlowDashboard for time_zone support
       {:tz, "~> 0.28.2"},
